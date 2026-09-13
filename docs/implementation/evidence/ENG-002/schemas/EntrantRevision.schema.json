@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "ModelProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "provider_class": {
+          "minLength": 1,
+          "title": "Provider Class",
+          "type": "string"
+        },
+        "reported_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reported Model"
+        },
+        "requested_model": {
+          "minLength": 1,
+          "title": "Requested Model",
+          "type": "string"
+        },
+        "settings_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Settings Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_class",
+        "requested_model",
+        "settings_digest"
+      ],
+      "title": "ModelProfile",
+      "type": "object"
+    },
+    "Track": {
+      "enum": [
+        "agents",
+        "models"
+      ],
+      "title": "Track",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_implementation": {
+      "minLength": 1,
+      "title": "Agent Implementation",
+      "type": "string"
+    },
+    "agent_version": {
+      "minLength": 1,
+      "title": "Agent Version",
+      "type": "string"
+    },
+    "capabilities": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Capabilities",
+      "type": "array"
+    },
+    "credential_ref_type": {
+      "enum": [
+        "broker",
+        "direct",
+        "subscription"
+      ],
+      "title": "Credential Ref Type",
+      "type": "string"
+    },
+    "engineer_model": {
+      "$ref": "#/$defs/ModelProfile"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "prompt_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Prompt Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "aieb.entrant/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tools_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Tools Digest",
+      "type": "string"
+    },
+    "track": {
+      "$ref": "#/$defs/Track"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "track",
+    "agent_implementation",
+    "agent_version",
+    "engineer_model",
+    "prompt_digest",
+    "tools_digest",
+    "capabilities",
+    "credential_ref_type"
+  ],
+  "title": "EntrantRevision",
+  "type": "object"
+}

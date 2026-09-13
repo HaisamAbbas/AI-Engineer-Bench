@@ -1,0 +1,67 @@
+{
+  "$defs": {
+    "ExecutionValidity": {
+      "enum": [
+        "valid",
+        "infrastructure_invalid",
+        "cancelled"
+      ],
+      "title": "ExecutionValidity",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_number": {
+      "minimum": 0,
+      "title": "Attempt Number",
+      "type": "integer"
+    },
+    "execution_validity": {
+      "$ref": "#/$defs/ExecutionValidity"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "lease_generation": {
+      "minimum": 0,
+      "title": "Lease Generation",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "aieb.attempt/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "termination_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Termination Reason"
+    },
+    "trial_id": {
+      "format": "uuid",
+      "title": "Trial Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "trial_id",
+    "attempt_number",
+    "lease_generation",
+    "execution_validity"
+  ],
+  "title": "Attempt",
+  "type": "object"
+}

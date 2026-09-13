@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "BudgetRole": {
+      "enum": [
+        "engineer",
+        "dev_application",
+        "verifier_application",
+        "verifier_judge"
+      ],
+      "title": "BudgetRole",
+      "type": "string"
+    },
+    "RoleBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "limit_usd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Usd"
+        },
+        "role": {
+          "$ref": "#/$defs/BudgetRole"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "RoleBudget",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "engineer_cpu": {
+      "exclusiveMinimum": 0,
+      "title": "Engineer Cpu",
+      "type": "integer"
+    },
+    "engineer_memory_mb": {
+      "exclusiveMinimum": 0,
+      "title": "Engineer Memory Mb",
+      "type": "integer"
+    },
+    "engineer_wall_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Engineer Wall Seconds",
+      "type": "integer"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "per_role_budget_usd": {
+      "items": {
+        "$ref": "#/$defs/RoleBudget"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "title": "Per Role Budget Usd",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "aieb.budget/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "verification_wall_seconds": {
+      "exclusiveMinimum": 0,
+      "title": "Verification Wall Seconds",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "engineer_wall_seconds",
+    "verification_wall_seconds",
+    "engineer_cpu",
+    "engineer_memory_mb",
+    "per_role_budget_usd"
+  ],
+  "title": "BudgetProfile",
+  "type": "object"
+}

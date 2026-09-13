@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "cohort_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Cohort Id",
+      "type": "string"
+    },
+    "entrant_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Entrant Ids",
+      "type": "array"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "max_concurrent_trials": {
+      "exclusiveMinimum": 0,
+      "title": "Max Concurrent Trials",
+      "type": "integer"
+    },
+    "optimistic_revision": {
+      "minimum": 0,
+      "title": "Optimistic Revision",
+      "type": "integer"
+    },
+    "order_seed": {
+      "minimum": 0,
+      "title": "Order Seed",
+      "type": "integer"
+    },
+    "repetitions": {
+      "exclusiveMinimum": 0,
+      "title": "Repetitions",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "aieb.campaign-draft/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Task Ids",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "cohort_id",
+    "task_ids",
+    "entrant_ids",
+    "repetitions",
+    "order_seed",
+    "max_concurrent_trials",
+    "optimistic_revision"
+  ],
+  "title": "CampaignDraft",
+  "type": "object"
+}

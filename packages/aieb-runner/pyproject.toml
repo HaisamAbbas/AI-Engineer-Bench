@@ -1,0 +1,16 @@
+[project]
+name = "aieb-runner"
+version = "0.1.0"
+description = "Execution backend boundary for AI Engineer Bench"
+requires-python = "==3.12.10"
+dependencies = [
+  "aieb-core==0.1.0",
+  "harbor==0.22.0",
+]
+
+[tool.uv.sources]
+aieb-core = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.8.4"]
+build-backend = "uv_build"

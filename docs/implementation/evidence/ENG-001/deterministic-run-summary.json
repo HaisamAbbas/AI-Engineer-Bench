@@ -1,0 +1,50 @@
+{
+  "schema_version": "aieb.eng001-evidence/v1",
+  "evidence_kind": "deterministic_contract_fixture_not_benchmark_result",
+  "run_date": "2026-09-13",
+  "trial_id": "a794c2e0-3acd-465d-bac9-fad79ed623ca",
+  "trial_name": "eng001-c0d0efd860",
+  "task_checksum": "fef8859c2588a206ed833cac300a919f658c7560ac6cf5c07483ba815248ae61",
+  "harbor_version": "0.22.0",
+  "agent": {
+    "name": "aieb-deterministic-fixture",
+    "version": "aieb-deterministic-fixture 1.0.0",
+    "real_installed_coding_agent": false
+  },
+  "deadline": {
+    "seconds": 8.0,
+    "exception_type": "AgentTimeoutError",
+    "late_write_absent_from_snapshot": true
+  },
+  "collection": {
+    "candidate_directory_status": "ok",
+    "application_state_status": "ok",
+    "new_file_collected": true
+  },
+  "replay": {
+    "environment_mode": "separate",
+    "network_mode": "no-network",
+    "candidate_replayed": true,
+    "checked_outside_agent_environment": true,
+    "contract_verifier_reward": 1.0
+  },
+  "cleanup": {
+    "scoped_containers_after_run": [],
+    "worker_processes_after_run": []
+  },
+  "usage": {
+    "input_tokens": null,
+    "cache_tokens": null,
+    "output_tokens": null,
+    "cost_usd": null,
+    "coverage": "unknown"
+  },
+  "sha256": {
+    "result.json": "2b06fafde83b4590794eeb02b542f547d8f426b237f940a1ad99c21481b4ff1b",
+    "artifacts/manifest.json": "0478bc66fd0fa50a7f34ef5fc2b9ed4a0c6e4b2a80bcbac13e4dfa2247d7dfba",
+    "artifacts/candidate/edited-readme.txt": "0196820bc9cd80947bc30398eaa77931cf1f51f1cb03570176fad4eea0b43579",
+    "artifacts/candidate/new-file.txt": "c73cd263444437cf5ecd6ab08b3a9969cb65a3a03df61b553dab581d54781237",
+    "artifacts/application-state.json": "62eeeef74ecf8d7f1f971b44bf0341395cd4653362e3f01c977260ec736b8458",
+    "verifier/evidence.json": "4d8c9654865c3cbf899eff3c229ab8ad6069793760f64e3418fa2822d3f1f02b"
+  }
+}

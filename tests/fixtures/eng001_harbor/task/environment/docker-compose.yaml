@@ -1,0 +1,14 @@
+services:
+  main:
+    depends_on:
+      application:
+        condition: service_healthy
+  application:
+    build: .
+    command: ["python", "/opt/aieb-fixture/app.py"]
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2).read() == b'ready'"]
+      interval: 1s
+      timeout: 3s
+      retries: 10

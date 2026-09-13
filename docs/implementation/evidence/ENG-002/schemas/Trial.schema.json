@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "campaign_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Campaign Digest",
+      "type": "string"
+    },
+    "cohort_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Cohort Digest",
+      "type": "string"
+    },
+    "entrant_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Entrant Digest",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "order_index": {
+      "minimum": 0,
+      "title": "Order Index",
+      "type": "integer"
+    },
+    "repetition_index": {
+      "minimum": 0,
+      "title": "Repetition Index",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": "aieb.trial/v1",
+      "default": "aieb.trial/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Task Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "campaign_digest",
+    "task_digest",
+    "entrant_digest",
+    "cohort_digest",
+    "repetition_index",
+    "order_index"
+  ],
+  "title": "Trial",
+  "type": "object"
+}

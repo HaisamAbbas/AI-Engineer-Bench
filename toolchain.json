@@ -1,0 +1,43 @@
+{
+  "schema_version": "aieb.toolchain/v1",
+  "recorded_at": "2026-09-13",
+  "python": {
+    "version": "3.12.10",
+    "status": "verified_with_harbor_0.22.0"
+  },
+  "uv": {
+    "version": "0.11.27",
+    "status": "verified"
+  },
+  "git": {
+    "observed_version": "2.55.0.windows.3",
+    "status": "verified_not_project_pinned"
+  },
+  "docker": {
+    "observed_version": "29.7.2",
+    "compose_observed_version": "5.5.1",
+    "server_os": "linux",
+    "status": "verified_for_local_harbor_compatibility_fixture"
+  },
+  "node": {
+    "observed_version": "25.2.1",
+    "status": "deferred_until_web_work"
+  },
+  "pnpm": {
+    "version": null,
+    "status": "not_installed_deferred_until_web_work"
+  },
+  "harbor": {
+    "version": "0.22.0",
+    "source_tag": "v0.22.0",
+    "source_commit": "4407eb5227a2ff4f0d3f16b2eb48849382fdf276",
+    "tag_object": "41a50d62d7f35677cc34ba3a0c36f042a4fef68c",
+    "tag_signature": "unsigned",
+    "wheel_sha256": "4c4c6571b3d160ed0cb45b82918136751fb08e7b8596412723ac00dde12eeabb",
+    "status": "deterministic_contract_verified_real_agent_not_run"
+  },
+  "fixture_base_image": {
+    "reference": "python:3.12.10-slim-bookworm@sha256:da14110a04b750d409d6f63c24f999eca02c1e804e707e780e0d1f4c1d1f89f",
+    "status": "resolved_digest_and_built"
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "ApplicationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Contract Digest",
+          "type": "string"
+        },
+        "dependency_mode": {
+          "$ref": "#/$defs/DependencyMode"
+        },
+        "entrypoint": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Entrypoint",
+          "type": "array"
+        },
+        "model_profile_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Model Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dependency_mode",
+        "entrypoint",
+        "contract_digest",
+        "model_profile_id"
+      ],
+      "title": "ApplicationProfile",
+      "type": "object"
+    },
+    "DependencyMode": {
+      "enum": [
+        "fixture",
+        "live"
+      ],
+      "title": "DependencyMode",
+      "type": "string"
+    },
+    "Track": {
+      "enum": [
+        "agents",
+        "models"
+      ],
+      "title": "Track",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "application_model_profile": {
+      "$ref": "#/$defs/ApplicationProfile"
+    },
+    "budget_profile_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Budget Profile Id",
+      "type": "string"
+    },
+    "dependency_mode": {
+      "$ref": "#/$defs/DependencyMode"
+    },
+    "hardware_class": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Hardware Class",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "protocol_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Protocol Id",
+      "type": "string"
+    },
+    "required_capabilities": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "title": "Required Capabilities",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "aieb.cohort/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "suite_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Suite Id",
+      "type": "string"
+    },
+    "track": {
+      "$ref": "#/$defs/Track"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "track",
+    "suite_id",
+    "protocol_id",
+    "budget_profile_id",
+    "dependency_mode",
+    "application_model_profile",
+    "hardware_class",
+    "required_capabilities"
+  ],
+  "title": "Cohort",
+  "type": "object"
+}

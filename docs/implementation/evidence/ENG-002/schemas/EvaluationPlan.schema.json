@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "candidate_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Candidate Digest",
+      "type": "string"
+    },
+    "evaluator_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Evaluator Digest",
+      "type": "string"
+    },
+    "fixture_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Fixture Digest",
+      "type": "string"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "requirement_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Requirement Ids",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "aieb.evaluation-plan/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Task Digest",
+      "type": "string"
+    },
+    "workload_seed": {
+      "minimum": 0,
+      "title": "Workload Seed",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "task_digest",
+    "candidate_digest",
+    "evaluator_digest",
+    "fixture_digest",
+    "workload_seed",
+    "requirement_ids"
+  ],
+  "title": "EvaluationPlan",
+  "type": "object"
+}

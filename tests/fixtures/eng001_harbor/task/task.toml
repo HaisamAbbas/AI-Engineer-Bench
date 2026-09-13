@@ -1,0 +1,39 @@
+schema_version = "1.4"
+artifacts = [
+  { source = "/workspace/submission", destination = "candidate" },
+  { source = "/tmp/application-state.json", destination = "application-state.json", service = "application" },
+]
+
+[metadata]
+kind = "aieb-eng001-compatibility-fixture"
+scientific_task = false
+
+[agent]
+timeout_sec = 8.0
+network_mode = "allowlist"
+allowed_hosts = ["application"]
+
+[verifier]
+timeout_sec = 30.0
+environment_mode = "separate"
+network_mode = "no-network"
+
+[verifier.environment]
+build_timeout_sec = 180.0
+network_mode = "no-network"
+cpus = 1
+memory_mb = 256
+
+[environment]
+build_timeout_sec = 180.0
+network_mode = "allowlist"
+allowed_hosts = ["application"]
+cpus = 1
+memory_mb = 256
+workdir = "/workspace"
+
+[environment.healthcheck]
+command = "python -c \"import urllib.request; assert urllib.request.urlopen('http://application:8080/health', timeout=3).read() == b'ready'\""
+interval_sec = 1.0
+timeout_sec = 30.0
+retries = 10

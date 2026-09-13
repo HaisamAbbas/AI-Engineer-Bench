@@ -1,0 +1,16 @@
+/.venv/
+/.cache/
+/__pycache__/
+*.py[cod]
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/dist/
+/build/
+/runs/
+
+# Supplied source attachments are preserved at the workspace root. Canonical
+# unchanged repository copies live in docs/specs/.
+/AI-Engineer-Bench-Architecture-v0.1.md
+/AI-Engineer-Bench-Implementation-Spec-v1.0.md
+/AI-Engineer-Bench-Codex-Prompt-Pack.md

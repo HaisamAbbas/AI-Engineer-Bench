@@ -1,0 +1,13 @@
+[project]
+name = "aieb-core"
+version = "0.1.0"
+description = "Versioned contracts, canonical identities, and campaign planning for AI Engineer Bench"
+requires-python = "==3.12.10"
+dependencies = [
+  "pydantic==2.13.5",
+  "PyYAML==6.0.3",
+]
+
+[build-system]
+requires = ["uv_build==0.8.4"]
+build-backend = "uv_build"

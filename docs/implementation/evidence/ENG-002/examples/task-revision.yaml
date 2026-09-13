@@ -1,0 +1,39 @@
+# Example only. This is not an admitted benchmark task or a result.
+schema_version: aieb.task/v1
+id: rag.document-freshness
+version: 0.1.0
+family_id: knowledge-service-a
+category: rag
+activity: repair
+source:
+  repository_digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  commit: 0123456789abcdef
+  license: Apache-2.0
+  provenance_digest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+environment:
+  official_image: registry.example/aieb/rag@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+  engineer_cpu: 1
+  engineer_memory_mb: 512
+  service_topology_digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  egress_policy: allowlist
+application:
+  dependency_mode: fixture
+  entrypoint: [python, -m, knowledge_service]
+  contract_digest: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  model_profile_id: application-fixture-v1
+submission:
+  include: [src/**, config/**, pyproject.toml]
+  protected: [dev_tests/**]
+  max_artifact_bytes: 52428800
+requirements:
+  - id: latest-version-visible
+    severity: mandatory
+    description: The newest document version is returned.
+  - id: unchanged-documents-preserved
+    severity: diagnostic
+    description: Unchanged documents remain retrievable.
+evaluator:
+  evaluator_digest: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  development_fixture: rag-freshness-dev-v1
+  official_fixture_ref: restricted:rag-freshness-official-v1
+profile_compatibility: [cpu-fixture-standard-v1]

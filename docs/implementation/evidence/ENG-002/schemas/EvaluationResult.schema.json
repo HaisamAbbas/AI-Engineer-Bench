@@ -1,0 +1,179 @@
+{
+  "$defs": {
+    "CheckStatus": {
+      "enum": [
+        "pass",
+        "fail",
+        "error",
+        "not_run"
+      ],
+      "title": "CheckStatus",
+      "type": "string"
+    },
+    "ExecutionValidity": {
+      "enum": [
+        "valid",
+        "infrastructure_invalid",
+        "cancelled"
+      ],
+      "title": "ExecutionValidity",
+      "type": "string"
+    },
+    "RequirementCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "diagnostic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Diagnostic"
+        },
+        "evidence_refs": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/CheckStatus"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "status"
+      ],
+      "title": "RequirementCheck",
+      "type": "object"
+    },
+    "UsageSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Tokens"
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output Tokens"
+        }
+      },
+      "title": "UsageSummary",
+      "type": "object"
+    },
+    "Verdict": {
+      "enum": [
+        "pass",
+        "fail",
+        "contract_violation",
+        "indeterminate"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/RequirementCheck"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "execution_validity": {
+      "$ref": "#/$defs/ExecutionValidity"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "plan_id": {
+      "format": "uuid",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "aieb.evaluation-result/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "usage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageSummary"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "verdict": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Verdict"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "plan_id",
+    "execution_validity",
+    "verdict",
+    "checks"
+  ],
+  "title": "EvaluationResult",
+  "type": "object"
+}

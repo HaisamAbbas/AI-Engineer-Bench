@@ -1,0 +1,322 @@
+{
+  "$defs": {
+    "Activity": {
+      "enum": [
+        "repair"
+      ],
+      "title": "Activity",
+      "type": "string"
+    },
+    "ApplicationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Contract Digest",
+          "type": "string"
+        },
+        "dependency_mode": {
+          "$ref": "#/$defs/DependencyMode"
+        },
+        "entrypoint": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Entrypoint",
+          "type": "array"
+        },
+        "model_profile_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Model Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dependency_mode",
+        "entrypoint",
+        "contract_digest",
+        "model_profile_id"
+      ],
+      "title": "ApplicationProfile",
+      "type": "object"
+    },
+    "Category": {
+      "enum": [
+        "rag",
+        "extraction",
+        "tool_app"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "DependencyMode": {
+      "enum": [
+        "fixture",
+        "live"
+      ],
+      "title": "DependencyMode",
+      "type": "string"
+    },
+    "EnvironmentSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "egress_policy": {
+          "enum": [
+            "none",
+            "allowlist"
+          ],
+          "title": "Egress Policy",
+          "type": "string"
+        },
+        "engineer_cpu": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Cpu",
+          "type": "integer"
+        },
+        "engineer_memory_mb": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Memory Mb",
+          "type": "integer"
+        },
+        "official_image": {
+          "pattern": "^.+@sha256:[0-9a-f]{64}$",
+          "title": "Official Image",
+          "type": "string"
+        },
+        "service_topology_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Service Topology Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "official_image",
+        "engineer_cpu",
+        "engineer_memory_mb",
+        "service_topology_digest",
+        "egress_policy"
+      ],
+      "title": "EnvironmentSpec",
+      "type": "object"
+    },
+    "EvaluatorRef": {
+      "additionalProperties": false,
+      "properties": {
+        "development_fixture": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Development Fixture",
+          "type": "string"
+        },
+        "evaluator_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evaluator Digest",
+          "type": "string"
+        },
+        "official_fixture_ref": {
+          "minLength": 1,
+          "title": "Official Fixture Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evaluator_digest",
+        "development_fixture",
+        "official_fixture_ref"
+      ],
+      "title": "EvaluatorRef",
+      "type": "object"
+    },
+    "Requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "mandatory",
+            "diagnostic"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "description"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "minLength": 7,
+          "title": "Commit",
+          "type": "string"
+        },
+        "license": {
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "provenance_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Provenance Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "commit",
+        "license",
+        "provenance_digest"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SubmissionPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Include",
+          "type": "array"
+        },
+        "max_artifact_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 52428800,
+          "title": "Max Artifact Bytes",
+          "type": "integer"
+        },
+        "protected": {
+          "default": [],
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Protected",
+          "type": "array"
+        }
+      },
+      "required": [
+        "include",
+        "max_artifact_bytes"
+      ],
+      "title": "SubmissionPolicy",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "activity": {
+      "$ref": "#/$defs/Activity"
+    },
+    "application": {
+      "$ref": "#/$defs/ApplicationProfile"
+    },
+    "category": {
+      "$ref": "#/$defs/Category"
+    },
+    "environment": {
+      "$ref": "#/$defs/EnvironmentSpec"
+    },
+    "evaluator": {
+      "$ref": "#/$defs/EvaluatorRef"
+    },
+    "family_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Family Id",
+      "type": "string"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "profile_compatibility": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Profile Compatibility",
+      "type": "array"
+    },
+    "requirements": {
+      "items": {
+        "$ref": "#/$defs/Requirement"
+      },
+      "minItems": 1,
+      "title": "Requirements",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "aieb.task/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "submission": {
+      "$ref": "#/$defs/SubmissionPolicy"
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "version",
+    "family_id",
+    "category",
+    "activity",
+    "source",
+    "environment",
+    "application",
+    "submission",
+    "requirements",
+    "evaluator",
+    "profile_compatibility"
+  ],
+  "title": "TaskRevision",
+  "type": "object"
+}

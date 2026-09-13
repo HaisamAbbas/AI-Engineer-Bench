@@ -1,0 +1,14 @@
+# Same example content as task-revision.yaml, intentionally reformatted.
+activity: repair
+application: {contract_digest: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, dependency_mode: fixture, entrypoint: [python, -m, knowledge_service], model_profile_id: application-fixture-v1}
+category: rag
+environment: {egress_policy: allowlist, engineer_cpu: 1, engineer_memory_mb: 512, official_image: registry.example/aieb/rag@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc, service_topology_digest: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}
+evaluator: {development_fixture: rag-freshness-dev-v1, evaluator_digest: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff, official_fixture_ref: restricted:rag-freshness-official-v1}
+family_id: knowledge-service-a
+id: rag.document-freshness
+profile_compatibility: [cpu-fixture-standard-v1]
+requirements: [{description: The newest document version is returned., id: latest-version-visible, severity: mandatory}, {description: Unchanged documents remain retrievable., id: unchanged-documents-preserved, severity: diagnostic}]
+schema_version: aieb.task/v1
+source: {commit: 0123456789abcdef, license: Apache-2.0, provenance_digest: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, repository_digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+submission: {include: [src/**, config/**, pyproject.toml], max_artifact_bytes: 52428800, protected: [dev_tests/**]}
+version: 0.1.0

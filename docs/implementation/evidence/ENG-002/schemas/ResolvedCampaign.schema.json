@@ -1,0 +1,788 @@
+{
+  "$defs": {
+    "Activity": {
+      "enum": [
+        "repair"
+      ],
+      "title": "Activity",
+      "type": "string"
+    },
+    "ApplicationProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Contract Digest",
+          "type": "string"
+        },
+        "dependency_mode": {
+          "$ref": "#/$defs/DependencyMode"
+        },
+        "entrypoint": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Entrypoint",
+          "type": "array"
+        },
+        "model_profile_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Model Profile Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dependency_mode",
+        "entrypoint",
+        "contract_digest",
+        "model_profile_id"
+      ],
+      "title": "ApplicationProfile",
+      "type": "object"
+    },
+    "BudgetProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "engineer_cpu": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Cpu",
+          "type": "integer"
+        },
+        "engineer_memory_mb": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Memory Mb",
+          "type": "integer"
+        },
+        "engineer_wall_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Wall Seconds",
+          "type": "integer"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "per_role_budget_usd": {
+          "items": {
+            "$ref": "#/$defs/RoleBudget"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Per Role Budget Usd",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "aieb.budget/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "verification_wall_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Verification Wall Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "engineer_wall_seconds",
+        "verification_wall_seconds",
+        "engineer_cpu",
+        "engineer_memory_mb",
+        "per_role_budget_usd"
+      ],
+      "title": "BudgetProfile",
+      "type": "object"
+    },
+    "BudgetRole": {
+      "enum": [
+        "engineer",
+        "dev_application",
+        "verifier_application",
+        "verifier_judge"
+      ],
+      "title": "BudgetRole",
+      "type": "string"
+    },
+    "Category": {
+      "enum": [
+        "rag",
+        "extraction",
+        "tool_app"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "Cohort": {
+      "additionalProperties": false,
+      "properties": {
+        "application_model_profile": {
+          "$ref": "#/$defs/ApplicationProfile"
+        },
+        "budget_profile_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Budget Profile Id",
+          "type": "string"
+        },
+        "dependency_mode": {
+          "$ref": "#/$defs/DependencyMode"
+        },
+        "hardware_class": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Hardware Class",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "protocol_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Protocol Id",
+          "type": "string"
+        },
+        "required_capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "title": "Required Capabilities",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "aieb.cohort/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "suite_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Suite Id",
+          "type": "string"
+        },
+        "track": {
+          "$ref": "#/$defs/Track"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "track",
+        "suite_id",
+        "protocol_id",
+        "budget_profile_id",
+        "dependency_mode",
+        "application_model_profile",
+        "hardware_class",
+        "required_capabilities"
+      ],
+      "title": "Cohort",
+      "type": "object"
+    },
+    "DependencyMode": {
+      "enum": [
+        "fixture",
+        "live"
+      ],
+      "title": "DependencyMode",
+      "type": "string"
+    },
+    "EntrantRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_implementation": {
+          "minLength": 1,
+          "title": "Agent Implementation",
+          "type": "string"
+        },
+        "agent_version": {
+          "minLength": 1,
+          "title": "Agent Version",
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Capabilities",
+          "type": "array"
+        },
+        "credential_ref_type": {
+          "enum": [
+            "broker",
+            "direct",
+            "subscription"
+          ],
+          "title": "Credential Ref Type",
+          "type": "string"
+        },
+        "engineer_model": {
+          "$ref": "#/$defs/ModelProfile"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "prompt_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Prompt Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "aieb.entrant/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "tools_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Tools Digest",
+          "type": "string"
+        },
+        "track": {
+          "$ref": "#/$defs/Track"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "track",
+        "agent_implementation",
+        "agent_version",
+        "engineer_model",
+        "prompt_digest",
+        "tools_digest",
+        "capabilities",
+        "credential_ref_type"
+      ],
+      "title": "EntrantRevision",
+      "type": "object"
+    },
+    "EnvironmentSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "egress_policy": {
+          "enum": [
+            "none",
+            "allowlist"
+          ],
+          "title": "Egress Policy",
+          "type": "string"
+        },
+        "engineer_cpu": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Cpu",
+          "type": "integer"
+        },
+        "engineer_memory_mb": {
+          "exclusiveMinimum": 0,
+          "title": "Engineer Memory Mb",
+          "type": "integer"
+        },
+        "official_image": {
+          "pattern": "^.+@sha256:[0-9a-f]{64}$",
+          "title": "Official Image",
+          "type": "string"
+        },
+        "service_topology_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Service Topology Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "official_image",
+        "engineer_cpu",
+        "engineer_memory_mb",
+        "service_topology_digest",
+        "egress_policy"
+      ],
+      "title": "EnvironmentSpec",
+      "type": "object"
+    },
+    "EvaluatorRef": {
+      "additionalProperties": false,
+      "properties": {
+        "development_fixture": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Development Fixture",
+          "type": "string"
+        },
+        "evaluator_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evaluator Digest",
+          "type": "string"
+        },
+        "official_fixture_ref": {
+          "minLength": 1,
+          "title": "Official Fixture Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evaluator_digest",
+        "development_fixture",
+        "official_fixture_ref"
+      ],
+      "title": "EvaluatorRef",
+      "type": "object"
+    },
+    "ModelProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "provider_class": {
+          "minLength": 1,
+          "title": "Provider Class",
+          "type": "string"
+        },
+        "reported_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reported Model"
+        },
+        "requested_model": {
+          "minLength": 1,
+          "title": "Requested Model",
+          "type": "string"
+        },
+        "settings_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Settings Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_class",
+        "requested_model",
+        "settings_digest"
+      ],
+      "title": "ModelProfile",
+      "type": "object"
+    },
+    "ProtocolRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "hard_cost_ranking": {
+          "title": "Hard Cost Ranking",
+          "type": "boolean"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "max_replacements": {
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Max Replacements",
+          "type": "integer"
+        },
+        "required_trace_coverage": {
+          "title": "Required Trace Coverage",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "aieb.protocol/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "scoring_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Scoring Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "scoring_digest",
+        "max_replacements",
+        "required_trace_coverage",
+        "hard_cost_ranking"
+      ],
+      "title": "ProtocolRevision",
+      "type": "object"
+    },
+    "Requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "mandatory",
+            "diagnostic"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "description"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "RoleBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "limit_usd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Limit Usd"
+        },
+        "role": {
+          "$ref": "#/$defs/BudgetRole"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "RoleBudget",
+      "type": "object"
+    },
+    "SourceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "commit": {
+          "minLength": 7,
+          "title": "Commit",
+          "type": "string"
+        },
+        "license": {
+          "minLength": 1,
+          "title": "License",
+          "type": "string"
+        },
+        "provenance_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Provenance Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "commit",
+        "license",
+        "provenance_digest"
+      ],
+      "title": "SourceRef",
+      "type": "object"
+    },
+    "SubmissionPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "include": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Include",
+          "type": "array"
+        },
+        "max_artifact_bytes": {
+          "exclusiveMinimum": 0,
+          "maximum": 52428800,
+          "title": "Max Artifact Bytes",
+          "type": "integer"
+        },
+        "protected": {
+          "default": [],
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Protected",
+          "type": "array"
+        }
+      },
+      "required": [
+        "include",
+        "max_artifact_bytes"
+      ],
+      "title": "SubmissionPolicy",
+      "type": "object"
+    },
+    "TaskRevision": {
+      "additionalProperties": false,
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/Activity"
+        },
+        "application": {
+          "$ref": "#/$defs/ApplicationProfile"
+        },
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "environment": {
+          "$ref": "#/$defs/EnvironmentSpec"
+        },
+        "evaluator": {
+          "$ref": "#/$defs/EvaluatorRef"
+        },
+        "family_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Family Id",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9._-]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "profile_compatibility": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Profile Compatibility",
+          "type": "array"
+        },
+        "requirements": {
+          "items": {
+            "$ref": "#/$defs/Requirement"
+          },
+          "minItems": 1,
+          "title": "Requirements",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "aieb.task/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SourceRef"
+        },
+        "submission": {
+          "$ref": "#/$defs/SubmissionPolicy"
+        },
+        "version": {
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "id",
+        "version",
+        "family_id",
+        "category",
+        "activity",
+        "source",
+        "environment",
+        "application",
+        "submission",
+        "requirements",
+        "evaluator",
+        "profile_compatibility"
+      ],
+      "title": "TaskRevision",
+      "type": "object"
+    },
+    "Track": {
+      "enum": [
+        "agents",
+        "models"
+      ],
+      "title": "Track",
+      "type": "string"
+    },
+    "Trial": {
+      "additionalProperties": false,
+      "properties": {
+        "campaign_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Campaign Digest",
+          "type": "string"
+        },
+        "cohort_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Cohort Digest",
+          "type": "string"
+        },
+        "entrant_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Entrant Digest",
+          "type": "string"
+        },
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "order_index": {
+          "minimum": 0,
+          "title": "Order Index",
+          "type": "integer"
+        },
+        "repetition_index": {
+          "minimum": 0,
+          "title": "Repetition Index",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": "aieb.trial/v1",
+          "default": "aieb.trial/v1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "task_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Task Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "campaign_digest",
+        "task_digest",
+        "entrant_digest",
+        "cohort_digest",
+        "repetition_index",
+        "order_index"
+      ],
+      "title": "Trial",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "$ref": "#/$defs/BudgetProfile"
+    },
+    "cohort": {
+      "$ref": "#/$defs/Cohort"
+    },
+    "draft_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Draft Digest",
+      "type": "string"
+    },
+    "entrants": {
+      "items": {
+        "$ref": "#/$defs/EntrantRevision"
+      },
+      "title": "Entrants",
+      "type": "array"
+    },
+    "frozen": {
+      "const": true,
+      "default": true,
+      "title": "Frozen",
+      "type": "boolean"
+    },
+    "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+    },
+    "protocol": {
+      "$ref": "#/$defs/ProtocolRevision"
+    },
+    "schema_version": {
+      "const": "aieb.campaign/v1",
+      "default": "aieb.campaign/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/TaskRevision"
+      },
+      "title": "Tasks",
+      "type": "array"
+    },
+    "trials": {
+      "items": {
+        "$ref": "#/$defs/Trial"
+      },
+      "title": "Trials",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "draft_digest",
+    "cohort",
+    "protocol",
+    "budget",
+    "tasks",
+    "entrants",
+    "trials"
+  ],
+  "title": "ResolvedCampaign",
+  "type": "object"
+}

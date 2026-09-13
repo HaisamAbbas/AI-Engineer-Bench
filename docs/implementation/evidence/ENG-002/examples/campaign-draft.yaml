@@ -1,0 +1,10 @@
+# Example only. This is a draft, not a frozen campaign or benchmark result.
+schema_version: aieb.campaign-draft/v1
+id: repair-pilot-example
+cohort_id: cpu-fixture-standard-v1
+task_ids: [rag.document-freshness, extraction.batch-alignment, tool.false-completion]
+entrant_ids: [agent-a-pinned, agent-b-pinned]
+repetitions: 3
+order_seed: 4107
+max_concurrent_trials: 2
+optimistic_revision: 0

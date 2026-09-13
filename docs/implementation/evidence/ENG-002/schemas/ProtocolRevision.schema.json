@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "hard_cost_ranking": {
+      "title": "Hard Cost Ranking",
+      "type": "boolean"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "max_replacements": {
+      "maximum": 2,
+      "minimum": 0,
+      "title": "Max Replacements",
+      "type": "integer"
+    },
+    "required_trace_coverage": {
+      "title": "Required Trace Coverage",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "aieb.protocol/v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scoring_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Scoring Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "id",
+    "scoring_digest",
+    "max_replacements",
+    "required_trace_coverage",
+    "hard_cost_ranking"
+  ],
+  "title": "ProtocolRevision",
+  "type": "object"
+}
