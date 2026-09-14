@@ -101,6 +101,22 @@ class AttemptLifecycleTests(unittest.TestCase):
         time.sleep(1.2)
         self.assertFalse((self.root / "late-child-marker.txt").exists())
 
+    def test_cancel_event_stops_engineering_before_deadline_with_no_verdict(self) -> None:
+        """ENG-015: hosted campaign cancellation must interrupt a still-running attempt
+        before its deadline, not merely stop dispatching new ones."""
+        from threading import Event, Thread
+
+        cancel_event = Event()
+        body = self.reference_editor("import time\ntime.sleep(20)\n")
+        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+        outcome = self.runner.run(
+            self.config("cancelled", self.script("cancelled.py", body), deadline=20), evaluate, cancel_event=cancel_event,
+        )
+        self.assertEqual(outcome.termination_reason, "cancelled")
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertIsNone(outcome.verdict)
+        self.assertTrue(outcome.cleanup_clean)
+
     def test_partial_and_no_artifact_are_explicit_replay_outcomes(self) -> None:
         partial = self.runner.run(
             self.config(

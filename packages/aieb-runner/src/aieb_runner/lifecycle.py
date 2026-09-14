@@ -14,10 +14,12 @@ import shutil
 import signal
 import subprocess
 import ctypes
+import time
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from threading import Event
 from typing import Callable
 from uuid import uuid4
 
@@ -257,13 +259,14 @@ class LocalAttemptRunner:
         }
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    def run(self, config: AttemptConfig, evaluator: Evaluator) -> AttemptOutcome:
+    def run(self, config: AttemptConfig, evaluator: Evaluator, cancel_event: Event | None = None) -> AttemptOutcome:
         outcome = AttemptOutcome(config.attempt_id)
         attempt_root = config.work_root / config.attempt_id
         engineer = attempt_root / "engineer"
         build = attempt_root / "build"
         evidence = attempt_root / "attempt.json"
         process: subprocess.Popen[str] | None = None
+        cancelled = False
         try:
             outcome.add(AttemptPhase.PROVISION)
             attempt_root.mkdir(parents=True, exist_ok=False)
@@ -281,11 +284,26 @@ class LocalAttemptRunner:
                 outcome.diagnostics.append(f"unable to launch engineering process: {exc}")
                 return outcome
             try:
-                process.communicate(timeout=config.engineering.deadline_sec)
-                if process.returncode not in (0, None):
-                    outcome.attribution = FailureAttribution.CANDIDATE_BUILD_FAILURE
-                    outcome.diagnostics.append(f"engineering command exited {process.returncode}")
-                    return outcome
+                # A bounded poll loop (rather than one blocking communicate(timeout=...))
+                # lets an external cancellation event interrupt engineering before the
+                # deadline, without changing observed behavior when cancel_event is None.
+                deadline_at = time.monotonic() + config.engineering.deadline_sec
+                poll_interval = min(0.2, config.engineering.deadline_sec)
+                while process.poll() is None:
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancelled = True
+                        break
+                    if time.monotonic() >= deadline_at:
+                        raise subprocess.TimeoutExpired(config.engineering.argv, config.engineering.deadline_sec)
+                    time.sleep(poll_interval)
+                if cancelled:
+                    outcome.termination_reason = "cancelled"
+                else:
+                    process.communicate(timeout=max(poll_interval, 1))
+                    if process.returncode not in (0, None):
+                        outcome.attribution = FailureAttribution.CANDIDATE_BUILD_FAILURE
+                        outcome.diagnostics.append(f"engineering command exited {process.returncode}")
+                        return outcome
             except subprocess.TimeoutExpired:
                 outcome.termination_reason = "deadline"
                 outcome.attribution = FailureAttribution.RESOURCE_LIMIT
@@ -295,6 +313,9 @@ class LocalAttemptRunner:
                     outcome.attribution = FailureAttribution.TEARDOWN_FAILURE
                     outcome.diagnostics.append("owned engineering process tree could not be confirmed stopped")
                     return outcome
+            if cancelled:
+                outcome.execution_validity = ExecutionValidity.CANCELLED
+                return outcome
 
             # The stop phase is complete before any candidate filesystem read.
             outcome.add(AttemptPhase.COLLECT)
