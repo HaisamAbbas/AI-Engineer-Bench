@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+import uuid
 from pathlib import Path
 
 from sqlalchemy.orm import sessionmaker
@@ -19,9 +20,9 @@ from . import repository
 from .metrics import log_event
 
 
-def teardown_orphan_allocations(session_factory: sessionmaker, work_root: Path) -> list[str]:
-    """Remove local work-root directories for attempts whose lease expired -
-    evidence a killed worker (SIGKILL) never reached its own cleanup phase for.
+def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ...]) -> list[str]:
+    """Remove local work-root directories for attempts reconcile_expired_leases()
+    just authoritatively decided to replace, in this same call.
 
     execute_leased_work lays out each attempt as
     `<work_root>/<attempt_id>/runs/attempt-<...>/{engineer,build}`; only those
@@ -29,11 +30,18 @@ def teardown_orphan_allocations(session_factory: sessionmaker, work_root: Path) 
     LocalAttemptRunner's own cleanup phase removes for an attempt that
     finished normally. Immutable evidence (attempt.json, stored artifacts
     under .../artifacts/) is left untouched.
+
+    Deliberately takes `attempt_ids` from the caller rather than re-deriving
+    "which leases look expired" with its own separate query: a second,
+    disconnected read here would reintroduce the exact race this function
+    exists to avoid - a live worker whose heartbeat is merely delayed could
+    look "expired" to an independent point-in-time SELECT even though the
+    reconciler's own locked pass (which re-checks under FOR UPDATE at lock
+    time) correctly did not touch that row. Only attempt_ids the reconciler
+    has already committed as replaced are ever passed in.
     """
-    with session_factory() as session:
-        orphan_attempt_ids = repository.teardown_orphans(session)
     removed = []
-    for attempt_id in orphan_attempt_ids:
+    for attempt_id in attempt_ids:
         runs_dir = work_root / str(attempt_id) / "runs"
         if not runs_dir.is_dir():
             continue
@@ -47,14 +55,14 @@ def teardown_orphan_allocations(session_factory: sessionmaker, work_root: Path) 
 
 
 def reconcile_once(session_factory: sessionmaker, work_root: Path | None = None) -> repository.ReconciliationSummary:
-    if work_root is not None:
-        removed = teardown_orphan_allocations(session_factory, work_root)
-        if removed:
-            log_event("reconciler.orphans_removed", count=len(removed), paths=removed)
     with session_factory() as session:
         summary = repository.reconcile_expired_leases(session)
     if summary.resumed or summary.replaced or summary.exhausted:
         log_event("reconciler.summary", resumed=summary.resumed, replaced=summary.replaced, exhausted=summary.exhausted)
+    if work_root is not None and summary.orphaned_attempt_ids:
+        removed = _remove_orphan_allocations(work_root, summary.orphaned_attempt_ids)
+        if removed:
+            log_event("reconciler.orphans_removed", count=len(removed), paths=removed)
     return summary
 
 

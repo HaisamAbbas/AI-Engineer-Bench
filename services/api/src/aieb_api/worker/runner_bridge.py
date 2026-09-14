@@ -181,7 +181,7 @@ def execute_leased_work(
             )
         recorded = repository.record_outcome(
             session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-            attempt_id=leased.attempt_id, candidate=candidate, evaluation=evaluation,
+            attempt_id=leased.attempt_id, candidate=candidate, evaluation=evaluation, lease_seconds=lease_seconds,
         )
         if not recorded:
             return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)

@@ -150,19 +150,32 @@ class EvaluationOutcome:
 
 def record_outcome(
     session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID,
-    candidate: CandidateOutcome, evaluation: EvaluationOutcome | None,
+    candidate: CandidateOutcome, evaluation: EvaluationOutcome | None, lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> bool:
     """Artifact-first step: persist what was produced BEFORE the work item is marked
     done. If the caller crashes between this commit and finalize(), the reconciler
     finds this row and completes finalization instead of wastefully replacing the
-    attempt (EX-03). Fenced the same way as every other transition here, so a
-    worker that has already lost its lease cannot record spurious results."""
+    attempt (EX-03).
+
+    The fencing check is a real UPDATE (extending the lease, doubling as an
+    implicit heartbeat), not a plain SELECT: a plain SELECT takes no row lock
+    under READ COMMITTED, so a concurrent reconciler sweep could expire this
+    same lease and create a replacement attempt after this check passed but
+    before this transaction commits, letting a since-abandoned worker's
+    results land anyway. An UPDATE here takes the same row lock the
+    reconciler's SELECT ... FOR UPDATE SKIP LOCKED contends for, so the two
+    correctly serialize: whichever transaction locks the row first commits
+    its decision before the other's WHERE clause is even (re-)evaluated.
+    """
+    lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     fenced = session.execute(
-        select(WorkItemRow.id).where(
-            WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased"
-        )
+        update(WorkItemRow)
+        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .values(lease_expiry=lease_expiry)
+        .returning(WorkItemRow.id)
     ).scalar_one_or_none()
     if fenced is None:
+        session.rollback()
         return False
     candidate_row = CandidateRow(
         attempt_id=attempt_id, tree_digest=candidate.tree_digest, manifest_digest=candidate.manifest_digest,
@@ -203,6 +216,7 @@ class ReconciliationSummary:
     resumed: int = 0
     replaced: int = 0
     exhausted: int = 0
+    orphaned_attempt_ids: tuple[uuid.UUID, ...] = ()
 
 
 def reconcile_expired_leases(session: Session, *, default_max_replacements: int = 2) -> ReconciliationSummary:
@@ -214,8 +228,22 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
     Otherwise the attempt is replaced, up to the frozen campaign's
     max_replacements policy; beyond that the trial is left unresolved rather
     than silently retried forever.
+
+    `orphaned_attempt_ids` names only attempts this same locked pass decided
+    to replace - the caller (reconciler.py) uses that list, not a separate
+    later read, to know which local work directories are now safe to
+    delete. A row is only "expired" here if it is still lease_expiry < now()
+    at the moment this SELECT ... FOR UPDATE SKIP LOCKED actually acquires
+    the row lock: a concurrent heartbeat extending the same lease either
+    commits first (this row is then simply excluded from `expired`, since
+    FOR UPDATE re-reads the current committed row) or blocks behind this
+    transaction's lock and then correctly fails its own fenced check once
+    this transaction has committed the row as 'failed'. Either way, a lease
+    that is genuinely still being renewed can never be the source of an
+    orphaned-attempt_id in this list.
     """
     resumed = replaced = exhausted = 0
+    orphaned: list[uuid.UUID] = []
     expired = session.execute(
         select(WorkItemRow)
         .where(WorkItemRow.type == "engineering", WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
@@ -235,6 +263,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         item.state = "failed"
         attempt.phase = "terminal"
         attempt.terminal_status = "infrastructure_invalid"
+        orphaned.append(attempt.id)
         trial = session.get(TrialRow, attempt.trial_id)
         campaign = session.get(CampaignRow, trial.campaign_id)
         max_replacements = (
@@ -250,7 +279,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         else:
             exhausted += 1
     session.commit()
-    return ReconciliationSummary(resumed=resumed, replaced=replaced, exhausted=exhausted)
+    return ReconciliationSummary(resumed=resumed, replaced=replaced, exhausted=exhausted, orphaned_attempt_ids=tuple(orphaned))
 
 
 def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
@@ -286,15 +315,3 @@ def maybe_complete_cancellation(session: Session, campaign_id: uuid.UUID) -> boo
 def is_campaign_cancelling(session: Session, campaign_id: uuid.UUID) -> bool:
     state = session.execute(select(CampaignRow.state).where(CampaignRow.id == campaign_id)).scalar_one_or_none()
     return state in ("cancelling", "cancelled")
-
-
-def teardown_orphans(session: Session) -> list[uuid.UUID]:
-    """Return attempt IDs whose lease has expired and are still 'leased' - callers
-    use this to identify local work-root directories a killed worker left behind,
-    before reconcile_expired_leases() transitions their state."""
-    rows = session.execute(
-        select(WorkItemRow.attempt_id).where(
-            WorkItemRow.type == "engineering", WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now()
-        )
-    ).scalars().all()
-    return [attempt_id for attempt_id in rows if attempt_id is not None]
