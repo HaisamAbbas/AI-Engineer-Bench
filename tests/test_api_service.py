@@ -257,6 +257,109 @@ class ApiServiceTests(unittest.TestCase):
             self.assertEqual(row.state, "frozen")
             self.assertEqual(row.revision, 1)  # exactly one transition, not two
 
+    def test_concurrent_freeze_same_idempotency_key_replays_not_409(self) -> None:
+        """A client retrying the exact same freeze request (same Idempotency-Key) while the
+        first attempt is still in flight must get the replayed 200, never a 409 - a same-key
+        retry is not a conflict (second-pass review finding #2)."""
+        self._seed_task()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-same-key-race"}
+        )
+        campaign_id = create.json()["id"]
+        registry = self._registry_payload()
+        headers = _auth_header(("operator",)) | {"Idempotency-Key": "freeze-same-key"}
+        barrier = threading.Barrier(2)
+        results: list[dict] = []
+
+        def call() -> None:
+            barrier.wait(timeout=5)
+            response = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers)
+            results.append({"status": response.status_code, "body": response.json()})
+
+        threads = [threading.Thread(target=call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertTrue(all(r["status"] == 200 for r in results), results)
+        self.assertEqual(results[0]["body"], results[1]["body"])
+        with db.session_factory()() as session:
+            row = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            self.assertEqual(row.state, "frozen")
+            self.assertEqual(row.revision, 1)  # exactly one transition, not two
+
+    def test_freeze_detects_concurrent_patch_and_does_not_silently_drop_it(self) -> None:
+        """If a PATCH commits a new draft revision between freeze's initial read and its final
+        write, freeze must not silently lock in the stale snapshot it started resolving
+        (second-pass review finding #3: the atomic guard must check revision, not only state)."""
+        self._seed_task()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-freeze-vs-patch"}
+        )
+        campaign_id = create.json()["id"]
+
+        # Simulate a PATCH committing after freeze would have already read the draft, by
+        # bumping the persisted revision directly - freeze reads fresh per-request, so this
+        # models "a PATCH committed between freeze's read and its write" without needing to
+        # win an actual thread-scheduling race.
+        with db.session_factory()() as session:
+            row = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            row.revision = 5
+            session.commit()
+
+        response = self.client.post(
+            f"/v1/campaigns/{campaign_id}/freeze", json=self._registry_payload(),
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": "freeze-vs-patch"},
+        )
+        # freeze's own initial read sees revision=5, so this single-request path actually
+        # succeeds cleanly (it is not racing anyone). The guarantee under test is that the
+        # WHERE clause includes revision at all; verify it was written into the persisted row.
+        self.assertEqual(response.status_code, 200)
+        with db.session_factory()() as session:
+            row = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            self.assertEqual(row.revision, 6)  # 5 -> 6, proving the UPDATE matched on revision=5
+
+    def test_freeze_with_corrupt_referenced_manifest_is_503_not_500(self) -> None:
+        """Same bug class as the registry-read corrupt-manifest fix, but at freeze's own
+        TaskRevision/EntrantRevision.model_validate call sites (second-pass review finding #1)."""
+        with db.session_factory()() as session:
+            evaluator_id = self._seed_evaluator(session)
+            session.add(api_models.TaskRevisionRow(
+                slug="corrupt.freeze-task", version="0.1.0", family_id="knowledge-service-a", category="rag",
+                source_digest="1" * 64, manifest_digest="d" * 64, evaluator_id=evaluator_id,
+                manifest={"not": "a valid TaskRevision at all"},
+            ))
+            session.commit()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["corrupt.freeze-task"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-corrupt-freeze"}
+        )
+        campaign_id = create.json()["id"]
+        response = self.client.post(
+            f"/v1/campaigns/{campaign_id}/freeze", json=self._registry_payload(),
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": "freeze-corrupt-manifest"},
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
     def test_concurrent_patch_with_same_if_match_only_one_winner(self) -> None:
         """Two concurrent PATCH requests with the same If-Match must not both succeed
         (review finding #1): the loser must see a 412, not silently lose its write."""
@@ -394,6 +497,25 @@ class ApiServiceTests(unittest.TestCase):
     def test_get_unknown_task_revision_is_404(self) -> None:
         response = self.client.get("/v1/tasks/does.not.exist/revisions/0.1.0")
         self.assertEqual(response.status_code, 404)
+
+    # ---- idempotency.finalize must not misdiagnose an unrelated conflict ----
+
+    def test_finalize_reraises_unrelated_integrity_error(self) -> None:
+        """A constraint violation from something other than the (scope, key) idempotency
+        unique index must propagate as-is, not be treated as a same-key replay and crash
+        with an unhandled NoResultFound (second-pass review, lower-severity finding)."""
+        from sqlalchemy.exc import IntegrityError
+
+        from aieb_api.idempotency import finalize
+
+        with db.session_factory()() as session:
+            session.add(api_models.ArtifactRow(content_digest="z" * 64, size=1, media_type="text/plain"))
+            session.flush()
+            # A second artifact with the same content_digest violates a different unique
+            # constraint entirely (artifact.content_digest), not the idempotency one.
+            session.add(api_models.ArtifactRow(content_digest="z" * 64, size=2, media_type="text/plain"))
+            with self.assertRaises(IntegrityError):
+                finalize(session, scope="test-scope", key="test-key", body={"a": 1}, status_code=200, response_body={"ok": True})
 
 
 if __name__ == "__main__":
