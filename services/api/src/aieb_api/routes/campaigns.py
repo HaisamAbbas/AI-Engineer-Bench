@@ -20,6 +20,7 @@ from ..db import get_session
 from ..errors import conflict, invalid_request, not_found, stale_revision
 from ..idempotency import check_or_reserve, finalize
 from ..models import CampaignRow, EntrantRevisionRow, TaskRevisionRow
+from ..revisions import validate_stored_manifest
 from ..schemas import CampaignCreateRequest, CampaignPatchRequest, CampaignSummary, FreezeRegistry
 
 router = APIRouter(prefix="/v1/campaigns", tags=["campaigns"])
@@ -73,13 +74,17 @@ def patch_campaign(
     # Atomic conditional UPDATE: the state/revision guard is enforced by the database in the
     # same statement that writes the new draft, so two concurrent PATCH requests with the same
     # If-Match cannot both succeed - the second's WHERE clause no longer matches and it falls
-    # through to the diagnostic read below instead of silently clobbering the first.
-    result = session.execute(
+    # through to the diagnostic read below instead of silently clobbering the first. RETURNING
+    # gives back the authoritative post-write row directly, rather than relying on
+    # session.get() and SQLAlchemy's synchronize_session bookkeeping to reflect a raw Core
+    # UPDATE back onto an identity-mapped object.
+    updated = session.execute(
         update(CampaignRow)
         .where(CampaignRow.id == campaign_id, CampaignRow.state == "draft", CampaignRow.revision == expected_revision)
         .values(draft=body.draft.model_dump(mode="json"), revision=CampaignRow.revision + 1)
-    )
-    if result.rowcount == 0:
+        .returning(CampaignRow)
+    ).scalar_one_or_none()
+    if updated is None:
         row = session.get(CampaignRow, campaign_id)
         if row is None:
             raise not_found()
@@ -87,7 +92,7 @@ def patch_campaign(
             raise conflict("only a draft campaign can be edited")
         raise stale_revision()
     session.commit()
-    return _summary(session.get(CampaignRow, campaign_id))
+    return _summary(updated)
 
 
 @router.post("/{campaign_id}/freeze", response_model=CampaignSummary)
@@ -111,11 +116,16 @@ def freeze(
     if row.state != "draft":
         raise conflict(f"cannot freeze a campaign in state {row.state}")
 
+    # Captured now so the final UPDATE's WHERE clause can require the draft to still be at
+    # this exact revision: without this, a PATCH that commits between this read and the
+    # UPDATE below would be silently discarded - the freeze would still match on state='draft'
+    # alone and lock in a snapshot of a draft that is no longer current.
+    observed_revision = row.revision
     draft = CampaignDraft.model_validate(row.draft)
     task_rows = session.execute(select(TaskRevisionRow).where(TaskRevisionRow.slug.in_(draft.task_ids))).scalars().all()
     entrant_rows = session.execute(select(EntrantRevisionRow).where(EntrantRevisionRow.slug.in_(draft.entrant_ids))).scalars().all()
-    tasks = {r.slug: TaskRevision.model_validate(r.manifest) for r in task_rows}
-    entrants = {r.slug: EntrantRevision.model_validate(r.manifest) for r in entrant_rows}
+    tasks = {r.slug: validate_stored_manifest(TaskRevision, r.manifest, kind="task", row_id=r.id) for r in task_rows}
+    entrants = {r.slug: validate_stored_manifest(EntrantRevision, r.manifest, kind="entrant", row_id=r.id) for r in entrant_rows}
     registry = Registry(
         tasks=tasks, entrants=entrants,
         cohorts={registry_body.cohort.id: registry_body.cohort},
@@ -127,24 +137,35 @@ def freeze(
     except PlanningError as exc:
         raise invalid_request(f"campaign cannot be frozen: {exc}") from exc
 
-    # Atomic conditional UPDATE: the state='draft' guard is enforced by the database in the same
-    # statement that writes the frozen manifest. Two concurrent freeze calls can both read
-    # state == 'draft' and both compute a resolved snapshot, but only one's UPDATE can match this
-    # WHERE clause - the loser's rowcount is 0 and it reliably reports a conflict instead of a
-    # second, silently-winning write.
-    result = session.execute(
+    # Atomic conditional UPDATE: state AND revision are both guarded in the same statement
+    # that writes the frozen manifest, so this cannot lose a concurrent PATCH (see above) and
+    # cannot let two concurrent freeze calls both win (only one UPDATE can match this WHERE
+    # clause; the other's rowcount is 0).
+    updated = session.execute(
         update(CampaignRow)
-        .where(CampaignRow.id == campaign_id, CampaignRow.state == "draft")
+        .where(CampaignRow.id == campaign_id, CampaignRow.state == "draft", CampaignRow.revision == observed_revision)
         .values(
             state="frozen", manifest_digest=resolved.digest(), cohort_digest=resolved.cohort.digest(),
             resolved=resolved.model_dump(mode="json"), revision=CampaignRow.revision + 1,
         )
-    )
-    if result.rowcount == 0:
+        .returning(CampaignRow)
+    ).scalar_one_or_none()
+    if updated is None:
+        # Two concurrent freeze calls with the SAME idempotency key both pass check_or_reserve
+        # above (neither has committed yet) and then race this UPDATE; the loser's failure here
+        # is not necessarily a real conflict - it may be the winner's own commit, matched by
+        # key, waiting to be replayed. Re-check the idempotency table (now that the winner, if
+        # any, has committed and this session's own transaction can see it under READ
+        # COMMITTED) before concluding this is a genuine state/revision conflict.
+        replay = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+        if replay is not None:
+            return CampaignSummary.model_validate(replay)
         current = session.get(CampaignRow, campaign_id)
-        raise conflict(f"cannot freeze a campaign in state {current.state}")
+        if current.state != "draft":
+            raise conflict(f"cannot freeze a campaign in state {current.state}")
+        raise conflict("campaign draft changed concurrently; re-read the campaign and retry freeze")
 
-    summary = _summary(session.get(CampaignRow, campaign_id))
+    summary = _summary(updated)
     replay = finalize(
         session, scope=scope, key=idempotency_key, body=request_body,
         status_code=200, response_body=summary.model_dump(mode="json"),
