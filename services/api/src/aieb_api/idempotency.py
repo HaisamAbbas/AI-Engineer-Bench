@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .errors import conflict, invalid_request
@@ -44,3 +45,30 @@ def store(session: Session, *, scope: str, key: str, body: dict[str, Any], statu
             scope=scope, key=key, request_digest=request_digest(body), response_status=status_code, response_body=response_body,
         )
     )
+
+
+def finalize(
+    session: Session, *, scope: str, key: str, body: dict[str, Any], status_code: int, response_body: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Commit the caller's business-logic writes together with the idempotency record.
+
+    `check_or_reserve`'s earlier read is only a fast-path optimization; two
+    concurrent requests with the same key can both pass it. Correctness comes
+    from the (scope, key) unique constraint enforced here: if a concurrent
+    request already committed first, this commit fails, the caller's
+    not-yet-committed writes roll back with it, and the winning transaction's
+    stored response is returned for replay instead (or a 409 if its body
+    differed) - never an unhandled IntegrityError.
+    """
+    store(session, scope=scope, key=key, body=body, status_code=status_code, response_body=response_body)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.execute(
+            select(IdempotencyRecordRow).where(IdempotencyRecordRow.scope == scope, IdempotencyRecordRow.key == key)
+        ).scalar_one()
+        if existing.request_digest != request_digest(body):
+            raise conflict("idempotency key reused with a different request body")
+        return existing.response_body
+    return None

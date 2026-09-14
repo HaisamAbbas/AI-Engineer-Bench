@@ -12,13 +12,13 @@ from uuid import UUID
 from aieb_core.models import CampaignDraft, EntrantRevision, TaskRevision
 from aieb_core.planner import PlanningError, Registry, freeze_campaign
 from fastapi import APIRouter, Depends, Header
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from ..auth import Identity, require_role
 from ..db import get_session
 from ..errors import conflict, invalid_request, not_found, stale_revision
-from ..idempotency import check_or_reserve, store
+from ..idempotency import check_or_reserve, finalize
 from ..models import CampaignRow, EntrantRevisionRow, TaskRevisionRow
 from ..schemas import CampaignCreateRequest, CampaignPatchRequest, CampaignSummary, FreezeRegistry
 
@@ -48,12 +48,11 @@ def create_campaign(
     session.add(row)
     session.flush()
     summary = _summary(row)
-    store(
+    replay = finalize(
         session, scope="POST /v1/campaigns", key=idempotency_key, body=request_body,
         status_code=201, response_body=summary.model_dump(mode="json"),
     )
-    session.commit()
-    return summary
+    return summary if replay is None else CampaignSummary.model_validate(replay)
 
 
 @router.patch("/{campaign_id}", response_model=CampaignSummary)
@@ -64,24 +63,31 @@ def patch_campaign(
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignSummary:
-    row = session.get(CampaignRow, campaign_id)
-    if row is None:
-        raise not_found()
-    if row.state != "draft":
-        raise conflict("only a draft campaign can be edited")
     if if_match is None:
         raise invalid_request("If-Match header with the current revision is required")
     try:
         expected_revision = int(if_match.strip('"'))
     except ValueError as exc:
         raise invalid_request("If-Match must be an integer revision") from exc
-    if expected_revision != row.revision:
-        raise stale_revision()
 
-    row.draft = body.draft.model_dump(mode="json")
-    row.revision += 1
+    # Atomic conditional UPDATE: the state/revision guard is enforced by the database in the
+    # same statement that writes the new draft, so two concurrent PATCH requests with the same
+    # If-Match cannot both succeed - the second's WHERE clause no longer matches and it falls
+    # through to the diagnostic read below instead of silently clobbering the first.
+    result = session.execute(
+        update(CampaignRow)
+        .where(CampaignRow.id == campaign_id, CampaignRow.state == "draft", CampaignRow.revision == expected_revision)
+        .values(draft=body.draft.model_dump(mode="json"), revision=CampaignRow.revision + 1)
+    )
+    if result.rowcount == 0:
+        row = session.get(CampaignRow, campaign_id)
+        if row is None:
+            raise not_found()
+        if row.state != "draft":
+            raise conflict("only a draft campaign can be edited")
+        raise stale_revision()
     session.commit()
-    return _summary(row)
+    return _summary(session.get(CampaignRow, campaign_id))
 
 
 @router.post("/{campaign_id}/freeze", response_model=CampaignSummary)
@@ -121,13 +127,26 @@ def freeze(
     except PlanningError as exc:
         raise invalid_request(f"campaign cannot be frozen: {exc}") from exc
 
-    row.state = "frozen"
-    row.manifest_digest = resolved.digest()
-    row.cohort_digest = resolved.cohort.digest()
-    row.resolved = resolved.model_dump(mode="json")
-    row.revision += 1
-    session.flush()
-    summary = _summary(row)
-    store(session, scope=scope, key=idempotency_key, body=request_body, status_code=200, response_body=summary.model_dump(mode="json"))
-    session.commit()
-    return summary
+    # Atomic conditional UPDATE: the state='draft' guard is enforced by the database in the same
+    # statement that writes the frozen manifest. Two concurrent freeze calls can both read
+    # state == 'draft' and both compute a resolved snapshot, but only one's UPDATE can match this
+    # WHERE clause - the loser's rowcount is 0 and it reliably reports a conflict instead of a
+    # second, silently-winning write.
+    result = session.execute(
+        update(CampaignRow)
+        .where(CampaignRow.id == campaign_id, CampaignRow.state == "draft")
+        .values(
+            state="frozen", manifest_digest=resolved.digest(), cohort_digest=resolved.cohort.digest(),
+            resolved=resolved.model_dump(mode="json"), revision=CampaignRow.revision + 1,
+        )
+    )
+    if result.rowcount == 0:
+        current = session.get(CampaignRow, campaign_id)
+        raise conflict(f"cannot freeze a campaign in state {current.state}")
+
+    summary = _summary(session.get(CampaignRow, campaign_id))
+    replay = finalize(
+        session, scope=scope, key=idempotency_key, body=request_body,
+        status_code=200, response_body=summary.model_dump(mode="json"),
+    )
+    return summary if replay is None else CampaignSummary.model_validate(replay)
