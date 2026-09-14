@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib
 import json
 import os
 import platform
@@ -26,6 +27,23 @@ EXIT_MISSING_CAPABILITY = 3
 EXIT_INFRASTRUCTURE_INCOMPLETE = 4
 EXIT_UNSOLVED = 5
 STATE_SCHEMA = "aieb.local-state/v1"
+
+# Local deterministic development fixtures only.  Each mapping names the candidate
+# package and its maintainer-owned evaluator; there is no candidate-side evaluator import.
+TASK_RUNTIMES = {
+    "rag.document-freshness": ("knowledge_service", "tests.maintainer.rag01.evaluator", "scripts.run_rag01_admission", "evaluate_variant"),
+    "rag.metadata-filter-topk": ("search_service", "tests.maintainer.rag02.evaluator", "scripts.run_rag02_admission", "one"),
+    "rag.citation-current-span": ("citation_service", "tests.maintainer.rag03.evaluator", "scripts.run_rag03_admission", "one"),
+    "rag.embedding-version": ("embedding_service", "tests.maintainer.rag04.evaluator", "scripts.run_rag04_admission", "one"),
+    "ext.missingness": ("missingness_service", "tests.maintainer.ext01.evaluator", "scripts.run_ext01_admission", "run_matrix"),
+    "ext.batch-alignment": ("extraction_service", "tests.maintainer.ext02.evaluator", "scripts.run_ext02_admission", "one"),
+    "ext.unit-normalization": ("unit_service", "tests.maintainer.ext03.evaluator", "scripts.run_ext03_admission", "run_matrix"),
+    "ext.partial-batch": ("batch_service", "tests.maintainer.ext04.evaluator", "scripts.run_ext04_admission", "run_matrix"),
+    "tool.false-completion": ("workflow_service", "tests.maintainer.tool01.evaluator", "scripts.run_tool01_admission", "one"),
+    "tool.idempotent-write": ("write_service", "tests.maintainer.tool02.evaluator", "scripts.run_tool02_admission", "run_matrix"),
+    "tool.session-isolation": ("session_service", "tests.maintainer.tool03.evaluator", "scripts.run_tool03_admission", "run_matrix"),
+    "tool.corrected-arguments": ("correction_service", "tests.maintainer.tool04.evaluator", "scripts.run_tool04_admission", "run_matrix"),
+}
 
 
 class CliError(ValueError):
@@ -161,17 +179,11 @@ def _run(root: Path, state: Path, frozen: dict[str, object]) -> dict[str, object
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     task_id = str(_task_check(task)["task_id"])
-    if task_id == "rag.document-freshness":
-        from tests.maintainer.rag01.evaluator import evaluate
-        source_dir, module = "knowledge_service", "rag.document-freshness"
-    elif task_id == "ext.batch-alignment":
-        from tests.maintainer.ext02.evaluator import evaluate
-        source_dir, module = "extraction_service", "ext.batch-alignment"
-    elif task_id == "tool.false-completion":
-        from tests.maintainer.tool01.evaluator import evaluate
-        source_dir, module = "workflow_service", "tool.false-completion"
-    else:
+    runtime = TASK_RUNTIMES.get(task_id)
+    if runtime is None:
         raise CliError("task has no supported local evaluator")
+    source_dir, evaluator_module, _, _ = runtime
+    evaluate = importlib.import_module(evaluator_module).evaluate
 
     work = state / "work"
     script = state / "deterministic-editor.py"
@@ -243,12 +255,15 @@ def main(argv: list[str] | None = None) -> int:
                 if str(root) not in sys.path:
                     sys.path.insert(0, str(root))
                 task_id = str(info["task_id"])
-                if task_id == "rag.document-freshness": from scripts.run_rag01_admission import evaluate_variant
-                elif task_id == "ext.batch-alignment": from scripts.run_ext02_admission import one as evaluate_variant
-                elif task_id == "tool.false-completion": from scripts.run_tool01_admission import one as evaluate_variant
-                else: raise CliError("task has no supported local evaluator")
-                replacement = None if args.candidate == "baseline" else args.directory / "reference" / "backend.py"
-                info["admission"] = evaluate_variant(args.candidate, replacement)
+                runtime = TASK_RUNTIMES.get(task_id)
+                if runtime is None: raise CliError("task has no supported local evaluator")
+                _, _, admission_module, admission_function = runtime
+                evaluate_variant = getattr(importlib.import_module(admission_module), admission_function)
+                if admission_function == "run_matrix":
+                    info["admission"] = next(row for row in evaluate_variant()["matrix"] if row["variant"] == args.candidate)
+                else:
+                    replacement = None if args.candidate == "baseline" else args.directory / "reference" / "backend.py"
+                    info["admission"] = evaluate_variant(args.candidate, replacement)
             _emit({"message": "task validated", **info}, args); return 0
         if args.command == "plan":
             state, frozen = _freeze(root, args.campaign.resolve()); _emit({"message": "campaign frozen", "campaign_id": frozen["campaign"]["id"], "state": str(state.relative_to(root)), "digest": frozen["campaign_digest"]}, args); return 0
