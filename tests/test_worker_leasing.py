@@ -45,7 +45,7 @@ if DATABASE_URL:
     from aieb_api import models as api_models
     from aieb_api.worker import repository
     from aieb_api.worker.loop import run_worker
-    from aieb_api.worker.reconciler import reconcile_once, teardown_orphan_allocations
+    from aieb_api.worker.reconciler import reconcile_once
     from aieb_api.worker.runner_bridge import execute_leased_work
 
 
@@ -246,13 +246,14 @@ class WorkerLeasingTests(unittest.TestCase):
         engineer_dir = next((self.work_root / str(leased_item.attempt_id) / "runs").glob("attempt-*/engineer"))
         self.assertTrue(engineer_dir.is_dir())  # the killed process's own cleanup never ran
 
-        removed = teardown_orphan_allocations(self.session_factory, self.work_root)
-        self.assertEqual(len(removed), 1)  # genuinely found and removed the orphaned allocation
-        self.assertFalse(engineer_dir.exists())
-
-        summary = reconcile_once(self.session_factory)
+        # Orphan cleanup is driven by reconcile_expired_leases' own locked decision
+        # (returned as orphaned_attempt_ids), not a separate later read, so both
+        # happen in one call.
+        summary = reconcile_once(self.session_factory, self.work_root)
         self.assertEqual(summary.replaced, 1)
         self.assertEqual(summary.resumed, 0)
+        self.assertEqual(summary.orphaned_attempt_ids, (leased_item.attempt_id,))
+        self.assertFalse(engineer_dir.exists())  # genuinely found and removed
         with self.session_factory() as session:
             candidates = session.execute(select(api_models.CandidateRow)).scalars().all()
             self.assertEqual(candidates, [])  # killed before any candidate was collected
@@ -300,6 +301,103 @@ class WorkerLeasingTests(unittest.TestCase):
         session.flush()
         session.commit()
         return row.id
+
+    # ---- second-pass review: record_outcome's fence must be a real lock -----
+
+    def test_concurrent_reconciler_cannot_race_a_record_outcome_still_in_flight(self) -> None:
+        """Review finding #1: record_outcome's fencing check was a plain SELECT,
+        which takes no row lock under READ COMMITTED - a concurrent reconciler
+        sweep could expire-and-replace the same attempt between that check and
+        record_outcome's own commit, letting an already-abandoned worker's
+        results land anyway. The fix makes the fencing check a real UPDATE, so
+        it takes the same row lock the reconciler's SELECT ... FOR UPDATE SKIP
+        LOCKED contends for.
+
+        This calls the real repository.record_outcome (not a reimplementation),
+        using a SQLAlchemy before_commit hook to pause it - with its fencing
+        UPDATE already executed and its row lock already held - while a genuine
+        concurrent reconciler sweep runs in a second real thread, and confirms
+        the reconciler skips the row entirely rather than reconciling out from
+        under the in-flight transaction."""
+        from sqlalchemy import event
+
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            leased = repository.claim_work_item(session, worker_id="racer")
+        self._backdate_lease(leased.work_item_id)  # looks expired to any outside, unlocked read
+
+        barrier = threading.Barrier(2)
+
+        def record_via_real_function() -> bool:
+            with self.session_factory() as session:
+                def _pause_before_commit(sess: object) -> None:
+                    barrier.wait(timeout=5)
+                    time.sleep(0.5)  # hold the row lock open while the reconciler races in below
+
+                event.listen(session, "before_commit", _pause_before_commit)
+                try:
+                    return repository.record_outcome(
+                        session, work_item_id=leased.work_item_id, worker_id="racer", generation=leased.generation,
+                        attempt_id=leased.attempt_id,
+                        candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+                        evaluation=None,
+                    )
+                finally:
+                    event.remove(session, "before_commit", _pause_before_commit)
+
+        results: list[bool] = []
+        record_thread = threading.Thread(target=lambda: results.append(record_via_real_function()))
+
+        def reconcile_concurrently() -> None:
+            barrier.wait(timeout=5)
+            reconcile_once(self.session_factory)
+
+        reconcile_thread = threading.Thread(target=reconcile_concurrently)
+        record_thread.start()
+        reconcile_thread.start()
+        record_thread.join(timeout=10)
+        reconcile_thread.join(timeout=10)
+
+        self.assertEqual(results, [True])
+        with self.session_factory() as session:
+            item = session.get(api_models.WorkItemRow, leased.work_item_id)
+            self.assertEqual(item.state, "leased")  # untouched: the reconciler skipped the locked row
+            candidates = session.execute(select(api_models.CandidateRow)).scalars().all()
+            self.assertEqual(len(candidates), 1)  # the in-flight worker's result legitimately landed
+            ready = session.execute(select(api_models.WorkItemRow).where(api_models.WorkItemRow.state == "ready")).scalars().all()
+            self.assertEqual(ready, [])  # no wasted concurrent replacement was created
+
+    # ---- second-pass review: orphan cleanup must not race a delayed heartbeat --
+
+    def test_reconciler_never_orphans_a_lease_a_live_worker_just_re_extended(self) -> None:
+        """Review finding #2: orphan-file cleanup previously came from a separate,
+        disconnected, unlocked SELECT - a live worker whose heartbeat was merely
+        delayed (GC pause, slow round-trip) could have its files deleted even
+        though its heartbeat succeeds moments later. Cleanup is now driven only
+        by reconcile_expired_leases' own locked decision (orphaned_attempt_ids);
+        a lease a real heartbeat call has just extended must never appear there,
+        even though an earlier point-in-time read would have called it expired."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            leased = repository.claim_work_item(session, worker_id="slow-worker")
+        self._backdate_lease(leased.work_item_id)  # looked expired a moment ago
+
+        engineer_dir = self.work_root / str(leased.attempt_id) / "runs" / "attempt-fake" / "engineer"
+        engineer_dir.mkdir(parents=True)
+        (engineer_dir / "in-progress.txt").write_text("still working", encoding="utf-8")
+
+        # The worker's heartbeat lands and commits before the reconciler's own
+        # locked pass runs - a delayed-but-alive worker, not a dead one.
+        with self.session_factory() as session:
+            self.assertTrue(repository.heartbeat(session, work_item_id=leased.work_item_id, worker_id="slow-worker", generation=leased.generation))
+
+        summary = reconcile_once(self.session_factory, self.work_root)
+        self.assertEqual(summary.replaced, 0)
+        self.assertEqual(summary.orphaned_attempt_ids, ())
+        self.assertTrue(engineer_dir.exists())  # never touched
+        with self.session_factory() as session:
+            item = session.get(api_models.WorkItemRow, leased.work_item_id)
+            self.assertEqual(item.state, "leased")
 
     # ---- 5. lease expiry with an old (stale) worker returning ------------
 
