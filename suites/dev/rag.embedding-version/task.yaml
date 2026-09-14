@@ -1,0 +1,13 @@
+schema_version: aieb.task/v1
+id: rag.embedding-version
+version: 0.1.0
+family_id: knowledge-service-d
+category: rag
+activity: repair
+source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-rag04-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
+environment: {official_image: "registry.example/aieb/rag04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, embedding_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-embedding-v1}
+submission: {include: [embedding_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
+requirements: [{id: api-ready,severity: mandatory,description: ready},{id: current-space-searchable,severity: mandatory,description: compatible query works},{id: cross-version-safe,severity: mandatory,description: incompatible query safe},{id: no-silent-mixing,severity: mandatory,description: no mixed spaces}]
+evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: rag04-dev-v1, official_fixture_ref: maintainer-only:rag04-v1}
+profile_compatibility: [cpu-fixture-standard-v1]

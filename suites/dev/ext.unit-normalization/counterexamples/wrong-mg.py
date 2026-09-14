@@ -1,0 +1,1 @@
+def process(record): return {'id':record['id'],'grams':str(float(record['value'])*({'g':1,'kg':1000,'mg':.01}[record['unit']])), 'evidence':record['value'],'unit':record['unit'],'label':record.get('label')}

@@ -1,0 +1,13 @@
+schema_version: aieb.task/v1
+id: rag.metadata-filter-topk
+version: 0.1.0
+family_id: knowledge-service-b
+category: rag
+activity: repair
+source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-rag02-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
+environment: {official_image: "registry.example/aieb/rag02@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, search_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-search-v1}
+submission: {include: [search_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
+requirements: [{id: api-ready, severity: mandatory, description: ready},{id: filter-before-top-k, severity: mandatory, description: filter before rank},{id: no-cross-filter-results, severity: mandatory, description: no unmatched results},{id: top-k-respected, severity: mandatory, description: bound respected}]
+evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: rag02-dev-v1, official_fixture_ref: maintainer-only:rag02-v1}
+profile_compatibility: [cpu-fixture-standard-v1]

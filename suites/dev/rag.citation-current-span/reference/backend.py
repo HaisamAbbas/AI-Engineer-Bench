@@ -1,0 +1,4 @@
+state={}
+def update(item):
+ state[item['id']]={'text':item['text'],'version':item['version'],'start':0,'end':len(item['text']),'chunk_id':f"{item['id']}:{item['version']}:0"}
+def search(query):return [{"id":k,**v} for k,v in state.items() if query in v['text']]
