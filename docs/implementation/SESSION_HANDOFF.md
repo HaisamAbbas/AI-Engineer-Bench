@@ -1,9 +1,27 @@
 # Session handoff
 
 Updated: 2026-09-14
-Current phase: Prompt 11 — ENG-014 complete (hosted metadata API, auth, migrations)
+Current phase: Prompt 12 — ENG-015 complete (PostgreSQL worker leasing and crash recovery)
 
 ## Current state
+
+ENG-015 is complete. `aieb_api/worker/` (repository, runner_bridge, loop, reconciler, metrics)
+adds atomic work acquisition (`SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`),
+generation/fencing on every state transition, heartbeat/expiry, artifact-first finalization
+(the candidate/evaluation row commits before the work item is marked done, so a crash between
+the two leaves durable evidence), reconciliation (resumes from an already-recorded candidate
+rather than replacing when one exists; otherwise replaces the attempt up to the frozen
+campaign's `max_replacements`), cancellation (`cancel_campaign`/`is_campaign_cancelling`), and
+orphan teardown of local `engineer`/`build` allocations a killed worker's own cleanup never
+reached. `LocalAttemptRunner` (aieb-runner, unchanged in scoring logic) gained one
+backward-compatible optional `cancel_event` parameter so a worker can cooperatively interrupt
+an in-flight attempt, not just stop dispatching new ones. `tests/test_worker_leasing.py` (8
+tests) covers every controlled-failure scenario the prompt names against the same real
+disposable Postgres container ENG-014 uses — including a real OS subprocess that is genuinely
+killed mid-engineering to prove orphan teardown against actual leftover files, not simulated
+state. `enqueue_frozen_campaign` is an internal capability (not yet wired to any HTTP route);
+`POST /campaigns/{id}/start` with budget reservations remains ENG-017. Local CLI functionality
+is untouched. No remote deployment occurred.
 
 ENG-014 is complete. `services/api` (new workspace member `aieb-api`) persists exactly the
 tables spec section 30 names — task/evaluator/fixture revision, suite release/task, entrant
@@ -57,6 +75,9 @@ cd services/api; ..\..\.venv\Scripts\python.exe -m alembic upgrade head; cd ..\.
 $env:AIEB_ENV = "test"
 .\.venv\Scripts\python.exe -m unittest tests.test_api_auth tests.test_api_service -v
 .\.venv\Scripts\python.exe scripts\generate_openapi.py
+
+# ENG-015 (same test Postgres instance; see docs/implementation/evidence/ENG-015/worker-service.md)
+.\.venv\Scripts\python.exe -m unittest tests.test_worker_leasing tests.test_attempt_lifecycle -v
 ```
 
 ## Continuing working rules
@@ -75,7 +96,9 @@ $env:AIEB_ENV = "test"
 
 ## Recommended next prompt
 
-Prompt 12 (ENG-015): PostgreSQL worker leasing and crash recovery against the `work_item`/
-`attempt` tables ENG-014 already persists. Separately, independent task reviews remain a
-precondition before any admitted-only ENG-013 release manifest can be created; ENG-012 remains
-blocked on provider/model authorization, credentials, and spend cap.
+Prompt 13 (ENG-016): the public website and compare views, now that ENG-011's analysis package
+and ENG-014's registry/results API exist to serve it. Separately, independent task reviews
+remain a precondition before any admitted-only ENG-013 release manifest can be created; ENG-012
+remains blocked on provider/model authorization, credentials, and spend cap; ENG-017 (admin
+campaigns, budget reservations, `POST /campaigns/{id}/start`) is the next hosted-API dependency
+now that ENG-015's leasing layer exists for it to dispatch onto.
