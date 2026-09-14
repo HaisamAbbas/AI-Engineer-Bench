@@ -1,0 +1,1 @@
+[{"session_id": "user-a", "action": "draft", "target": "file-1"}, {"session_id": "user-a", "action": "correct", "target": "file-2"}, {"session_id": "user-a", "action": "execute"}]
