@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -179,19 +180,9 @@ class ApiServiceTests(unittest.TestCase):
 
     # ---- invalid state transitions -------------------------------------
 
-    def test_freeze_twice_is_conflict(self) -> None:
-        self._seed_task()
-        self._seed_entrant()
-        draft = {
-            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
-            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
-            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
-        }
-        create = self.client.post(
-            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-4"}
-        )
-        campaign_id = create.json()["id"]
-        registry = {
+    @staticmethod
+    def _registry_payload() -> dict:
+        return {
             "cohort": {
                 "schema_version": "aieb.cohort/v1", "id": "cohort-a", "track": "agents", "suite_id": "suite-a",
                 "protocol_id": "protocol-a", "budget_profile_id": "budget-a", "dependency_mode": "fixture",
@@ -208,12 +199,127 @@ class ApiServiceTests(unittest.TestCase):
                 ],
             },
         }
+
+    def test_freeze_twice_is_conflict(self) -> None:
+        self._seed_task()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-4"}
+        )
+        campaign_id = create.json()["id"]
+        registry = self._registry_payload()
         headers = _auth_header(("operator",))
         first = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers | {"Idempotency-Key": "freeze-1"})
         self.assertEqual(first.status_code, 200)
         self.assertEqual(first.json()["state"], "frozen")
         second = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers | {"Idempotency-Key": "freeze-2"})
         self.assertEqual(second.status_code, 409)
+
+    def test_concurrent_freeze_only_one_winner(self) -> None:
+        """Two concurrent freeze calls with DIFFERENT idempotency keys race on the same
+        campaign; the atomic state='draft' guard must let exactly one through, not let the
+        second silently overwrite the first's resolved snapshot (review finding #2)."""
+        self._seed_task()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-race"}
+        )
+        campaign_id = create.json()["id"]
+        registry = self._registry_payload()
+        headers = _auth_header(("operator",))
+        barrier = threading.Barrier(2)
+        results: list[int] = []
+
+        def call(key: str) -> None:
+            barrier.wait(timeout=5)
+            response = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers | {"Idempotency-Key": key})
+            results.append(response.status_code)
+
+        threads = [threading.Thread(target=call, args=(f"freeze-race-{i}",)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(sorted(results), [200, 409])
+        with db.session_factory()() as session:
+            row = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            self.assertEqual(row.state, "frozen")
+            self.assertEqual(row.revision, 1)  # exactly one transition, not two
+
+    def test_concurrent_patch_with_same_if_match_only_one_winner(self) -> None:
+        """Two concurrent PATCH requests with the same If-Match must not both succeed
+        (review finding #1): the loser must see a 412, not silently lose its write."""
+        self._seed_task()
+        self._seed_entrant()
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        create = self.client.post(
+            "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-patch-race"}
+        )
+        campaign_id = create.json()["id"]
+        headers = _auth_header(("operator",)) | {"If-Match": "0"}
+        barrier = threading.Barrier(2)
+        results: list[int] = []
+
+        def call(repetitions: int) -> None:
+            variant = {**draft, "repetitions": repetitions}
+            barrier.wait(timeout=5)
+            response = self.client.patch(f"/v1/campaigns/{campaign_id}", json={"draft": variant}, headers=headers)
+            results.append(response.status_code)
+
+        threads = [threading.Thread(target=call, args=(reps,)) for reps in (2, 3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(sorted(results), [200, 412])
+        with db.session_factory()() as session:
+            row = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            self.assertEqual(row.revision, 1)  # exactly one edit applied, not two
+
+    def test_concurrent_create_with_same_key_no_duplicate_and_no_500(self) -> None:
+        """Review finding #3: check-then-insert in the idempotency layer is not atomic on
+        its own; concurrent requests with the same key must not raise an unhandled
+        IntegrityError, and must not create two campaign rows."""
+        draft = {
+            "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+            "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+            "repetitions": 1, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+        }
+        headers = _auth_header(("operator",)) | {"Idempotency-Key": "key-create-race"}
+        barrier = threading.Barrier(2)
+        results: list[tuple[int, dict]] = []
+
+        def call() -> None:
+            barrier.wait(timeout=5)
+            response = self.client.post("/v1/campaigns", json={"name": "a", "draft": draft}, headers=headers)
+            results.append((response.status_code, response.json()))
+
+        threads = [threading.Thread(target=call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertTrue(all(status == 201 for status, _ in results), results)
+        self.assertEqual(results[0][1], results[1][1])
+        with db.session_factory()() as session:
+            self.assertEqual(session.query(api_models.CampaignRow).count(), 1)
 
     # ---- corrupt manifests ---------------------------------------------
 
@@ -228,28 +334,36 @@ class ApiServiceTests(unittest.TestCase):
             "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-5"}
         )
         campaign_id = create.json()["id"]
-        registry = {
-            "cohort": {
-                "schema_version": "aieb.cohort/v1", "id": "cohort-a", "track": "agents", "suite_id": "suite-a",
-                "protocol_id": "protocol-a", "budget_profile_id": "budget-a", "dependency_mode": "fixture",
-                "application_model_profile": {"dependency_mode": "fixture", "entrypoint": ["python"], "contract_digest": "5" * 64, "model_profile_id": "deterministic-rag-fixture-v1"},
-                "hardware_class": "cpu-fixture-standard-v1", "required_capabilities": ["cpu-fixture-standard-v1"],
-            },
-            "protocol": {"schema_version": "aieb.protocol/v1", "id": "protocol-a", "scoring_digest": "9" * 64, "max_replacements": 2, "required_trace_coverage": False, "hard_cost_ranking": False},
-            "budget": {
-                "schema_version": "aieb.budget/v1", "id": "budget-a", "engineer_wall_seconds": 1200, "verification_wall_seconds": 300,
-                "engineer_cpu": 2, "engineer_memory_mb": 1024,
-                "per_role_budget_usd": [
-                    {"role": "engineer", "limit_usd": None}, {"role": "dev_application", "limit_usd": None},
-                    {"role": "verifier_application", "limit_usd": None}, {"role": "verifier_judge", "limit_usd": None},
-                ],
-            },
-        }
         response = self.client.post(
-            f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=_auth_header(("operator",)) | {"Idempotency-Key": "freeze-corrupt"}
+            f"/v1/campaigns/{campaign_id}/freeze", json=self._registry_payload(), headers=_auth_header(("operator",)) | {"Idempotency-Key": "freeze-corrupt"}
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "invalid_request")
+
+    def test_corrupt_task_manifest_is_503_not_500(self) -> None:
+        with db.session_factory()() as session:
+            evaluator_id = self._seed_evaluator(session)
+            session.add(api_models.TaskRevisionRow(
+                slug="corrupt.task", version="0.1.0", family_id="knowledge-service-a", category="rag",
+                source_digest="1" * 64, manifest_digest="d" * 64, evaluator_id=evaluator_id,
+                manifest={"not": "a valid TaskRevision at all"},
+            ))
+            session.commit()
+        response = self.client.get("/v1/tasks/corrupt.task/revisions/0.1.0")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
+    # ---- trial access is role-gated, not merely authenticated -----------
+
+    def test_get_trial_requires_operator_reviewer_or_admin_role(self) -> None:
+        trial_id = uuid.uuid4()
+        response = self.client.get(f"/v1/trials/{trial_id}", headers=_auth_header(("submitter",)))
+        self.assertEqual(response.status_code, 403)
+
+    def test_get_trial_allows_reviewer_role(self) -> None:
+        trial_id = uuid.uuid4()
+        response = self.client.get(f"/v1/trials/{trial_id}", headers=_auth_header(("reviewer",)))
+        self.assertEqual(response.status_code, 404)  # role passes; trial itself does not exist
 
     # ---- auth fails closed / role enforcement --------------------------
 
