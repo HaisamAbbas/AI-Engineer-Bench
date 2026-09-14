@@ -16,7 +16,11 @@ def request(base: str, method: str, path: str, body: object | None = None) -> tu
         with urlopen(Request(base + path, data=data, method=method, headers={"Content-Type":"application/json"}), timeout=3) as response:
             return response.status, json.loads(response.read())
     except HTTPError as error:
-        return error.code, json.loads(error.read())
+        body = error.read()
+        try:
+            return error.code, json.loads(body)
+        except json.JSONDecodeError:
+            return error.code, {"error": body.decode("utf-8", errors="replace")}
 
 class CandidateProcess:
     def __init__(self, repo: Path, module: str, env: dict[str, str] | None = None) -> None:
