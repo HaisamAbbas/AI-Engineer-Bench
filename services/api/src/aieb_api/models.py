@@ -1,0 +1,395 @@
+"""PostgreSQL persistence models for hosted metadata (ENG-014).
+
+Resolved manifests live as JSONB alongside typed searchable columns; JSONB
+does not replace core referential integrity (spec section 30). Money is
+stored as NUMERIC micro-USD, never binary float. NULL means unknown usage,
+distinct from zero (spec section 30/20).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from .db import Base
+
+
+def _uuid_pk() -> Mapped[uuid.UUID]:
+    return mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+
+def _timestamps() -> tuple[Mapped[datetime], Mapped[datetime]]:
+    created = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    return created, updated
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    oidc_subject: Mapped[str] = mapped_column(String(256), nullable=False)
+    oidc_issuer: Mapped[str] = mapped_column(String(256), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_issuer_subject"),)
+
+
+class RoleBinding(Base):
+    __tablename__ = "role_bindings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "role in ('visitor','local_developer','submitter','operator','reviewer','administrator')",
+            name="ck_role_bindings_role",
+        ),
+        UniqueConstraint("user_id", "role", "scope", name="uq_role_bindings_identity"),
+        Index("ix_role_bindings_user", "user_id"),
+    )
+
+
+class TaskRevisionRow(Base):
+    __tablename__ = "task_revision"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    family_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluator_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluator_revision.id"), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("slug", "version", name="uq_task_revision_slug_version"),
+        Index("ix_task_revision_family_category", "family_id", "category"),
+    )
+
+
+class EvaluatorRevisionRow(Base):
+    __tablename__ = "evaluator_revision"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending-independent-review")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("code_digest", "contract_version", name="uq_evaluator_revision_digest_contract"),
+        CheckConstraint(
+            "review_status in ('pending-independent-review','reviewed','rejected')",
+            name="ck_evaluator_revision_review_status",
+        ),
+    )
+
+
+class FixtureRevisionRow(Base):
+    __tablename__ = "fixture_revision"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False)
+    family_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("visibility in ('public','restricted')", name="ck_fixture_revision_visibility"),)
+
+
+class SuiteReleaseRow(Base):
+    __tablename__ = "suite_release"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    release_version: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("status in ('draft','released','deprecated','withdrawn')", name="ck_suite_release_status"),)
+
+
+class SuiteTaskRow(Base):
+    __tablename__ = "suite_task"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    suite_release_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("suite_release.id"), nullable=False)
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
+    weight: Mapped[str] = mapped_column(Numeric(9, 6), nullable=False, default="1.0")
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    frozen: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+    __table_args__ = (UniqueConstraint("suite_release_id", "task_revision_id", name="uq_suite_task_release_task"),)
+
+
+class EntrantRevisionRow(Base):
+    __tablename__ = "entrant_revision"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    track: Mapped[str] = mapped_column(String(16), nullable=False)
+    config_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    capabilities: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("slug", "version", name="uq_entrant_revision_slug_version"),
+        CheckConstraint("track in ('agents','models')", name="ck_entrant_revision_track"),
+    )
+
+
+class CampaignRow(Base):
+    __tablename__ = "campaign"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    draft: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    cohort_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reservation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    submitter_note: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('draft','frozen','running','paused','cancelling','cancelled','completed','incomplete')",
+            name="ck_campaign_state",
+        ),
+        Index("ix_campaign_state", "state"),
+    )
+
+
+class TrialRow(Base):
+    __tablename__ = "trial"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=False)
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
+    entrant_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("entrant_revision.id"), nullable=False)
+    repetition: Mapped[int] = mapped_column(Integer, nullable=False)
+    cell_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id", "task_revision_id", "entrant_revision_id", "repetition", name="uq_trial_campaign_task_entrant_repetition"
+        ),
+    )
+
+
+class AttemptRow(Base):
+    __tablename__ = "attempt"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    trial_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("trial.id"), nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    phase: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    terminal_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("trial_id", "number", name="uq_attempt_trial_number"),
+        CheckConstraint(
+            "phase in ('queued','provisioning','engineering','collecting','building','verifying','finalizing','terminal')",
+            name="ck_attempt_phase",
+        ),
+    )
+
+
+class WorkItemRow(Base):
+    __tablename__ = "work_item"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=True)
+    evaluation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluation.id"), nullable=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="ready")
+    lease_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("state in ('ready','leased','done','failed')", name="ck_work_item_state"),
+        Index("ix_work_item_ready_lease", "state", "lease_expiry", postgresql_where=(state == "ready")),
+    )
+
+
+class CandidateRow(Base):
+    __tablename__ = "candidate"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=False)
+    tree_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "tree_digest", name="uq_candidate_attempt_tree"),
+        CheckConstraint("validation_status in ('pending','valid','rejected')", name="ck_candidate_validation_status"),
+    )
+
+
+class EvaluationRow(Base):
+    __tablename__ = "evaluation"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    candidate_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("candidate.id"), nullable=False)
+    evaluator_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluator_revision.id"), nullable=False)
+    fixture_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("fixture_revision.id"), nullable=False)
+    schedule_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "evaluator_id", "fixture_id", "schedule_digest", name="uq_evaluation_plan_digest"),
+        CheckConstraint("verdict is null or verdict in ('pass','fail','contract_violation','indeterminate')", name="ck_evaluation_verdict"),
+    )
+
+
+class ArtifactRow(Base):
+    __tablename__ = "artifact"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ArtifactRefRow(Base):
+    __tablename__ = "artifact_ref"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    artifact_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("artifact.id"), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("visibility in ('public','private')", name="ck_artifact_ref_visibility"),)
+
+
+class UsageRequestRow(Base):
+    __tablename__ = "usage_request"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reservation_usd: Mapped[str | None] = mapped_column(Numeric(20, 6), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("actor_role", "request_id", name="uq_usage_request_scoped_identity"),
+        CheckConstraint(
+            "actor_role in ('engineer','dev_application','verifier_application','verifier_judge')",
+            name="ck_usage_request_actor_role",
+        ),
+    )
+
+
+class UsageReceiptRow(Base):
+    __tablename__ = "usage_receipt"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    usage_request_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("usage_request.id"), nullable=False)
+    physical_retry: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reported_cost_usd: Mapped[str | None] = mapped_column(Numeric(20, 6), nullable=True)
+    estimated_cost_usd: Mapped[str | None] = mapped_column(Numeric(20, 6), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("usage_request_id", "physical_retry", name="uq_usage_receipt_scoped_identity"),
+    )
+
+
+class PublicationRow(Base):
+    __tablename__ = "publication"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=False)
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="published")
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
+    reviewer_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('published','withdrawn','superseded')", name="ck_publication_status"),
+        Index("ix_publication_chronology", "created_at"),
+    )
+
+
+class ReviewRow(Base):
+    __tablename__ = "review"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    reviewer_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("decision in ('approve','reject')", name="ck_review_decision"),)
+
+
+class AuditEventRow(Base):
+    __tablename__ = "audit_event"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_audit_event_target", "target_type", "target_id"),)
+
+
+class IdempotencyRecordRow(Base):
+    """API-01: same key + same body replays the stored response; same key + different body is 409."""
+
+    __tablename__ = "idempotency_record"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),)
