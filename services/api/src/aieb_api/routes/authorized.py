@@ -2,6 +2,15 @@
 
 Artifact authorization is reference-scoped: an unauthorized private
 reference returns 404, never a 403 that would confirm existence (API-02).
+
+Trial records include campaign/task/entrant internals and attempt phase
+data that spec section 3 restricts to operator/reviewer/administrator
+roles ("raw run artifacts as assigned", "assigned evaluation evidence");
+a submitter or bare visitor identity is not sufficient. Per-trial
+ownership scoping (a submitter seeing only their own campaign's trials)
+is deferred - campaigns have no owner column yet - so this is a role
+gate, not the finer scoped-private-record behavior spec names as a
+future refinement.
 """
 
 from __future__ import annotations
@@ -13,7 +22,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import Identity, get_identity
+from ..auth import Identity, get_identity, require_role
 from ..db import get_session
 from ..errors import not_found
 from ..models import ArtifactRefRow, ArtifactRow, AttemptRow, TrialRow
@@ -22,7 +31,11 @@ router = APIRouter(prefix="/v1", tags=["authorized"])
 
 
 @router.get("/trials/{trial_id}")
-def get_trial(trial_id: UUID, identity: Identity = Depends(get_identity), session: Session = Depends(get_session)) -> dict:
+def get_trial(
+    trial_id: UUID,
+    identity: Identity = Depends(require_role("operator", "reviewer", "administrator")),
+    session: Session = Depends(get_session),
+) -> dict:
     row = session.get(TrialRow, trial_id)
     if row is None:
         raise not_found()

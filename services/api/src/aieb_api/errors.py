@@ -91,3 +91,10 @@ def stale_revision() -> ApiError:
 
 def invalid_request(message: str, field_errors: dict[str, str] | None = None) -> ApiError:
     return ApiError(400, "invalid_request", message, field_errors=field_errors)
+
+
+def service_unavailable(message: str) -> ApiError:
+    """A stored record failed to validate against its own contract - a server-side data
+    integrity fault, not a client mistake. Not retryable in the immediate sense, but not a
+    404 either: the record exists, and its existence should not be hidden from an operator."""
+    return ApiError(503, "service_unavailable", message, retryable=False)

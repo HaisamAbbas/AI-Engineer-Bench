@@ -44,10 +44,11 @@ class JWKSIdentityProvider:
             claims = jwt.decode(
                 token, signing_key.key, algorithms=["RS256"], audience=self._audience, issuer=self._issuer,
             )
-        except jwt.PyJWTError as exc:
+            subject = claims["sub"]
+        except (jwt.PyJWTError, KeyError) as exc:
             raise unauthenticated(f"invalid token: {exc}") from exc
         roles = tuple(claims.get("aieb_roles", ()))
-        return Identity(subject=str(claims["sub"]), issuer=self._issuer, roles=roles)
+        return Identity(subject=str(subject), issuer=self._issuer, roles=roles)
 
 
 class TestIdentityProvider:
@@ -61,10 +62,11 @@ class TestIdentityProvider:
     def verify(self, token: str) -> Identity:
         try:
             claims = jwt.decode(token, self._secret, algorithms=["HS256"], options={"verify_aud": False})
-        except jwt.PyJWTError as exc:
+            subject = claims["sub"]
+        except (jwt.PyJWTError, KeyError) as exc:
             raise unauthenticated(f"invalid token: {exc}") from exc
         roles = tuple(claims.get("aieb_roles", ()))
-        return Identity(subject=str(claims["sub"]), issuer=str(claims.get("iss", "test")), roles=roles)
+        return Identity(subject=str(subject), issuer=str(claims.get("iss", "test")), roles=roles)
 
 
 _provider: IdentityProvider | None = None
