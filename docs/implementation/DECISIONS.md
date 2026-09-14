@@ -160,3 +160,10 @@ This log records implementation choices made while executing the source specific
 - Status: accepted
 - Decision: do not add a standalone "admission ledger" artifact or a frozen admitted-only release manifest for the development suite. `suites/dev/catalog.json` already records `review_status: pending-independent-review` for all twelve tasks, and this file (`DECISIONS.md`) is the project's existing decision ledger; a second, parallel ledger would duplicate it without adding evidence.
 - Consequence: ENG-021's independent review gate remains the actual precondition for a release manifest; no tooling exists yet that would let a frozen manifest be produced before that gate clears.
+
+## ENG013-005 - Complete the missing dev_data/dev_tests/environment fixtures on seven tasks
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: `rag.embedding-version`, `ext.missingness`, `ext.unit-normalization`, `ext.partial-batch`, `tool.idempotent-write`, `tool.session-isolation`, and `tool.corrected-arguments` were missing the `dev_data/`, `dev_tests/`, and `environment/` directories the specification requires for every task (spec table row: "Visible diagnostic examples: Yes") and that every other catalogued task already had. Add task-specific sample records/queries/jobs that were verified against each task's own reference implementation, a `dev_tests/README.md` stating what remains maintainer-only, and an `environment/README.md` stating runtime requirements.
+- Consequence: all twelve catalogued tasks now share the same required directory shape; no task's local admission evidence rests on an incomplete package.
