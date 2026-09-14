@@ -167,3 +167,31 @@ This log records implementation choices made while executing the source specific
 - Status: accepted
 - Decision: `rag.embedding-version`, `ext.missingness`, `ext.unit-normalization`, `ext.partial-batch`, `tool.idempotent-write`, `tool.session-isolation`, and `tool.corrected-arguments` were missing the `dev_data/`, `dev_tests/`, and `environment/` directories the specification requires for every task (spec table row: "Visible diagnostic examples: Yes") and that every other catalogued task already had. Add task-specific sample records/queries/jobs that were verified against each task's own reference implementation, a `dev_tests/README.md` stating what remains maintainer-only, and an `environment/README.md` stating runtime requirements.
 - Consequence: all twelve catalogued tasks now share the same required directory shape; no task's local admission evidence rests on an incomplete package.
+
+## ENG014-001 - Persist section 30's table list directly; leave cohort/protocol/budget as request-supplied registry input
+
+- Date: 2026-09-14
+- Status: accepted for the hosted metadata API
+- Decision: `services/api` persists exactly the tables spec section 30 names (task/evaluator/fixture revision, suite release/task, entrant revision, campaign, trial, attempt, work_item, candidate, evaluation, artifact/ref, usage_request/receipt, publication, review, audit_event) plus `idempotency_record` for API-01. Section 30 does not list separate hosted tables for Cohort/ProtocolRevision/BudgetProfile, so `POST /v1/campaigns/{id}/freeze` accepts them in the request body and resolves the draft through the existing `aieb_core.planner.freeze_campaign`, the same pure function the local CLI already uses.
+- Consequence: no unlisted table was invented to work around an ambiguity; if cohort/protocol/budget persistence turns out to be required, it is a scoped follow-up ticket, not a silent addition here.
+
+## ENG014-002 - OIDC auth fails closed; the test identity provider cannot run outside tests
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: `JWKSIdentityProvider` verifies RS256 tokens against a real issuer/JWKS/audience. When `AIEB_OIDC_ISSUER`/`AIEB_OIDC_JWKS_URL`/`AIEB_OIDC_AUDIENCE` are unset, no provider is configured and every authenticated route returns 401. `TestIdentityProvider` (HS256 shared secret) raises `RuntimeError` in its constructor unless `AIEB_ENV=test`.
+- Consequence: an unconfigured production deployment cannot silently allow requests through; a test-only bypass cannot be wired into production by a missed environment variable alone.
+
+## ENG014-003 - Test against a real, disposable PostgreSQL instance, not sqlite
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: `tests/test_api_service.py` requires `AIEB_DATABASE_URL` pointing at a real PostgreSQL instance (a disposable Docker container in this session, isolated on port 5544 from an unrelated project's Postgres already running on 5432) and skips rather than substituting sqlite when it is unset. Running against real Postgres caught two real bugs during development: a test fixture using a non-existent foreign-key owner, and a test fixture using the wrong `profile_compatibility` value against the planner's actual compatibility rule — neither would have surfaced against a mocked or sqlite-backed session.
+- Consequence: API-01/API-02/migration-compatibility evidence reflects actual PostgreSQL constraint enforcement, not an approximation.
+
+## ENG014-004 - Defer TypeScript client generation until apps/web exists
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: `scripts/generate_openapi.py` regenerates `docs/implementation/evidence/ENG-014/openapi.json` reproducibly, satisfying "generate OpenAPI ... artifacts." Generating a TypeScript client from it is deferred until `apps/web` exists (ENG-016); a client with no consumer would be premature scaffolding, consistent with BOOT-003's decision to defer `apps/web` until its own ticket.
+- Consequence: when ENG-016 begins, it generates the TS client from this same checked-in OpenAPI schema rather than duplicating API definitions by hand.
