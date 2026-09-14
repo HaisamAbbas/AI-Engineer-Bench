@@ -1,3 +1,3 @@
 # Python workspace packages
 
-Packages are added only when their owning engineering ticket starts. ENG-001 introduced `aieb-runner`, containing the backend-neutral execution protocol and the pinned Harbor adapter used by the disposable compatibility fixture. No unrelated placeholder distributions exist.
+Packages are added only when their owning engineering ticket starts. `aieb-core` owns schemas, identities, and planning. `aieb-runner` owns the backend-neutral execution protocol, the pinned Harbor adapter, and the local candidate-artifact store. No unrelated placeholder distributions exist.

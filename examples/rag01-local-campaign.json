@@ -1,0 +1,6 @@
+{
+  "schema_version": "aieb.local-campaign/v1",
+  "id": "rag01-reference-local",
+  "task_dir": "suites/dev/rag.document-freshness",
+  "candidate": "reference"
+}

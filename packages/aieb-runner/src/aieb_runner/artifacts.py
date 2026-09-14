@@ -212,7 +212,9 @@ def _walk_regular_files(root: Path, *, reject_hardlinks: bool = True) -> dict[st
             for entry in entries:
                 entry_path = Path(entry.path)
                 relative = _safe_relative(entry_path.relative_to(root).as_posix())
-                metadata = entry.stat(follow_symlinks=False)
+                # DirEntry.stat() returns zero file identifiers in the managed
+                # Windows sandbox; os.stat() provides the actual stable identity.
+                metadata = os.stat(entry_path, follow_symlinks=False)
                 if stat.S_ISLNK(metadata.st_mode):
                     raise ArtifactValidationError(f"symlink is forbidden: {relative}")
                 if stat.S_ISDIR(metadata.st_mode):

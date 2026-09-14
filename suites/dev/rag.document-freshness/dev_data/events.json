@@ -1,0 +1,4 @@
+[
+  {"id": "dev-document", "version": 1, "text": "visible seed fact", "metadata": {"group": "dev"}},
+  {"id": "dev-document", "version": 2, "text": "visible replacement fact", "metadata": {"group": "dev"}}
+]

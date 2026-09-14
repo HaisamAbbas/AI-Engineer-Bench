@@ -1,29 +1,28 @@
 # Session handoff
 
-Updated: 2026-09-13  
-Completed phase: Prompt 03 — ENG-002 core contracts, identities, and planning
+Updated: 2026-09-14
+Completed phase: Prompt 07 — ENG-008 role-separated accounting and ENG-009 local CLI
 
 ## Current state
 
-`packages/aieb-core` is a dependency-light core package with no Harbor, API, web, or execution imports. It contains strict Pydantic 2.13.5 contracts for the 14 requested domain envelopes, canonical JSON serialization/content hashes, YAML parsing only as an input convenience, and pure campaign reference resolution/freezing.
+ENG-008 and ENG-009 are complete for local deterministic RAG-01 development. `aieb-runner` has a receipt ledger separated by engineer, development application, verifier application, and verifier judge roles. It deduplicates broker and adapter observations by attempt/role/request/physical retry, preserves unknown billing after a lost response, and never turns unavailable usage into zero. Hard monetary enforcement is used only if a provider supplies a conservative reservation; otherwise it is explicitly `estimated_time_limited`.
 
-Core content identities use SHA-256 over sorted-key UTF-8 JSON with explicit nulls. Floating-point values, NaN, and Infinity are rejected; schema-owned decimal strings are normalized. The public contract rejects unsupported schema majors, unknown fields, duplicate requirements, floating official images, unsafe submission/candidate paths, invalid result envelopes, and duplicate frozen trial identities.
+The `aieb` local CLI supports `doctor`, `task validate`, `task verify`, `plan`, `run`, `resume`, `inspect`, and `report`. It writes versioned JSON output, frozen local state, JSONL events, immutable attempt evidence, and static HTML. The supported campaign scope is RAG-01 baseline/reference deterministic development candidates. A completed unsolved task is normal data and exits 0 unless `--fail-on-unsolved` is selected (exit 5). Local controller locking and frozen-manifest checking prevent concurrent or silently changed resumes.
 
-The planner resolves only known references, validates task/cohort/dependency/resource/capability compatibility, then deterministically expands and shuffles the task × entrant × repetition matrix. `CampaignDraft` remains editable input; `ResolvedCampaign` is a distinct frozen object. The 3 × 2 × 3 pilot test produces exactly 18 unique UUIDv5 trial identities.
-
-ENG-002 is `COMPLETE`. Its evidence is in `docs/implementation/evidence/ENG-002/`. The only current ENG-001 blocker remains the explicitly unauthorized real installed-agent smoke; nothing in ENG-002 changes that status. No benchmark result, API, website, task admission, campaign execution, deployment, commit, push, or publication occurred.
+No credential values are accepted in task/campaign documents or emitted to output/artifacts. The deterministic reference editor exists only to validate the vertical path; it is not real-agent compatibility evidence. Provider billing, hard cost reservations, and complete tool/cost traces are unavailable and visibly not claimed. ENG-001 real-agent smoke, ENG-019 official isolation, and RAG-01 independent human review remain blocked/pending as previously recorded.
 
 ## Commands
 
 ```powershell
 uv sync --all-packages --locked
-.\.venv\Scripts\python.exe scripts/generate_core_schemas.py
-.\.venv\Scripts\python.exe -m unittest tests.test_core_contracts -v
-uv lock --check
-./dev.ps1 check
+.\.venv\Scripts\aieb.exe --json --no-color doctor
+.\.venv\Scripts\aieb.exe task validate suites\dev\rag.document-freshness
+.\.venv\Scripts\aieb.exe plan --campaign examples\rag01-local-campaign.json
+.\.venv\Scripts\aieb.exe run --campaign examples\rag01-local-campaign.json
+.\.venv\Scripts\aieb.exe inspect --trial rag01-reference-local
+.\.venv\Scripts\aieb.exe report --campaign rag01-reference-local --format html
+.\.venv\Scripts\python.exe -m unittest tests.test_accounting_and_cli -v
 ```
-
-The final repository check passed 13 tests. The optional Docker compatibility test is skipped by default and was not rerun in this phase.
 
 ## Continuing working rules
 
@@ -42,4 +41,4 @@ Existing or future `AGENTS.md` instructions remain authoritative and must not be
 
 ## Recommended next prompt
 
-Implement ENG-003 only: a local content-addressed artifact store and safe extraction/replay boundary. Use the CandidateManifest contract, retain allowed new untracked files, reject escaping symlinks and unsafe file types, validate manifest paths/sizes/hashes, and add EX-01/SE-01 evidence. Do not create hosted storage, API, web, or a scientific task yet.
+Implement Prompt 08: ENG-010 additional extraction and tool-application task families through the existing CLI/execution/replay/report path. Do not broaden to hosted services or claim real-agent/provider evidence.

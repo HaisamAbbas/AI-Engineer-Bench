@@ -1,0 +1,43 @@
+# Development task candidate; not an admitted or released benchmark result.
+schema_version: aieb.task/v1
+id: rag.document-freshness
+version: 0.1.0
+family_id: knowledge-service-a
+category: rag
+activity: repair
+source:
+  repository_digest: 1111111111111111111111111111111111111111111111111111111111111111
+  commit: synthetic-rag01-v1
+  license: Apache-2.0
+  provenance_digest: 2222222222222222222222222222222222222222222222222222222222222222
+environment:
+  official_image: registry.example/aieb/rag01@sha256:3333333333333333333333333333333333333333333333333333333333333333
+  engineer_cpu: 1
+  engineer_memory_mb: 512
+  service_topology_digest: 4444444444444444444444444444444444444444444444444444444444444444
+  egress_policy: none
+application:
+  dependency_mode: fixture
+  entrypoint: [python, -m, knowledge_service.server]
+  contract_digest: 5555555555555555555555555555555555555555555555555555555555555555
+  model_profile_id: deterministic-rag-fixture-v1
+submission:
+  include: [knowledge_service/**]
+  protected: [dev_tests/**]
+  max_artifact_bytes: 52428800
+requirements:
+  - {id: api-ready, severity: mandatory, description: Health returns ready status.}
+  - {id: latest-version-visible, severity: mandatory, description: Higher versions replace stale searchable text before success response.}
+  - {id: idempotent-event-replay, severity: mandatory, description: Identical accepted events do not duplicate hits.}
+  - {id: equal-version-conflict, severity: mandatory, description: Equal version with a different payload conflicts.}
+  - {id: lower-version-rejected, severity: mandatory, description: Lower versions cannot supersede newer state.}
+  - {id: deleted-content-absent, severity: mandatory, description: Tombstones prevent stale resurrection.}
+  - {id: higher-version-recreation, severity: mandatory, description: A higher version may recreate a deleted document.}
+  - {id: unaffected-documents-preserved, severity: mandatory, description: Unrelated current records remain searchable.}
+  - {id: incremental-unaffected-write-scope, severity: mandatory, description: A mutation may not rebuild unrelated backend records.}
+  - {id: citation-version-mapping, severity: mandatory, description: Hits cite the current version and chunk ID.}
+evaluator:
+  evaluator_digest: 6666666666666666666666666666666666666666666666666666666666666666
+  development_fixture: rag01-dev-v1
+  official_fixture_ref: maintainer-only:rag01-heldout-v1
+profile_compatibility: [cpu-fixture-standard-v1]

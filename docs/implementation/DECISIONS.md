@@ -66,3 +66,55 @@ This log records implementation choices made while executing the source specific
 - Decision: model versioned core contracts with Pydantic 2.13.5 and generate Draft 2020-12 JSON Schema artifacts. Compute content hashes from UTF-8 canonical JSON with sorted keys, explicit nulls, finite integer values, and normalized decimal strings; do not hash YAML bytes or use floating-point values.
 - Consequence: equivalent YAML formatting yields the same digest, while a semantic change yields a new digest. Draft configuration and frozen resolved campaign are distinct immutable types. Core imports neither Harbor nor API/web packages.
 - Evidence: `docs/implementation/evidence/ENG-002/verification.md`, `tests/test_core_contracts.py`, and generated `schemas/`.
+
+## ENG003-001 — Store bytes by digest, authorize through references
+
+- Date: 2026-09-14
+- Status: accepted for local artifact storage
+- Decision: place local content-addressed bytes in `aieb-runner` behind a narrow store interface. Keep candidate file operations in the existing `aieb-core` CandidateManifest; store access is granted only by explicit scoped/public references, not by knowledge of a deduplicated digest.
+- Consequence: local collection/replay preserves allowed untracked additions, modifications, and deletions without relying on Git. Invalid workspace entries reject the submission rather than being omitted. Hosted object storage remains deferred behind the same interface.
+- Evidence: `docs/implementation/evidence/ENG-003/artifact-store.md` and `tests/test_candidate_artifacts.py`.
+
+## ENG004-005-001 - Keep RAG-01 evaluation out-of-process and HTTP-only
+
+- Date: 2026-09-14
+- Status: accepted for the development task
+- Decision: implement the RAG-01 candidate application as a small standard-library HTTP service. Start it from a fresh copied candidate repository and have the maintainer evaluator use only the public `/health`, `/docs`, and `/search` endpoints. The evaluator records backend mutation writes through a separate local HTTP ledger and never imports candidate modules.
+- Consequence: the authoritative result comes from live application behavior, while trusted fixture generation, evaluator logic, answer expectations, and repairs remain outside the contestant build context. The ledger is limited to the published incremental-write constraint; it is not a general security monitor or cost ledger.
+- Evidence: `suites/dev/rag.document-freshness/`, `tests/maintainer/rag01/`, and `docs/implementation/evidence/ENG-004-005/admission-report.md`.
+
+## ENG004-005-002 - Admit the fixture locally but retain the independent-review gate
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: mark ENG-004 and ENG-005 complete after the baseline, two independent valid repairs, five targeted counterexamples, and ten fresh reference resets pass their defined local gates. Record independent human review as pending rather than treating local automated admission as an official release approval.
+- Consequence: RAG-01 may serve the next local execution/replay phase, but must not be represented as an officially admitted task, benchmark result, or published score.
+
+## ENG006-007-001 - Make stop precede artifact freeze and fresh replay mandatory
+
+- Date: 2026-09-14
+- Status: accepted for deterministic local development
+- Decision: own the attempt lifecycle in `aieb-runner` rather than relying on backend lifecycle hooks. Stop the owned engineering process tree before collecting candidate bytes; reconstruct only the collected artifact over the frozen base in a separate build allocation before external evaluation.
+- Consequence: verification cannot become extra editing time, and an empty candidate remains an explicit submission rather than a fallback to the engineering workspace. Content-addressed artifacts and attempt evidence persist while writable allocations are removed.
+- Evidence: `packages/aieb-runner/src/aieb_runner/lifecycle.py`, `tests/test_attempt_lifecycle.py`, and `docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md`.
+
+## ENG006-007-002 - Do not present the local adapter as official isolation
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: use host processes and filesystem copies only for deterministic development lifecycle coverage. Record every unsupported isolation guarantee as blocked instead of implying it through the word “sandbox”.
+- Consequence: official egress, metadata, secrets, host filesystem, VM/container, kernel resource, and multi-tenant protections remain ENG-019 work; real-agent compatibility remains the separate ENG-001 authorization gate.
+
+## ENG008-009-001 - Reconcile receipts by physical request and preserve unknown billing
+
+- Date: 2026-09-14
+- Status: accepted for local accounting
+- Decision: use attempt, role, request ID, and physical retry as the receipt identity. Broker observations reconcile adapter observations for the same identity and do not add a second charge. A lost response remains billing-uncertain with unavailable cost/tokens.
+- Consequence: reports cannot mistake unknown for zero or double-count broker and adapter data. Hard-cost profiles fall back to explicit estimated/time-limited handling when conservative provider reservation is unavailable.
+
+## ENG008-009-002 - Keep the first CLI local, frozen, and narrow
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: implement a standard-library `aieb` CLI only for RAG-01 baseline/reference deterministic development candidates. Persist local versioned JSON/JSONL state under `.aieb/runs`, lock one controller, require matching frozen manifests on resume, and generate static HTML without a hosted dependency.
+- Consequence: the full local vertical path is executable and inspectable without claiming generic campaign support, provider billing, credentials, real-agent success, or official results.

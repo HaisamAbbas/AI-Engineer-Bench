@@ -1,0 +1,17 @@
+[project]
+name = "aieb-cli"
+version = "0.1.0"
+description = "Local-first development CLI for AI Engineer Bench"
+requires-python = "==3.12.10"
+dependencies = ["aieb-core==0.1.0", "aieb-runner==0.1.0", "PyYAML==6.0.3"]
+
+[project.scripts]
+aieb = "aieb_cli.main:main"
+
+[tool.uv.sources]
+aieb-core = { workspace = true }
+aieb-runner = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.8.4"]
+build-backend = "uv_build"

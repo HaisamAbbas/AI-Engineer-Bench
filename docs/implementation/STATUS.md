@@ -1,8 +1,8 @@
 # Engineering status
 
-Updated: 2026-09-13  
-Current phase: Prompt 03 — ENG-002 core contracts and planner complete  
-Scores/evaluations: none run or claimed
+Updated: 2026-09-14
+Current phase: Prompt 07 — ENG-008 and ENG-009 local accounting and CLI complete
+Scores/evaluations: no benchmark scores; local development-admission checks only
 
 ## Status vocabulary
 
@@ -20,13 +20,13 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 | --- | --- | --- | --- | --- | --- |
 | ENG-001 | Toolchain and Harbor compatibility spike | None | BLOCKED | Pin tested Python, Harbor, and package versions; prove one installed agent, multi-service editing, deadline stop/collection, allowed new-file collection, clean external replay, teardown/control capability, and cost/trace coverage disclosure. Deterministic contract gates pass; real installed coding-agent smoke is not run because provider/model use was not authorized. | `docs/implementation/evidence/ENG-001/compatibility-report.md` and `deterministic-run-summary.json` |
 | ENG-002 | Core schemas and canonical IDs | None | COMPLETE | CT-01: YAML formatting does not change canonical digest. CT-02: unknown fields and unresolved image digests fail before dispatch. Generate versioned JSON Schemas and golden vectors. Core planner resolves/freeze-validates exact trial matrices. | `docs/implementation/evidence/ENG-002/verification.md`, `schemas/`, and `tests/test_core_contracts.py` |
-| ENG-003 | Local artifact store and safe extraction | ENG-002 | BLOCKED | EX-01 retains allowed untracked files. SE-01 rejects escaping symlinks. Validate sizes, paths, file types, manifests, and content integrity. | `docs/implementation/evidence/ENG-003/` (planned) |
-| ENG-004 | RAG-01 application and public contract | ENG-002 | BLOCKED | Reproducible intentionally broken baseline; public ticket and API contract complete; all hidden checks map to public requirements. | `docs/implementation/evidence/ENG-004/` (planned) |
-| ENG-005 | RAG-01 trusted verifier, reference, and counterexamples | ENG-004 | BLOCKED | EV-01 baseline fails intended checks; EV-02 reference and alternative pass; EV-03 shortcuts fail; ten clean fixture resets succeed. | `docs/implementation/evidence/ENG-005/` (planned) |
-| ENG-006 | Executor adapter and deadline protocol | ENG-001, ENG-003 | BLOCKED | EX-02 freezes artifact at deadline, terminates writable contestant processes, records reason, and verifies cleanup. | `docs/implementation/evidence/ENG-006/` (planned) |
-| ENG-007 | Fresh candidate build and replay | ENG-003, ENG-005, ENG-006 | BLOCKED | Replay allowed candidate changes over the pristine base in a fresh untrusted environment; result must not rely on development volumes or processes. | `docs/implementation/evidence/ENG-007/` (planned) |
-| ENG-008 | Role-separated usage and caps | ENG-006 | BLOCKED | Separate ENGINEER, DEV_APPLICATION, VERIFIER_APPLICATION/JUDGE ledgers; AC-01 deduplicates receipts; AC-02 preserves unknown billed requests for reconciliation. | `docs/implementation/evidence/ENG-008/` (planned) |
-| ENG-009 | CLI planner, run, inspect, and report | ENG-002, ENG-007, ENG-008 | BLOCKED | One complete ticket-to-independent-verdict vertical run with immutable candidate/evidence and deterministic JSON/HTML report; specified exit behavior works. | `docs/implementation/evidence/ENG-009/` (planned) |
+| ENG-003 | Local artifact store and safe extraction | ENG-002 | COMPLETE | EX-01 retains allowed untracked files. SE-01 rejects escaping symlinks. Validate sizes, paths, file types, manifests, and content integrity. | `docs/implementation/evidence/ENG-003/artifact-store.md` and `tests/test_candidate_artifacts.py` |
+| ENG-004 | RAG-01 application and public contract | ENG-002 | COMPLETE | Reproducible intentionally broken baseline; public ticket and API contract complete; all hidden checks map to public requirements. | `suites/dev/rag.document-freshness/` and `docs/implementation/evidence/ENG-004-005/admission-report.md` |
+| ENG-005 | RAG-01 trusted verifier, reference, and counterexamples | ENG-004 | COMPLETE | EV-01 baseline fails intended checks; EV-02 reference and alternative pass; EV-03 shortcuts fail; ten clean fixture resets succeed. Independent human review remains pending for official admission. | `tests/maintainer/rag01/`, `scripts/run_rag01_admission.py`, and `docs/implementation/evidence/ENG-004-005/admission-report.json` |
+| ENG-006 | Executor adapter and deadline protocol | ENG-001, ENG-003 | COMPLETE | EX-02 freezes artifact at deadline after stopping owned engineering processes, records reason/attribution, preserves evidence, and verifies allocation cleanup. Real installed-agent validation and official isolation remain blocked. | `packages/aieb-runner/src/aieb_runner/lifecycle.py`, `tests/test_attempt_lifecycle.py`, and `docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md` |
+| ENG-007 | Fresh candidate build and replay | ENG-003, ENG-005, ENG-006 | COMPLETE | Replays allowed submitted artifacts over pristine RAG-01 base in a new build allocation and evaluates live candidate code externally; no engineering allocation, process, or state is reused. Official isolation remains blocked. | `packages/aieb-runner/src/aieb_runner/lifecycle.py`, `tests/test_attempt_lifecycle.py`, and `docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md` |
+| ENG-008 | Role-separated usage and caps | ENG-006 | COMPLETE | Separate role ledger deduplicates broker/adapter receipts, preserves unknown/lost billing, and distinguishes physical retries. Hard-cost enforcement is explicitly unavailable without provider reservations. | `packages/aieb-runner/src/aieb_runner/accounting.py`, `tests/test_accounting_and_cli.py`, and `docs/implementation/evidence/ENG-008-009/local-cli.md` |
+| ENG-009 | CLI planner, run, inspect, and report | ENG-002, ENG-007, ENG-008 | COMPLETE | Local RAG-01 validate/plan/run/resume/inspect/report path writes frozen JSON/JSONL state and static HTML; normal failed tasks are data, not CLI crashes. | `packages/aieb-cli/`, `tests/test_accounting_and_cli.py`, and `docs/implementation/evidence/ENG-008-009/local-cli.md` |
 | ENG-010 | EXT-02 and TOOL-01 vertical tasks | ENG-005, ENG-009 | BLOCKED | Both new families meet the same baseline/reference/alternative/shortcut/reset admission gates and run through the validated path. | `docs/implementation/evidence/ENG-010/` (planned) |
 | ENG-011 | Analysis and coverage eligibility | ENG-002, ENG-009 | BLOCKED | ST-01 zero-success cost is undefined; ST-02 incomplete plans cannot produce a canonical complete rank; ST-03 preserves project/family clustering; no fabricated intervals. | `docs/implementation/evidence/ENG-011/` (planned) |
 | ENG-012 | Eighteen-trial development pilot | ENG-010, ENG-011 | BLOCKED | Frozen 3-task × 2-entrant × 3-repetition fixture campaign completes with resolvable evidence and measured resource/cost coverage and limitations. | `docs/implementation/evidence/ENG-012/` (planned) |
@@ -74,3 +74,30 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 - Generated versioned schemas: `docs/implementation/evidence/ENG-002/schemas/`
 - Golden vectors and explicitly non-result examples: `docs/implementation/evidence/ENG-002/examples/`
 - Behavioral tests: `tests/test_core_contracts.py`
+
+## ENG-003 evidence
+
+- Artifact layout, invariants, and results: `docs/implementation/evidence/ENG-003/artifact-store.md`
+- Behavioral tests: `tests/test_candidate_artifacts.py`
+
+## ENG-004 and ENG-005 evidence
+
+- Public development task, visible API contract, baseline, and candidate repairs: `suites/dev/rag.document-freshness/`
+- Maintainer-only held-out fixture generator and external HTTP evaluator: `tests/maintainer/rag01/`
+- Reproducible fresh-environment admission runner: `scripts/run_rag01_admission.py`
+- Observed matrix and ten-reset result: `docs/implementation/evidence/ENG-004-005/admission-report.md` and `admission-report.json`
+- Independent human review: `PENDING`; this is not an official task admission or benchmark release.
+
+## ENG-006 and ENG-007 evidence
+
+- Deadline-first local lifecycle and explicit attribution: `packages/aieb-runner/src/aieb_runner/lifecycle.py`
+- Behavioral interruption, replay, failure, and cleanup tests: `tests/test_attempt_lifecycle.py`
+- Limitations, exact commands, and observed deterministic outcomes: `docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md`
+- Real installed-agent RAG-01 smoke: `BLOCKED`; requires explicit provider/model authorization, credentials, and an existing cap.
+
+## ENG-008 and ENG-009 evidence
+
+- Role-separated receipt reconciliation and reservations: `packages/aieb-runner/src/aieb_runner/accounting.py`
+- Local CLI package and entry point: `packages/aieb-cli/` (`aieb`)
+- Behavioral local workflow tests: `tests/test_accounting_and_cli.py`
+- Commands, exit behavior, and capability limitations: `docs/implementation/evidence/ENG-008-009/local-cli.md`

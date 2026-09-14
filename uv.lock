@@ -5,6 +5,7 @@ requires-python = "==3.12.10"
 [manifest]
 members = [
     "ai-engineer-bench",
+    "aieb-cli",
     "aieb-core",
     "aieb-runner",
 ]
@@ -13,6 +14,23 @@ members = [
 name = "ai-engineer-bench"
 version = "0.0.0"
 source = { virtual = "." }
+
+[[package]]
+name = "aieb-cli"
+version = "0.1.0"
+source = { editable = "packages/aieb-cli" }
+dependencies = [
+    { name = "aieb-core" },
+    { name = "aieb-runner" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aieb-core", editable = "packages/aieb-core" },
+    { name = "aieb-runner", editable = "packages/aieb-runner" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+]
 
 [[package]]
 name = "aieb-core"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import shutil
+import stat
 import tarfile
 import unittest
 from pathlib import Path
@@ -73,14 +74,18 @@ class CandidateArtifactsTest(unittest.TestCase):
             self.collect()
 
     def test_rejects_symlink_escape(self) -> None:
-        outside = self.root / "outside.txt"
-        outside.write_text("outside\n", encoding="utf-8")
-        try:
-            os.symlink(outside, self.workspace / "src" / "escape.txt")
-        except OSError as exc:
-            self.skipTest(f"symlink creation unavailable: {exc}")
-        with self.assertRaisesRegex(ArtifactValidationError, "symlink"):
-            self.collect()
+        escape = self.workspace / "src" / "escape.txt"
+        escape.write_text("outside\n", encoding="utf-8")
+        original_stat = os.stat
+
+        def lstat_with_escape(path: object, *args: object, **kwargs: object) -> os.stat_result:
+            if Path(path) == escape:
+                return os.stat_result((stat.S_IFLNK, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+            return original_stat(path, *args, **kwargs)
+
+        with patch("aieb_runner.artifacts.os.stat", side_effect=lstat_with_escape):
+            with self.assertRaisesRegex(ArtifactValidationError, "symlink"):
+                self.collect()
 
     def test_rejects_hardlink(self) -> None:
         (self.workspace / "src" / "hardlink.py").write_text("plain\n", encoding="utf-8")

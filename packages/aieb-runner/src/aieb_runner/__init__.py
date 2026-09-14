@@ -24,5 +24,19 @@ __all__ = [
     "ExecutionStatus",
 ]
 from .artifacts import FilesystemArtifactStore, collect_candidate, reconstruct_candidate
+from .lifecycle import (
+    AttemptConfig,
+    AttemptOutcome,
+    AttemptPhase,
+    EngineeringCommand,
+    FailureAttribution,
+    LocalAttemptRunner,
+    ReplacementPolicy,
+)
 
-__all__ = ["FilesystemArtifactStore", "collect_candidate", "reconstruct_candidate"]
+__all__ = [
+    "FilesystemArtifactStore", "collect_candidate", "reconstruct_candidate",
+    "AttemptConfig", "AttemptOutcome", "AttemptPhase", "EngineeringCommand",
+    "FailureAttribution", "LocalAttemptRunner",
+    "ReplacementPolicy",
+]
