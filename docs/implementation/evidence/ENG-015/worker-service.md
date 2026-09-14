@@ -132,6 +132,35 @@ correctly replaces the attempt rather than resuming it.
 `tests/test_attempt_lifecycle.py::test_cancel_event_stops_engineering_before_deadline_with_no_verdict`
 covers the `LocalAttemptRunner` cancellation extension directly.
 
+## Post-review fixes (2026-09-14)
+
+An independent review found two genuine TOCTOU races, both fixed and covered
+by tests that call the real functions under genuine concurrent execution:
+
+- **`record_outcome`'s fencing check was a plain `SELECT`**, taking no row
+  lock under READ COMMITTED. A concurrent reconciler sweep could expire the
+  same lease and create a replacement attempt between that check and
+  `record_outcome`'s own commit, letting an already-abandoned worker's
+  results land anyway. Fixed by making the fencing check a real
+  `UPDATE ... WHERE ... RETURNING` (which also extends the lease), so it
+  takes the same row lock the reconciler's `SELECT ... FOR UPDATE SKIP
+  LOCKED` contends for. `test_concurrent_reconciler_cannot_race_a_record_outcome_still_in_flight`
+  calls the real `record_outcome`, pausing it mid-transaction (via a
+  `before_commit` session event) while a genuine concurrent reconciler sweep
+  runs in a second thread — verified to fail against the pre-fix code before
+  being kept as a permanent regression test.
+- **Orphan-file cleanup came from a separate, disconnected, unlocked read**
+  (`teardown_orphans`), not the reconciler's own locked decision. A live
+  worker whose heartbeat was merely delayed could have its files deleted even
+  though its heartbeat succeeds moments later. Fixed by having
+  `reconcile_expired_leases` return `orphaned_attempt_ids` — exactly the
+  attempts it just committed as replaced, from inside the same locked pass —
+  and having the reconciler delete files only for those IDs.
+  `test_reconciler_never_orphans_a_lease_a_live_worker_just_re_extended`
+  confirms a lease a real heartbeat call just extended is never touched.
+
+See DECISIONS.md ENG015-006.
+
 ## Handoff
 
 Worker leasing, fencing, heartbeat, reconciliation, and cancellation are

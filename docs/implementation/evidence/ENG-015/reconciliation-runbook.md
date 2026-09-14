@@ -56,13 +56,18 @@ work item simply matches zero rows).
 
 ## Orphan local disk allocations
 
-`teardown_orphan_allocations` only removes `<work_root>/<attempt_id>/runs/attempt-*/{engineer,build}`
-for attempts whose lease is expired and still `leased` in the database — it
-never deletes anything for an attempt already `done`/`failed` (those were
-already cleaned up by the worker's own normal cleanup phase, or are
-retained as `failed` evidence with nothing left to remove). This makes it
-safe to run repeatedly and safe to run before, after, or interleaved with
-`reconcile_expired_leases` in any order.
+File cleanup (`<work_root>/<attempt_id>/runs/attempt-*/{engineer,build}`) is
+driven entirely by `reconcile_expired_leases`'s own `orphaned_attempt_ids` —
+the attempts that same locked (`SELECT ... FOR UPDATE SKIP LOCKED`) pass just
+committed as replaced. There is deliberately no separate, independent query
+deciding what counts as orphaned: an earlier design used one, and a live
+worker whose heartbeat was merely delayed (GC pause, slow round-trip) could
+look expired to that independent read and have its files deleted even though
+its heartbeat succeeds moments later. Because cleanup only ever acts on IDs
+the reconciler has already durably decided to replace, running `reconcile_once`
+repeatedly is always safe — there is nothing for it to see for an attempt
+already `done`/`failed` (cleaned up by the worker's own normal cleanup phase,
+or retained as `failed` evidence with nothing left to remove).
 
 ## What this runbook does not cover
 
