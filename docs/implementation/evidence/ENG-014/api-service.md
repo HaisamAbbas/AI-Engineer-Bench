@@ -107,6 +107,31 @@ An independent review found six real defects, all fixed and covered by new tests
 
 See DECISIONS.md ENG014-005/006 for the reasoning kept for each fix.
 
+## Second-pass review fixes (2026-09-14)
+
+A follow-up review of the first fix pass found it incomplete rather than wrong: three real
+gaps, plus three lower-severity items worth hardening. All fixed, all covered by tests using
+real thread concurrency or direct fault injection rather than inspection alone:
+
+- The corrupt-manifest guard reached `registry.py` but not the equivalent
+  `TaskRevision`/`EntrantRevision.model_validate` calls inside `freeze()`. Extracted
+  `revisions.validate_stored_manifest` and used it at both sites.
+- Two concurrent `freeze()` calls sharing the same Idempotency-Key both pass
+  `check_or_reserve` before either commits; the atomic-UPDATE loser previously fell straight
+  into `conflict()` (409) instead of being recognized as a legitimate retry. The zero-rowcount
+  branch now re-checks the idempotency table before concluding a real conflict.
+- `freeze()`'s atomic guard checked `state='draft'` but not `revision`, so a PATCH committing
+  between freeze's read and its write would be silently discarded. The guard now captures and
+  checks `revision` too, mirroring `patch_campaign`.
+- `session.get()` after a raw Core `UPDATE` relied on SQLAlchemy's `synchronize_session`
+  behavior to stay fresh. Both `patch_campaign` and `freeze` now use `.returning(CampaignRow)`
+  to get the authoritative row straight from Postgres.
+- `idempotency.finalize`'s `except IntegrityError` assumed the cause was always the
+  idempotency unique constraint; it now checks `exc.orig.diag.constraint_name` and re-raises
+  anything else instead of crashing with an unhandled `NoResultFound`.
+
+See DECISIONS.md ENG014-007.
+
 ## Handoff
 
 Campaign draft/freeze endpoints are implemented and tested; campaign
