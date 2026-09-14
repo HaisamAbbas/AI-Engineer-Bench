@@ -233,6 +233,7 @@ class WorkItemRow(Base):
     evaluation_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluation.id"), nullable=True)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="ready")
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

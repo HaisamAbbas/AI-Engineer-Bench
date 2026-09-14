@@ -34,6 +34,7 @@ version = "0.1.0"
 source = { editable = "services/api" }
 dependencies = [
     { name = "aieb-core" },
+    { name = "aieb-runner" },
     { name = "alembic" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary"] },
@@ -45,6 +46,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "aieb-core", editable = "packages/aieb-core" },
+    { name = "aieb-runner", editable = "packages/aieb-runner" },
     { name = "alembic", specifier = "==1.20.0" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "psycopg", extras = ["binary"], specifier = "==3.3.5" },

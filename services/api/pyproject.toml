@@ -5,6 +5,7 @@ description = "Hosted metadata, registry/results reads, and campaign draft/freez
 requires-python = "==3.12.10"
 dependencies = [
   "aieb-core==0.1.0",
+  "aieb-runner==0.1.0",
   "fastapi==0.141.1",
   "uvicorn==0.52.4",
   "sqlalchemy==2.0.52",
@@ -15,9 +16,12 @@ dependencies = [
 
 [project.scripts]
 aieb-api = "aieb_api.main:run"
+aieb-worker = "aieb_api.worker.loop:main"
+aieb-reconciler = "aieb_api.worker.reconciler:main"
 
 [tool.uv.sources]
 aieb-core = { workspace = true }
+aieb-runner = { workspace = true }
 
 [build-system]
 requires = ["uv_build==0.8.4"]
