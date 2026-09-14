@@ -1,27 +1,27 @@
 # Session handoff
 
 Updated: 2026-09-14
-Completed phase: Prompt 07 — ENG-008 role-separated accounting and ENG-009 local CLI
+Completed phase: Prompts 08-09 — ENG-010 task breadth and ENG-011 analysis; ENG-012 prepared
 
 ## Current state
 
-ENG-008 and ENG-009 are complete for local deterministic RAG-01 development. `aieb-runner` has a receipt ledger separated by engineer, development application, verifier application, and verifier judge roles. It deduplicates broker and adapter observations by attempt/role/request/physical retry, preserves unknown billing after a lost response, and never turns unavailable usage into zero. Hard monetary enforcement is used only if a provider supplies a conservative reservation; otherwise it is explicitly `estimated_time_limited`.
+ENG-010 is complete locally. EXT-02 (`ext.batch-alignment`) is a runnable HTTP extraction application with a deliberately broken positional mapping baseline. Its evaluator uses shuffled output, partial failure, and last-occurrence-wins repeated IDs to verify correspondence and retention. TOOL-01 (`tool.false-completion`) is a runnable HTTP workflow application with a deliberately dishonest completion baseline. Its evaluator owns an independent operation service and ledger; candidate logs do not decide outcomes. Both task families have public API/requirements, visible data, baseline/reference/alternative/shortcuts, provenance, maintainer-only fixtures, ten-reset controls, and pass through the CLI fresh replay path.
 
-The `aieb` local CLI supports `doctor`, `task validate`, `task verify`, `plan`, `run`, `resume`, `inspect`, and `report`. It writes versioned JSON output, frozen local state, JSONL events, immutable attempt evidence, and static HTML. The supported campaign scope is RAG-01 baseline/reference deterministic development candidates. A completed unsolved task is normal data and exits 0 unless `--fail-on-unsolved` is selected (exit 5). Local controller locking and frozen-manifest checking prevent concurrent or silently changed resumes.
+ENG-011 is complete locally. `aieb-analysis` is the authoritative metric implementation for per-task s/n, Wilson intervals, repeatability, complete-plan eligibility, cost-per-resolution unknown/zero-success behavior, time/deadline/attrition metrics, and project/family limitations.
 
-No credential values are accepted in task/campaign documents or emitted to output/artifacts. The deterministic reference editor exists only to validate the vertical path; it is not real-agent compatibility evidence. Provider billing, hard cost reservations, and complete tool/cost traces are unavailable and visibly not claimed. ENG-001 real-agent smoke, ENG-019 official isolation, and RAG-01 independent human review remain blocked/pending as previously recorded.
+ENG-012 is prepared but blocked. `examples/development-pilot-18.json` freezes an offline 3 task x 2 deterministic fixture entrant x 3 repetition matrix. It was not executed as a real pilot because no provider/cloud authorization, credentials, approved cap, or fixed real-agent configuration exists. It is not presented as a campaign result.
+
+No real agent, paid provider, hosted service, deployment, publication, commit, or push occurred in this phase. Existing independent-review, ENG-001 real-agent, and ENG-019 official-isolation gates remain pending/blocked.
 
 ## Commands
 
 ```powershell
 uv sync --all-packages --locked
-.\.venv\Scripts\aieb.exe --json --no-color doctor
-.\.venv\Scripts\aieb.exe task validate suites\dev\rag.document-freshness
-.\.venv\Scripts\aieb.exe plan --campaign examples\rag01-local-campaign.json
-.\.venv\Scripts\aieb.exe run --campaign examples\rag01-local-campaign.json
-.\.venv\Scripts\aieb.exe inspect --trial rag01-reference-local
-.\.venv\Scripts\aieb.exe report --campaign rag01-reference-local --format html
-.\.venv\Scripts\python.exe -m unittest tests.test_accounting_and_cli -v
+.\.venv\Scripts\python.exe scripts\run_ext02_admission.py
+.\.venv\Scripts\python.exe scripts\run_tool01_admission.py
+.\.venv\Scripts\aieb.exe --json run --campaign examples\ext02-local-campaign.json
+.\.venv\Scripts\aieb.exe --json run --campaign examples\tool01-local-campaign.json
+.\.venv\Scripts\python.exe -m unittest tests.test_analysis tests.test_ext_tool_admission -v
 ```
 
 ## Continuing working rules
@@ -36,9 +36,8 @@ uv sync --all-packages --locked
 - Use already-authorized budgets only.
 - Track blocked gates honestly.
 - Do not automatically commit, push, deploy, or publish unless authorized.
-
-Existing or future `AGENTS.md` instructions remain authoritative and must not be overwritten by this handoff.
+- When commits are requested, use separate role-specific commits rather than bundling unrelated phases.
 
 ## Recommended next prompt
 
-Implement Prompt 08: ENG-010 additional extraction and tool-application task families through the existing CLI/execution/replay/report path. Do not broaden to hosted services or claim real-agent/provider evidence.
+Implement Prompt 10 / ENG-013 only after resolving pilot findings or explicitly deciding what authoring may proceed while ENG-012 remains unexecuted. Do not claim an official campaign or expand hosted scope.

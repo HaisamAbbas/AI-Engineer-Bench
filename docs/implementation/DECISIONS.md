@@ -118,3 +118,17 @@ This log records implementation choices made while executing the source specific
 - Status: accepted
 - Decision: implement a standard-library `aieb` CLI only for RAG-01 baseline/reference deterministic development candidates. Persist local versioned JSON/JSONL state under `.aieb/runs`, lock one controller, require matching frozen manifests on resume, and generate static HTML without a hosted dependency.
 - Consequence: the full local vertical path is executable and inspectable without claiming generic campaign support, provider billing, credentials, real-agent success, or official results.
+
+## ENG010-001 - Use external HTTP behavior for new task-family scoring
+
+- Date: 2026-09-14
+- Status: accepted for development admission
+- Decision: EXT-02 scores document correspondence from live extraction API output under shuffled batches and partial failure; TOOL-01 scores workflow responses against an evaluator-owned operation ledger. Both candidate applications run as separate processes and evaluators avoid candidate imports.
+- Consequence: shortcut controls must satisfy the public contract through live behavior, not evaluator implementation details or candidate-reported logs.
+
+## ENG011-012-001 - Freeze offline pilot preparation without fabricating authorization
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: implement metric computation and freeze the 18-cell deterministic fixture matrix, but mark the real development pilot blocked because no authorized provider/model/cap configuration exists.
+- Consequence: no fixture result is presented as agent quality, campaign evidence, enforceable cost data, or an official development pilot.

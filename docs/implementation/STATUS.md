@@ -1,7 +1,7 @@
 # Engineering status
 
 Updated: 2026-09-14
-Current phase: Prompt 07 — ENG-008 and ENG-009 local accounting and CLI complete
+Current phase: Prompts 08-09 — ENG-010/011 complete; ENG-012 prepared and blocked on authorization
 Scores/evaluations: no benchmark scores; local development-admission checks only
 
 ## Status vocabulary
@@ -27,9 +27,9 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 | ENG-007 | Fresh candidate build and replay | ENG-003, ENG-005, ENG-006 | COMPLETE | Replays allowed submitted artifacts over pristine RAG-01 base in a new build allocation and evaluates live candidate code externally; no engineering allocation, process, or state is reused. Official isolation remains blocked. | `packages/aieb-runner/src/aieb_runner/lifecycle.py`, `tests/test_attempt_lifecycle.py`, and `docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md` |
 | ENG-008 | Role-separated usage and caps | ENG-006 | COMPLETE | Separate role ledger deduplicates broker/adapter receipts, preserves unknown/lost billing, and distinguishes physical retries. Hard-cost enforcement is explicitly unavailable without provider reservations. | `packages/aieb-runner/src/aieb_runner/accounting.py`, `tests/test_accounting_and_cli.py`, and `docs/implementation/evidence/ENG-008-009/local-cli.md` |
 | ENG-009 | CLI planner, run, inspect, and report | ENG-002, ENG-007, ENG-008 | COMPLETE | Local RAG-01 validate/plan/run/resume/inspect/report path writes frozen JSON/JSONL state and static HTML; normal failed tasks are data, not CLI crashes. | `packages/aieb-cli/`, `tests/test_accounting_and_cli.py`, and `docs/implementation/evidence/ENG-008-009/local-cli.md` |
-| ENG-010 | EXT-02 and TOOL-01 vertical tasks | ENG-005, ENG-009 | BLOCKED | Both new families meet the same baseline/reference/alternative/shortcut/reset admission gates and run through the validated path. | `docs/implementation/evidence/ENG-010/` (planned) |
-| ENG-011 | Analysis and coverage eligibility | ENG-002, ENG-009 | BLOCKED | ST-01 zero-success cost is undefined; ST-02 incomplete plans cannot produce a canonical complete rank; ST-03 preserves project/family clustering; no fabricated intervals. | `docs/implementation/evidence/ENG-011/` (planned) |
-| ENG-012 | Eighteen-trial development pilot | ENG-010, ENG-011 | BLOCKED | Frozen 3-task × 2-entrant × 3-repetition fixture campaign completes with resolvable evidence and measured resource/cost coverage and limitations. | `docs/implementation/evidence/ENG-012/` (planned) |
+| ENG-010 | EXT-02 and TOOL-01 vertical tasks | ENG-005, ENG-009 | COMPLETE | Both new families pass baseline/reference/alternative/shortcut/reset admission gates and reference repairs run through validated fresh CLI path. Independent review remains pending. | `suites/dev/ext.batch-alignment/`, `suites/dev/tool.false-completion/`, and `docs/implementation/evidence/ENG-010/admission-report.md` |
+| ENG-011 | Analysis and coverage eligibility | ENG-002, ENG-009 | COMPLETE | ST-01 zero-success cost is undefined; ST-02 incomplete plans cannot produce a canonical complete rank; ST-03 preserves project/family clustering; no fabricated intervals. | `packages/aieb-analysis/`, `tests/test_analysis.py`, and `docs/implementation/evidence/ENG-011/analysis.md` |
+| ENG-012 | Eighteen-trial development pilot | ENG-010, ENG-011 | BLOCKED | Offline 3-task x 2 deterministic-fixture entrant x 3 repetition matrix is frozen. Real pilot is not run: no explicit provider/cloud authorization, credentials, or approved cap. | `examples/development-pilot-18.json` and `docs/implementation/evidence/ENG-012/pilot-preparation.md` |
 | ENG-013 | Remaining nine tasks and independent reviews | ENG-012 | BLOCKED | Twelve tasks across at least six projects pass admission gates and receive required independent review. | `docs/implementation/evidence/ENG-013/` (planned) |
 | ENG-014 | API auth, persistence, and migrations | ENG-002 | BLOCKED | API-01 returns 409 for reused idempotency key with changed body; API-02 hides unauthorized private artifact refs; migration compatibility is tested. | `docs/implementation/evidence/ENG-014/` (planned) |
 | ENG-015 | PostgreSQL worker leasing and reconciliation | ENG-006, ENG-014 | BLOCKED | EX-03 reconciles a crash after artifact upload without duplicate scoring; EX-04 fencing rejects stale finalization; orphan teardown works. | `docs/implementation/evidence/ENG-015/` (planned) |
@@ -101,3 +101,9 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 - Local CLI package and entry point: `packages/aieb-cli/` (`aieb`)
 - Behavioral local workflow tests: `tests/test_accounting_and_cli.py`
 - Commands, exit behavior, and capability limitations: `docs/implementation/evidence/ENG-008-009/local-cli.md`
+
+## ENG-010 through ENG-012 evidence
+
+- EXT-02 and TOOL-01 packages, external evaluators, controls, and admission: `suites/dev/`, `tests/maintainer/ext02/`, `tests/maintainer/tool01/`, `docs/implementation/evidence/ENG-010/`
+- Analysis primitives and behavioral tests: `packages/aieb-analysis/`, `tests/test_analysis.py`, `docs/implementation/evidence/ENG-011/analysis.md`
+- Frozen but unexecuted pilot preparation: `examples/development-pilot-18.json`, `docs/implementation/evidence/ENG-012/pilot-preparation.md`
