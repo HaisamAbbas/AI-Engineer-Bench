@@ -1,7 +1,7 @@
 # Engineering status
 
 Updated: 2026-09-14
-Current phase: Prompts 08-09 — ENG-010/011 complete; ENG-012 prepared and blocked on authorization
+Current phase: Prompt 10 — ENG-013 in progress; RAG-02 first admitted development task batch
 Scores/evaluations: no benchmark scores; local development-admission checks only
 
 ## Status vocabulary
@@ -30,7 +30,7 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 | ENG-010 | EXT-02 and TOOL-01 vertical tasks | ENG-005, ENG-009 | COMPLETE | Both new families pass baseline/reference/alternative/shortcut/reset admission gates and reference repairs run through validated fresh CLI path. Independent review remains pending. | `suites/dev/ext.batch-alignment/`, `suites/dev/tool.false-completion/`, and `docs/implementation/evidence/ENG-010/admission-report.md` |
 | ENG-011 | Analysis and coverage eligibility | ENG-002, ENG-009 | COMPLETE | ST-01 zero-success cost is undefined; ST-02 incomplete plans cannot produce a canonical complete rank; ST-03 preserves project/family clustering; no fabricated intervals. | `packages/aieb-analysis/`, `tests/test_analysis.py`, and `docs/implementation/evidence/ENG-011/analysis.md` |
 | ENG-012 | Eighteen-trial development pilot | ENG-010, ENG-011 | BLOCKED | Offline 3-task x 2 deterministic-fixture entrant x 3 repetition matrix is frozen. Real pilot is not run: no explicit provider/cloud authorization, credentials, or approved cap. | `examples/development-pilot-18.json` and `docs/implementation/evidence/ENG-012/pilot-preparation.md` |
-| ENG-013 | Remaining nine tasks and independent reviews | ENG-012 | BLOCKED | Twelve tasks across at least six projects pass admission gates and receive required independent review. | `docs/implementation/evidence/ENG-013/` (planned) |
+| ENG-013 | Remaining nine tasks and independent reviews | ENG-012 | IN_PROGRESS | Eleven new/existing public development tasks have local baseline/reference/alternative/shortcut and ten-reset fixture evidence. TOOL-02 has a passing post-fix reference/reset control but still needs its complete post-fix matrix rerun. All twelve have explicit CLI runtime mappings and twelve distinct synthetic family IDs. Independent reviews are pending for every task; therefore an admitted-only frozen release manifest cannot be created. ENG-012 remains blocked but does not prevent public-task authoring. | `suites/dev/catalog.json`, `tests/test_eng013_admission.py`, and `docs/implementation/evidence/ENG-013/local-admission.md` |
 | ENG-014 | API auth, persistence, and migrations | ENG-002 | BLOCKED | API-01 returns 409 for reused idempotency key with changed body; API-02 hides unauthorized private artifact refs; migration compatibility is tested. | `docs/implementation/evidence/ENG-014/` (planned) |
 | ENG-015 | PostgreSQL worker leasing and reconciliation | ENG-006, ENG-014 | BLOCKED | EX-03 reconciles a crash after artifact upload without duplicate scoring; EX-04 fencing rejects stale finalization; orphan teardown works. | `docs/implementation/evidence/ENG-015/` (planned) |
 | ENG-016 | Public website and comparison views | ENG-011, ENG-014 | BLOCKED | UI-01 accurately shows unknown/no-result states; UI-02 blocks invalid paired comparisons; tables are accessible and filters have permalinks. | `docs/implementation/evidence/ENG-016/` (planned) |

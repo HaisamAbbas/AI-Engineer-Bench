@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-14
-Completed phase: Prompts 08-09 — ENG-010 task breadth and ENG-011 analysis; ENG-012 prepared
+Current phase: Prompt 10 — ENG-013 in progress (RAG-02 batch complete locally)
 
 ## Current state
 
@@ -10,6 +10,8 @@ ENG-010 is complete locally. EXT-02 (`ext.batch-alignment`) is a runnable HTTP e
 ENG-011 is complete locally. `aieb-analysis` is the authoritative metric implementation for per-task s/n, Wilson intervals, repeatability, complete-plan eligibility, cost-per-resolution unknown/zero-success behavior, time/deadline/attrition metrics, and project/family limitations.
 
 ENG-012 is prepared but blocked. `examples/development-pilot-18.json` freezes an offline 3 task x 2 deterministic fixture entrant x 3 repetition matrix. It was not executed as a real pilot because no provider/cloud authorization, credentials, approved cap, or fixed real-agent configuration exists. It is not presented as a campaign result.
+
+ENG-013 authoring now has twelve public runnable fixture applications. RAG-02/03/04, EXT-01/03/04, and TOOL-03/04 have complete local baseline/reference/alternative/shortcut controls and ten fresh local reference resets. TOOL-02's post-fix reference and ten resets pass; rerun its complete post-fix matrix before recording it as locally validated. `suites/dev/catalog.json` records twelve distinct synthetic family IDs; `aieb` has an explicit trusted evaluator/runtime mapping for each task; task-admission CI is in `.github/workflows/task-admission.yml`. These are local validation results, not official admission. Independent review remains pending for every task, so no admitted-only frozen suite release manifest is valid yet.
 
 No real agent, paid provider, hosted service, deployment, publication, commit, or push occurred in this phase. Existing independent-review, ENG-001 real-agent, and ENG-019 official-isolation gates remain pending/blocked.
 
@@ -40,4 +42,4 @@ uv sync --all-packages --locked
 
 ## Recommended next prompt
 
-Implement Prompt 10 / ENG-013 only after resolving pilot findings or explicitly deciding what authoring may proceed while ENG-012 remains unexecuted. Do not claim an official campaign or expand hosted scope.
+Obtain independent task reviews before creating an admitted-only release manifest. Then freeze exact reviewed revisions, ordering, and weights. Do not claim an official campaign; ENG-012 remains blocked on provider/model authorization, credentials, and spend cap.
