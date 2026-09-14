@@ -84,6 +84,29 @@ covers fail-closed behavior with no database required. Migration compatibility (
 downgrade → upgrade) was run against the same real instance; see command history in this file's
 git history for the exact commands.
 
+## Post-review fixes (2026-09-14)
+
+An independent review found six real defects, all fixed and covered by new tests:
+
+- **Concurrency** (`PATCH .../campaigns/{id}`, `.../freeze`): read-then-write optimistic
+  concurrency was a TOCTOU race under real concurrent requests. Replaced with atomic
+  `UPDATE ... WHERE id=... AND state=... AND revision=...` statements gated by `rowcount`.
+  `idempotency.check_or_reserve`'s check-then-insert had the same race, fixed by
+  `idempotency.finalize`, which commits business-logic writes and the idempotency record
+  together and reconciles a unique-constraint conflict as a replay-or-409 instead of an
+  unhandled `IntegrityError`. All three races are exercised with real `threading.Thread`
+  concurrency against the real test Postgres instance in `tests/test_api_service.py`
+  (`test_concurrent_*`), not simulated sequentially.
+- **Access control** (`GET /v1/trials/{id}`): required only a valid token, not a role, unlike
+  the neighboring artifact-download endpoint. Now gated to operator/reviewer/administrator.
+- **Fail-closed gaps** (`auth.py`): a token missing `sub` raised an unhandled `KeyError` instead
+  of the promised 401. Fixed in both identity providers.
+- **Corrupt data** (`registry.py`): a stored manifest failing its own pydantic contract raised
+  an unhandled `ValidationError` on read. Now returns 503 `service_unavailable`, distinct from
+  404 (the record exists) and from a client error (retrying will not fix corrupt server data).
+
+See DECISIONS.md ENG014-005/006 for the reasoning kept for each fix.
+
 ## Handoff
 
 Campaign draft/freeze endpoints are implemented and tested; campaign
