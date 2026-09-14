@@ -132,3 +132,31 @@ This log records implementation choices made while executing the source specific
 - Status: accepted
 - Decision: implement metric computation and freeze the 18-cell deterministic fixture matrix, but mark the real development pilot blocked because no authorized provider/model/cap configuration exists.
 - Consequence: no fixture result is presented as agent quality, campaign evidence, enforceable cost data, or an official development pilot.
+
+## ENG013-001 - Give each new task family its own genuine application, not a shared stub
+
+- Date: 2026-09-14
+- Status: accepted for development admission
+- Decision: author RAG-02/03/04, EXT-01/03/04, and TOOL-02/03/04 each as an independently named synthetic HTTP application (`search_service`, `citation_service`, `embedding_service`, `missingness_service`, `unit_service`, `batch_service`, `write_service`, `session_service`, `correction_service`) rather than reusing one shared backend across tasks. Combined with the five prior families, this gives twelve distinct application projects against a six-project development diversity floor.
+- Consequence: no task's admission evidence depends on another task's application code, and exceeding the floor is recorded as such rather than presented as an unmet six-project target.
+
+## ENG013-002 - Generalize CLI task dispatch instead of adding another per-task branch
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: replace the CLI's per-task if/elif evaluator dispatch with a `TASK_RUNTIMES` mapping keyed by task ID, resolved by dynamic import at `validate`/`verify`/`run` time. Tasks whose admission script returns a full matrix use a `run_matrix` lookup instead of a single-variant evaluator call.
+- Consequence: `aieb` supports all twelve catalogued tasks through one code path; admitting a future task requires a mapping entry, not a new CLI branch.
+
+## ENG013-003 - Record structured admission evidence per task family, not only narrative summaries
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: alongside the narrative `local-admission.md`, persist the full per-check matrix and ten-reset observations for every newly authored task in `docs/implementation/evidence/ENG-013/admission-report.json`, matching the structured evidence pattern established for RAG-01 in ENG-004-005.
+- Consequence: local admission claims for RAG-02/03/04, EXT-01/03/04, and TOOL-02/03/04 are backed by inspectable per-check evidence, not summary prose alone.
+
+## ENG013-004 - Do not create an admission ledger or release manifest ahead of independent review
+
+- Date: 2026-09-14
+- Status: accepted
+- Decision: do not add a standalone "admission ledger" artifact or a frozen admitted-only release manifest for the development suite. `suites/dev/catalog.json` already records `review_status: pending-independent-review` for all twelve tasks, and this file (`DECISIONS.md`) is the project's existing decision ledger; a second, parallel ledger would duplicate it without adding evidence.
+- Consequence: ENG-021's independent review gate remains the actual precondition for a release manifest; no tooling exists yet that would let a frozen manifest be produced before that gate clears.
