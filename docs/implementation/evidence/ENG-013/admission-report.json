@@ -1,0 +1,1545 @@
+{
+  "ext.missingness": {
+    "matrix": [
+      {
+        "checks": {
+          "absent-not-invented": false,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {
+          "absent-not-invented": "missingness contract mismatch"
+        },
+        "fixture_version": "ext01-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "absent-not-invented": false,
+          "api-ready": true,
+          "present-values-preserved": false
+        },
+        "diagnostics": {
+          "absent-not-invented": "missingness contract mismatch",
+          "present-values-preserved": "missingness contract mismatch"
+        },
+        "fixture_version": "ext01-heldout/v1",
+        "pass": false,
+        "variant": "always-null"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "absent-not-invented": true,
+          "api-ready": true,
+          "present-values-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext01-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "ext.partial-batch": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": false,
+          "malformed-item-isolated": false,
+          "valid-results-retained": false
+        },
+        "diagnostics": {
+          "api-ready": "partial batch contract mismatch",
+          "malformed-item-isolated": "partial batch contract mismatch",
+          "valid-results-retained": "partial batch contract mismatch"
+        },
+        "fixture_version": "ext04-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": false
+        },
+        "diagnostics": {
+          "valid-results-retained": "partial batch contract mismatch"
+        },
+        "fixture_version": "ext04-heldout/v1",
+        "pass": false,
+        "variant": "drop-after-error"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "malformed-item-isolated": true,
+          "valid-results-retained": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext04-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "ext.unit-normalization": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": false,
+          "declared-conversions": false,
+          "evidence-preserved": true
+        },
+        "diagnostics": {
+          "decimal-tolerance": "unit contract mismatch",
+          "declared-conversions": "unit contract mismatch"
+        },
+        "fixture_version": "ext03-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": false,
+          "declared-conversions": false,
+          "evidence-preserved": true
+        },
+        "diagnostics": {
+          "decimal-tolerance": "unit contract mismatch",
+          "declared-conversions": "unit contract mismatch"
+        },
+        "fixture_version": "ext03-heldout/v1",
+        "pass": false,
+        "variant": "wrong-mg"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "decimal-tolerance": true,
+          "declared-conversions": true,
+          "evidence-preserved": true
+        },
+        "diagnostics": {},
+        "fixture_version": "ext03-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "rag.citation-current-span": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": false,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {
+          "current-citation-version": "citation contract mismatch"
+        },
+        "fixture_version": "rag03-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": false,
+          "current-source-span": false,
+          "relevant-current-content": true
+        },
+        "diagnostics": {
+          "current-citation-version": "citation contract mismatch",
+          "current-source-span": "citation contract mismatch"
+        },
+        "fixture_version": "rag03-heldout/v1",
+        "pass": false,
+        "variant": "stale-citation"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "current-citation-version": true,
+          "current-source-span": true,
+          "relevant-current-content": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag03-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "rag.embedding-version": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": false,
+          "current-space-searchable": true,
+          "no-silent-mixing": false
+        },
+        "diagnostics": {
+          "cross-version-safe": "embedding compatibility mismatch",
+          "no-silent-mixing": "embedding compatibility mismatch"
+        },
+        "fixture_version": "rag04-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": false,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {
+          "current-space-searchable": "embedding compatibility mismatch"
+        },
+        "fixture_version": "rag04-heldout/v1",
+        "pass": false,
+        "variant": "shortcut"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "cross-version-safe": true,
+          "current-space-searchable": true,
+          "no-silent-mixing": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag04-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "rag.metadata-filter-topk": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": false,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {
+          "filter-before-top-k": "HTTP contract mismatch"
+        },
+        "fixture_version": "rag02-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": false,
+          "no-cross-filter-results": false,
+          "top-k-respected": true
+        },
+        "diagnostics": {
+          "filter-before-top-k": "HTTP contract mismatch",
+          "no-cross-filter-results": "HTTP contract mismatch"
+        },
+        "fixture_version": "rag02-heldout/v1",
+        "pass": false,
+        "variant": "ignore-filter"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "filter-before-top-k": true,
+          "no-cross-filter-results": true,
+          "top-k-respected": true
+        },
+        "diagnostics": {},
+        "fixture_version": "rag02-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "tool.corrected-arguments": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": false,
+          "original-untouched": false
+        },
+        "diagnostics": {
+          "corrected-target-used": "corrected arguments mismatch",
+          "original-untouched": "corrected arguments mismatch"
+        },
+        "fixture_version": "tool04-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": false,
+          "original-untouched": true
+        },
+        "diagnostics": {
+          "corrected-target-used": "corrected arguments mismatch"
+        },
+        "fixture_version": "tool04-heldout/v1",
+        "pass": false,
+        "variant": "no-action"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "corrected-target-used": true,
+          "original-untouched": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool04-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "tool.idempotent-write": {
+    "matrix": [
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": false
+        },
+        "diagnostics": {
+          "exactly-once-effect": "write retry contract mismatch"
+        },
+        "fixture_version": "tool02-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": false,
+          "api-ready": true,
+          "exactly-once-effect": false
+        },
+        "diagnostics": {
+          "ambiguous-retry-resolves": "write retry contract mismatch",
+          "exactly-once-effect": "write retry contract mismatch"
+        },
+        "fixture_version": "tool02-heldout/v1",
+        "pass": false,
+        "variant": "never-retry"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "ambiguous-retry-resolves": true,
+          "api-ready": true,
+          "exactly-once-effect": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool02-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  },
+  "tool.session-isolation": {
+    "matrix": [
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": false,
+          "own-session-completes": false
+        },
+        "diagnostics": {
+          "no-cross-user-leak": "session isolation mismatch",
+          "own-session-completes": "session isolation mismatch"
+        },
+        "fixture_version": "tool03-heldout/v1",
+        "pass": false,
+        "variant": "baseline"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reference"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "alternative"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": false
+        },
+        "diagnostics": {
+          "own-session-completes": "session isolation mismatch"
+        },
+        "fixture_version": "tool03-heldout/v1",
+        "pass": false,
+        "variant": "always-empty"
+      }
+    ],
+    "reference_resets": [
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-0"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-1"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-2"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-3"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-4"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-5"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-6"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-7"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-8"
+      },
+      {
+        "checks": {
+          "api-ready": true,
+          "no-cross-user-leak": true,
+          "own-session-completes": true
+        },
+        "diagnostics": {},
+        "fixture_version": "tool03-heldout/v1",
+        "pass": true,
+        "variant": "reset-9"
+      }
+    ]
+  }
+}
