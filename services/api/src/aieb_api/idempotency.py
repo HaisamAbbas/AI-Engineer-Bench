@@ -63,12 +63,18 @@ def finalize(
     store(session, scope=scope, key=key, body=body, status_code=status_code, response_body=response_body)
     try:
         session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         session.rollback()
+        # Only the idempotency-key unique constraint means "a concurrent identical request
+        # already won"; any other integrity violation in this transaction is a different,
+        # genuine failure and must propagate rather than being misdiagnosed as a replay.
+        constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+        if constraint != "uq_idempotency_scope_key":
+            raise
         existing = session.execute(
             select(IdempotencyRecordRow).where(IdempotencyRecordRow.scope == scope, IdempotencyRecordRow.key == key)
         ).scalar_one()
         if existing.request_digest != request_digest(body):
-            raise conflict("idempotency key reused with a different request body")
+            raise conflict("idempotency key reused with a different request body") from exc
         return existing.response_body
     return None
