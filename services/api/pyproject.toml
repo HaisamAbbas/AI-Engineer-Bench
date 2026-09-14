@@ -1,0 +1,24 @@
+[project]
+name = "aieb-api"
+version = "0.1.0"
+description = "Hosted metadata, registry/results reads, and campaign draft/freeze API for AI Engineer Bench"
+requires-python = "==3.12.10"
+dependencies = [
+  "aieb-core==0.1.0",
+  "fastapi==0.141.1",
+  "uvicorn==0.52.4",
+  "sqlalchemy==2.0.52",
+  "psycopg[binary]==3.3.5",
+  "alembic==1.20.0",
+  "pyjwt[crypto]==2.14.0",
+]
+
+[project.scripts]
+aieb-api = "aieb_api.main:run"
+
+[tool.uv.sources]
+aieb-core = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.8.4"]
+build-backend = "uv_build"
