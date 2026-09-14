@@ -1,0 +1,14 @@
+name: Task admission
+on:
+  pull_request:
+    paths: ["suites/dev/**", "tests/maintainer/**", "scripts/run_*_admission.py", "packages/aieb-cli/**"]
+  push:
+    branches: [main]
+jobs:
+  admission:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: astral-sh/setup-uv@b75a9098c1922b3195d3655f8f5fd8831a79c6e4
+      - run: uv sync --all-packages --locked
+      - run: uv run python -m unittest tests.test_rag01_admission tests.test_ext_tool_admission tests.test_eng013_admission -v
