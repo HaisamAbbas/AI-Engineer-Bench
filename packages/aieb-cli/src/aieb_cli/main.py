@@ -138,14 +138,14 @@ def _verify_frozen(root: Path, campaign_id: str, campaign_path: Path) -> tuple[P
     return state, actual
 
 
-def _editor(root: Path, task: Path, candidate: str, script: Path) -> EngineeringCommand:
+def _editor(root: Path, task: Path, candidate: str, script: Path, source_dir: str) -> EngineeringCommand:
     if candidate == "baseline":
         script.write_text("pass\n", encoding="utf-8")
     else:
         reference = repr(str(task / "reference" / "backend.py"))
         script.write_text(
             "from pathlib import Path\nimport shutil\n"
-            f"shutil.copyfile({reference}, Path.cwd() / 'knowledge_service' / 'backend.py')\n",
+            f"shutil.copyfile({reference}, Path.cwd() / {source_dir!r} / 'backend.py')\n",
             encoding="utf-8",
         )
     return EngineeringCommand((sys.executable, str(script)), 30)
@@ -160,7 +160,18 @@ def _run(root: Path, state: Path, frozen: dict[str, object]) -> dict[str, object
     # trusted material, deliberately outside the candidate task repository.
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
-    from tests.maintainer.rag01.evaluator import evaluate
+    task_id = str(_task_check(task)["task_id"])
+    if task_id == "rag.document-freshness":
+        from tests.maintainer.rag01.evaluator import evaluate
+        source_dir, module = "knowledge_service", "rag.document-freshness"
+    elif task_id == "ext.batch-alignment":
+        from tests.maintainer.ext02.evaluator import evaluate
+        source_dir, module = "extraction_service", "ext.batch-alignment"
+    elif task_id == "tool.false-completion":
+        from tests.maintainer.tool01.evaluator import evaluate
+        source_dir, module = "workflow_service", "tool.false-completion"
+    else:
+        raise CliError("task has no supported local evaluator")
 
     work = state / "work"
     script = state / "deterministic-editor.py"
@@ -173,8 +184,8 @@ def _run(root: Path, state: Path, frozen: dict[str, object]) -> dict[str, object
             frozen_source=task / "repo",
             work_root=work,
             base_revision_digest="1" * 64,
-            submission=SubmissionPolicy(include=("knowledge_service/**",), protected=("dev_tests/**",), max_artifact_bytes=52_428_800),
-            engineering=_editor(root, task, candidate, script),
+            submission=SubmissionPolicy(include=(f"{source_dir}/**",), protected=("dev_tests/**",), max_artifact_bytes=52_428_800),
+            engineering=_editor(root, task, candidate, script, source_dir),
             access_scope=attempt_id,
         ),
         evaluate,
@@ -231,7 +242,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.candidate not in {"reference", "baseline"}: raise CliError("only baseline/reference supported")
                 if str(root) not in sys.path:
                     sys.path.insert(0, str(root))
-                from scripts.run_rag01_admission import evaluate_variant
+                task_id = str(info["task_id"])
+                if task_id == "rag.document-freshness": from scripts.run_rag01_admission import evaluate_variant
+                elif task_id == "ext.batch-alignment": from scripts.run_ext02_admission import one as evaluate_variant
+                elif task_id == "tool.false-completion": from scripts.run_tool01_admission import one as evaluate_variant
+                else: raise CliError("task has no supported local evaluator")
                 replacement = None if args.candidate == "baseline" else args.directory / "reference" / "backend.py"
                 info["admission"] = evaluate_variant(args.candidate, replacement)
             _emit({"message": "task validated", **info}, args); return 0
