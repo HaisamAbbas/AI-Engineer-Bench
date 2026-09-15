@@ -1,0 +1,173 @@
+/* Restrained light interface, dark readable text, one accent color, tabular
+ * numbers, ample table space (spec section 4). Status is always conveyed by
+ * text/icon as well as color - badges below carry a text label, not color
+ * alone. */
+
+:root {
+  color-scheme: light dark;
+  --accent: #0b5fff;
+  --text: #16181d;
+  --background: #ffffff;
+  --border: #d7dbe0;
+  --danger: #8a1f11;
+  --success: #145a32;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--background);
+  line-height: 1.5;
+}
+
+.skip-link {
+  position: absolute;
+  left: -999px;
+  top: auto;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  z-index: 100;
+  background: var(--background);
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--accent);
+}
+
+a {
+  color: var(--accent);
+}
+
+*:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+header nav ul {
+  display: flex;
+  gap: 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.brand {
+  font-weight: 700;
+  text-decoration: none;
+  color: var(--text);
+}
+
+main {
+  flex: 1;
+  padding: 1.5rem;
+  max-width: 1100px;
+}
+
+footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.875rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-block: 1rem;
+}
+
+@media (max-width: 700px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
+th,
+td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+/* Sticky identifier column for wide comparison/results tables (spec 4). */
+table th:first-child,
+table td:first-child {
+  position: sticky;
+  left: 0;
+  background: var(--background);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  font-size: 0.85rem;
+}
+.badge-complete {
+  color: var(--success);
+}
+.badge-incomplete {
+  color: var(--danger);
+}
+
+.empty-state,
+.error-state {
+  border: 1px dashed var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+  margin-block: 1rem;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.compare-panel {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+}
+
+pre {
+  background: #f4f5f7;
+  padding: 0.75rem;
+  overflow-x: auto;
+  border-radius: 0.25rem;
+}

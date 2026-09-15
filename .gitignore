@@ -8,6 +8,8 @@
 /dist/
 /build/
 /runs/
+node_modules/
+apps/web/dist/
 
 # Supplied source attachments are preserved at the workspace root. Canonical
 # unchanged repository copies live in docs/specs/.
