@@ -16,6 +16,32 @@ class AnalysisTests(unittest.TestCase):
  def test_paired_difference_requires_common_cells_and_groups_projects(self):
   rows=(TrialObservation("a","f","p", "left",0,True,True),TrialObservation("a","f","p","right",0,False,True))
   paired=paired_project_difference(rows,"left","right");self.assertEqual(paired["paired_cells"],1);self.assertEqual(paired["by_project"],{"p":1.0})
+ def test_per_entrant_and_per_category_rates_are_reported_separately_from_suite_rate(self):
+  # Review finding #8: summarize() only ever emitted one combined suite_rate
+  # across every entrant/category together, with no way to recover a rate
+  # for a single entrant or a single task category from the output.
+  rows=(
+   TrialObservation("a","f","p","left",0,True,True,category="rag"),
+   TrialObservation("a","f","p","left",1,True,True,category="rag"),
+   TrialObservation("b","f","p","left",0,True,True,category="tool"),
+   TrialObservation("a","f","p","right",0,False,True,category="rag"),
+   TrialObservation("b","f","p","right",0,False,True,category="tool"),
+  )
+  result=summarize(rows)
+  self.assertEqual(result["per_entrant"]["left"],1.0)
+  self.assertEqual(result["per_entrant"]["right"],0.0)
+  self.assertEqual(result["per_category"]["rag"],(1.0+0.0)/2)
+  self.assertEqual(result["per_category"]["tool"],(1.0+0.0)/2)
+ def test_per_category_is_none_when_no_observation_carries_a_category(self):
+  result=summarize((TrialObservation("a","f","p","e",0,True,True),))
+  self.assertIsNone(result["per_category"])
+ def test_verifier_cost_reported_separately_and_unavailable_when_any_missing(self):
+  # Review finding #8: verifier/infrastructure cost must be its own number,
+  # not silently folded into (or dropped from) cost_per_resolution.
+  rows=(TrialObservation("a","f","p","e",0,True,True,"1","2",verifier_cost_usd="3"),)
+  self.assertEqual(summarize(rows)["verifier_cost_total_usd"],3.0)
+  rows_missing=(TrialObservation("a","f","p","e",0,True,True,"1","2"),)
+  self.assertIsNone(summarize(rows_missing)["verifier_cost_total_usd"])
  def test_wholly_missing_planned_cell_blocks_rank(self):
   # Review finding #7: a task/entrant pair with ZERO observations has no key
   # in the internal cell map at all, so repetition-count checks alone never

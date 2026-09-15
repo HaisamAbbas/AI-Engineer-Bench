@@ -9,7 +9,7 @@ class TrialObservation:
  task_id:str; family_id:str; project_id:str; entrant_id:str; repetition:int
  passed:bool|None; execution_valid:bool; engineer_cost_usd:str|None=None
  dev_application_cost_usd:str|None=None; verifier_cost_usd:str|None=None
- engineer_seconds:int|None=None; deadline:bool=False
+ engineer_seconds:int|None=None; deadline:bool=False; category:str|None=None
 
 def wilson_interval(successes:int,total:int,z:float=1.959963984540054)->tuple[float,float]|None:
  if total<=0:return None
@@ -41,8 +41,41 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
   if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: costs=None;break
   costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
  cost_resolution=None if not successes or costs is None else sum(costs)/len(successes)
+ # Spec section on cost accounting requires verifier/infrastructure expense to
+ # be reported separately from engineer+dev-application cost, never folded
+ # silently into a single number - so it gets its own total here, with the
+ # same "any missing observation makes the whole total unavailable" rule.
+ verifier_costs=[]
+ for v in observations:
+  if v.verifier_cost_usd is None: verifier_costs=None;break
+  verifier_costs.append(float(v.verifier_cost_usd))
+ verifier_cost_total=None if verifier_costs is None else sum(verifier_costs)
  valid=[v for v in observations if v.execution_valid]; times=sorted(v.engineer_seconds for v in successes if v.engineer_seconds is not None)
- return {"schema_version":"aieb.analysis/v1","per_task":per_task,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
+
+ def _weighted_over(pairs:list[tuple[str,float]])->float|None:
+  filtered=[(task,rate) for task,rate in pairs if rate is not None]
+  if not filtered:return None
+  total_weight=sum(weights.get(task,1) for task,_ in filtered)
+  if not total_weight:return None
+  return sum(rate*weights.get(task,1) for task,rate in filtered)/total_weight
+
+ # The results table needs a rate per entrant (across that entrant's own
+ # task cells) and per task category, not only the single suite-wide number -
+ # both are derivable from the same per_task cells already computed above.
+ per_entrant={}
+ for entrant in sorted({e for _,e in cells}):
+  per_entrant[entrant]=_weighted_over([(task,per_task[f"{task}:{e}"]["rate"]) for task,e in cells if e==entrant])
+ task_category={}
+ for item in observations:
+  if item.category is not None: task_category.setdefault(item.task_id,item.category)
+ per_category=None
+ if task_category:
+  per_category={}
+  for category in sorted(set(task_category.values())):
+   tasks_in_category={task for task,c in task_category.items() if c==category}
+   per_category[category]=_weighted_over([(task,per_task[key]["rate"]) for key,_ in per_task.items() for task in [key.split(":")[0]] if task in tasks_in_category])
+
+ return {"schema_version":"aieb.analysis/v1","per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
 
 def paired_project_difference(observations:tuple[TrialObservation,...], left:str, right:str)->dict[str,object]:
  """Paired task-cell difference, grouped by underlying project (not fake IID runs)."""
