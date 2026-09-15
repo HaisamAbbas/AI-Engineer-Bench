@@ -136,24 +136,42 @@ def optional_identity(request: Request) -> Identity | None:
     return get_identity(request)
 
 
-def resolve_roles(session: Session, identity: Identity) -> tuple[str, ...]:
+GLOBAL_SCOPE = "global"
+"""The scope value for a site-wide grant (spec section 30: role_bindings is a
+"scoped role", unique on (user, role, scope) - a role bound to a particular
+campaign/suite/test scope must not be usable where a global grant is
+required, or every scope becomes effectively global. Every route currently
+implemented (POST /campaigns, GET /trials, artifact downloads, ...) checks
+for a site-wide grant, since none of them are themselves scoped to a single
+resource yet (that arrives with ENG-017's per-campaign operations) - so
+GLOBAL_SCOPE is the only scope value `require_role`'s callers pass today."""
+
+
+def resolve_roles(session: Session, identity: Identity, *, scope: str = GLOBAL_SCOPE) -> tuple[str, ...]:
     """The only source of truth for what an authenticated identity may do.
 
     An identity with no matching `users` row (never provisioned a role by an
     administrator) resolves to no roles at all - authenticating successfully
-    grants no authorization by itself.
+    grants no authorization by itself. Only bindings at `scope` itself, or at
+    GLOBAL_SCOPE, count - a binding scoped to one campaign/suite/test must not
+    satisfy a check for a different scope, or for the global one.
     """
     user_id = session.execute(
         select(User.id).where(User.oidc_issuer == identity.issuer, User.oidc_subject == identity.subject)
     ).scalar_one_or_none()
     if user_id is None:
         return ()
-    return tuple(session.execute(select(RoleBinding.role).where(RoleBinding.user_id == user_id)).scalars().all())
+    scopes = {GLOBAL_SCOPE, scope}
+    return tuple(
+        session.execute(
+            select(RoleBinding.role).where(RoleBinding.user_id == user_id, RoleBinding.scope.in_(scopes))
+        ).scalars().all()
+    )
 
 
-def require_role(*allowed_roles: str):
+def require_role(*allowed_roles: str, scope: str = GLOBAL_SCOPE):
     def dependency(identity: Identity = Depends(get_identity), session: Session = Depends(get_session)) -> Identity:
-        roles = resolve_roles(session, identity)
+        roles = resolve_roles(session, identity, scope=scope)
         if not set(roles) & set(allowed_roles):
             raise forbidden(f"requires one of roles: {', '.join(allowed_roles)}")
         return identity

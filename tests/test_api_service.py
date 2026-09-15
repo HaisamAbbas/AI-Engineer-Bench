@@ -65,7 +65,7 @@ if DATABASE_URL:
             )
             for role in roles:
                 if role not in existing:
-                    session.add(api_models.RoleBinding(user_id=user.id, role=role, scope="test"))
+                    session.add(api_models.RoleBinding(user_id=user.id, role=role, scope=auth.GLOBAL_SCOPE))
             session.commit()
 
     def _auth_header(roles: tuple[str, ...], subject: str = "test-subject") -> dict[str, str]:
@@ -498,6 +498,28 @@ class ApiServiceTests(unittest.TestCase):
     def test_unauthenticated_request_to_operator_route_is_401(self) -> None:
         response = self.client.post("/v1/campaigns", json={"name": "a", "draft": {}})
         self.assertEqual(response.status_code, 401)
+
+    def test_scoped_role_binding_does_not_grant_a_global_check(self) -> None:
+        """Independent review finding: role_bindings.scope (spec section 30's
+        "scoped role") was persisted but never consulted - resolve_roles
+        returned every role a user held regardless of scope, so a role bound
+        to one campaign/suite would silently satisfy any global require_role
+        check too. A binding scoped to something other than auth.GLOBAL_SCOPE
+        must not satisfy a check for GLOBAL_SCOPE (every route currently
+        implemented requires a global grant, since none are themselves scoped
+        to a single resource yet) - but it must still satisfy a check for its
+        own, matching scope."""
+        subject = "scoped-only-operator"
+        with db.session_factory()() as session:
+            user = api_models.User(oidc_subject=subject, oidc_issuer="test")
+            session.add(user)
+            session.flush()
+            session.add(api_models.RoleBinding(user_id=user.id, role="operator", scope="campaign-not-this-one"))
+            session.commit()
+        identity = auth.Identity(subject=subject, issuer="test")
+        with db.session_factory()() as session:
+            self.assertEqual(auth.resolve_roles(session, identity), ())
+            self.assertEqual(auth.resolve_roles(session, identity, scope="campaign-not-this-one"), ("operator",))
 
     def test_wrong_role_is_403(self) -> None:
         response = self.client.post("/v1/campaigns", json={"name": "a", "draft": {}}, headers=_auth_header(("visitor",)) | {"Idempotency-Key": "k"})
