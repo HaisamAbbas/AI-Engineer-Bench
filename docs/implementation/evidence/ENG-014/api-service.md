@@ -42,9 +42,11 @@ Date: 2026-09-14. Local development/test evidence only; no remote deployment occ
   protocol itself is ENG-015).
 - Real object storage / signed download URLs: `GET /artifacts/{ref}/download` returns artifact
   metadata and an authorization decision, not a byte stream — that requires ENG-015's storage work.
-- A TypeScript client generated from the OpenAPI schema: deferred until `apps/web` exists
-  (ENG-016); see DECISIONS.md ENG014-004. `scripts/generate_openapi.py` regenerates
-  `docs/implementation/evidence/ENG-014/openapi.json` reproducibly today.
+- `scripts/generate_openapi.py` regenerates `docs/implementation/evidence/ENG-014/openapi.json`
+  reproducibly; `scripts/generate_typescript_client.py` generates the typed TypeScript client
+  artifact Prompt 11 also names (`docs/implementation/evidence/ENG-014/api-client.d.ts`) from that
+  same schema via `openapi-typescript` (see DECISIONS.md ENG014-004, superseded). `apps/web`
+  (ENG-016) will import these generated types rather than duplicating API definitions by hand.
 - Cohort/ProtocolRevision/BudgetProfile persistence: spec section 30's table list does not name
   separate hosted tables for these, so `POST /v1/campaigns/{id}/freeze` accepts them in the
   request body (mirroring the local CLI's registry) rather than inventing an unlisted table.

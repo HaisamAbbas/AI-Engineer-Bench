@@ -189,12 +189,13 @@ This log records implementation choices made while executing the source specific
 - Decision: `tests/test_api_service.py` requires `AIEB_DATABASE_URL` pointing at a real PostgreSQL instance (a disposable Docker container in this session, isolated on port 5544 from an unrelated project's Postgres already running on 5432) and skips rather than substituting sqlite when it is unset. Running against real Postgres caught two real bugs during development: a test fixture using a non-existent foreign-key owner, and a test fixture using the wrong `profile_compatibility` value against the planner's actual compatibility rule — neither would have surfaced against a mocked or sqlite-backed session.
 - Consequence: API-01/API-02/migration-compatibility evidence reflects actual PostgreSQL constraint enforcement, not an approximation.
 
-## ENG014-004 - Defer TypeScript client generation until apps/web exists
+## ENG014-004 - Defer TypeScript client generation until apps/web exists (superseded)
 
 - Date: 2026-09-14
-- Status: accepted
+- Status: superseded (see AUDIT-004 below)
 - Decision: `scripts/generate_openapi.py` regenerates `docs/implementation/evidence/ENG-014/openapi.json` reproducibly, satisfying "generate OpenAPI ... artifacts." Generating a TypeScript client from it is deferred until `apps/web` exists (ENG-016); a client with no consumer would be premature scaffolding, consistent with BOOT-003's decision to defer `apps/web` until its own ticket.
 - Consequence: when ENG-016 begins, it generates the TS client from this same checked-in OpenAPI schema rather than duplicating API definitions by hand.
+- Superseded: Prompt 11's own text is "Generate OpenAPI **and typed client artifacts**" - both are Prompt 11 deliverables, not something ENG-016 owns; "no consumer yet" was true of `openapi.json` too when it was first checked in, and wasn't treated as a reason to withhold that artifact. `scripts/generate_typescript_client.py` now generates `docs/implementation/evidence/ENG-014/api-client.d.ts` from the checked-in schema via `openapi-typescript`; ENG-016 imports these generated types rather than duplicating API definitions by hand, exactly as this decision's consequence already anticipated.
 
 ## ENG014-005 - Replace read-then-write concurrency control with atomic conditional writes
 
