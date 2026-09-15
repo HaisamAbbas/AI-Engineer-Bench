@@ -18,13 +18,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from aieb_core.models import ExecutionValidity, SubmissionPolicy
-from aieb_runner.artifacts import FilesystemArtifactStore
-from aieb_runner.lifecycle import AttemptConfig, EngineeringCommand, LocalAttemptRunner
+from aieb_core.models import CandidateManifest, ExecutionValidity, SubmissionPolicy
+from aieb_runner.artifacts import ArtifactReference, BlobRef, FilesystemArtifactStore, StoredCandidate
+from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, EngineeringCommand, LocalAttemptRunner
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from ..models import EntrantRevisionRow, TaskRevisionRow, TrialRow
+from ..models import TaskRevisionRow, TrialRow
 from . import repository
 from .repository import CandidateOutcome, EvaluationOutcome, LeasedWork
 
@@ -102,25 +102,66 @@ def _cancellation_poll_loop(
                 return
 
 
-def execute_leased_work(
+def _serialize_stored_candidate(stored: StoredCandidate) -> dict:
+    """StoredCandidate -> plain JSON, so it can be persisted in
+    candidate.stored_candidate and reconstructed by a verification phase
+    running in an entirely different process (ENG015-007)."""
+    return {
+        "manifest": stored.manifest.model_dump(mode="json"),
+        "file_references": [
+            {
+                "path": path,
+                "reference": {
+                    "id": str(reference.id),
+                    "blob": {"sha256": reference.blob.sha256, "byte_length": reference.blob.byte_length},
+                    "access_scope": reference.access_scope,
+                    "visibility": reference.visibility,
+                },
+            }
+            for path, reference in stored.file_references
+        ],
+    }
+
+
+def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
+    manifest = CandidateManifest.model_validate(data["manifest"])
+    file_references = tuple(
+        (
+            entry["path"],
+            ArtifactReference(
+                id=uuid.UUID(entry["reference"]["id"]),
+                blob=BlobRef(sha256=entry["reference"]["blob"]["sha256"], byte_length=entry["reference"]["blob"]["byte_length"]),
+                access_scope=entry["reference"]["access_scope"],
+                visibility=entry["reference"]["visibility"],
+            ),
+        )
+        for entry in data["file_references"]
+    )
+    return StoredCandidate(manifest=manifest, file_references=file_references)
+
+
+def execute_leased_engineering(
     session_factory: sessionmaker, leased: LeasedWork, *, worker_id: str, candidate_variant: str = "reference",
     work_root: Path, lease_seconds: int = repository.DEFAULT_LEASE_SECONDS, cancel_event: threading.Event | None = None,
     engineering_delay_seconds: float = 0,
 ) -> ExecutionResult:
-    """Run one leased engineering attempt to completion and persist the outcome.
+    """Run one leased `engineering` work item: PROVISION->ENGINEER->STOP->COLLECT
+    only (LocalAttemptRunner.run_engineering()), then persist the collected
+    candidate and hand off to an independently-leased `verification` work
+    item (ENG015-007) - this call never builds or scores the candidate
+    itself. A cancellation or any failure with no candidate collected is
+    terminal here directly (no verification follows).
 
-    Execution happens entirely outside any database transaction (a single
-    blocking LocalAttemptRunner.run() call); a background thread heartbeats
-    the lease on its own session while it runs. `engineering_delay_seconds` is
-    a test seam only, letting a controlled-failure test kill the process
-    mid-engineering before its (otherwise near-instant) deterministic editor
-    would have finished.
+    Execution happens entirely outside any database transaction; a
+    background thread heartbeats the lease on its own session while it
+    runs. `engineering_delay_seconds` is a test seam only, letting a
+    controlled-failure test kill the process mid-engineering before its
+    (otherwise near-instant) deterministic editor would have finished.
     """
     work_root = Path(work_root)
     with session_factory() as session:
         trial = session.get(TrialRow, leased.trial_id)
         task_row = session.get(TaskRevisionRow, trial.task_revision_id)
-        entrant_row = session.get(EntrantRevisionRow, trial.entrant_revision_id)
         task_slug = task_row.slug
         task_version = task_row.version
         campaign_id = trial.campaign_id
@@ -128,10 +169,7 @@ def execute_leased_work(
     runtime = TASK_RUNTIMES.get(task_slug)
     if runtime is None:
         raise UnsupportedTaskError(f"task {task_slug} has no supported local evaluator")
-    source_dir, evaluator_module = runtime
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
-    evaluate = importlib.import_module(evaluator_module).evaluate
+    source_dir, _evaluator_module = runtime
 
     task_dir = ROOT / "suites" / "dev" / task_slug
     attempt_work_root = work_root / str(leased.attempt_id)
@@ -155,7 +193,7 @@ def execute_leased_work(
     )
     cancel_poll_thread.start()
     try:
-        outcome = runner.run(
+        outcome = runner.run_engineering(
             AttemptConfig(
                 attempt_id=f"attempt-{leased.attempt_id.hex[:8]}-{uuid4().hex[:8]}",
                 frozen_source=task_dir / "repo",
@@ -165,7 +203,6 @@ def execute_leased_work(
                 engineering=_editor_script(task_dir, candidate_variant, source_dir, script, delay_seconds=engineering_delay_seconds),
                 access_scope=str(leased.attempt_id),
             ),
-            evaluate,
             cancel_event=cancel_event,
         )
     finally:
@@ -193,26 +230,112 @@ def execute_leased_work(
             )
         return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=None)
 
+    # Candidate collected: persist it (artifact-first), then hand the attempt
+    # off to an independently-leased verification work item. This call is
+    # done - it never builds or scores the candidate itself.
+    stored = _serialize_stored_candidate(outcome.candidate)
     with session_factory() as session:
-        evaluator_id = task_row_evaluator_id(session, task_slug, task_version)
-        fixture_id = ensure_fixture_row(session, task_slug)
         candidate = CandidateOutcome(
             tree_digest=outcome.candidate.manifest.full_tree_hash,
             manifest_digest=outcome.candidate.manifest.digest(),
-            validation_status="valid" if outcome.execution_validity == ExecutionValidity.VALID else "rejected",
+            validation_status="valid",
+            stored_candidate=stored,
         )
-        evaluation = None
+        candidate_id = repository.record_candidate(
+            session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+            attempt_id=leased.attempt_id, candidate=candidate, lease_seconds=lease_seconds,
+        )
+        if candidate_id is None:
+            return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=None)
+        advanced = repository.advance_to_verification(
+            session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation, attempt_id=leased.attempt_id,
+        )
+    return ExecutionResult(finalized=advanced, execution_validity=outcome.execution_validity.value, verdict=None)
+
+
+def execute_leased_verification(
+    session_factory: sessionmaker, leased: LeasedWork, *, worker_id: str, work_root: Path,
+    lease_seconds: int = repository.DEFAULT_LEASE_SECONDS,
+) -> ExecutionResult:
+    """Run one leased `verification` work item: BUILD->VERIFY
+    (LocalAttemptRunner.run_verification()) against a candidate an
+    engineering phase already collected and persisted - possibly in a
+    different process, possibly a different worker, possibly long since
+    exited (ENG015-007). Persists the evaluation (artifact-first, mirroring
+    engineering's own record_candidate step) before finalizing.
+    """
+    work_root = Path(work_root)
+    with session_factory() as session:
+        trial = session.get(TrialRow, leased.trial_id)
+        task_row = session.get(TaskRevisionRow, trial.task_revision_id)
+        task_slug = task_row.slug
+        task_version = task_row.version
+        loaded = repository.load_stored_candidate(session, leased.attempt_id)
+
+    if loaded is None:
+        # Should never happen in practice - verification is only ever enqueued
+        # right after record_candidate succeeds - but fail safe rather than
+        # crash if it somehow does.
+        with session_factory() as session:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+            )
+        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+    candidate_id, stored_candidate_json = loaded
+
+    runtime = TASK_RUNTIMES.get(task_slug)
+    if runtime is None:
+        raise UnsupportedTaskError(f"task {task_slug} has no supported local evaluator")
+    source_dir, evaluator_module = runtime
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    evaluate = importlib.import_module(evaluator_module).evaluate
+
+    task_dir = ROOT / "suites" / "dev" / task_slug
+    attempt_work_root = work_root / str(leased.attempt_id)
+    attempt_work_root.mkdir(parents=True, exist_ok=True)
+    store = FilesystemArtifactStore(attempt_work_root / "artifacts")
+    runner = LocalAttemptRunner(store)
+
+    attempt_id = f"attempt-{leased.attempt_id.hex[:8]}-{uuid4().hex[:8]}"
+    config = AttemptConfig(
+        attempt_id=attempt_id,
+        frozen_source=task_dir / "repo",
+        work_root=attempt_work_root / "runs",
+        base_revision_digest="1" * 64,
+        submission=SubmissionPolicy(include=(f"{source_dir}/**",), protected=("dev_tests/**",), max_artifact_bytes=52_428_800),
+        engineering=EngineeringCommand((sys.executable, "-c", "pass"), 1),  # unused by run_verification
+        access_scope=str(leased.attempt_id),
+    )
+    outcome = AttemptOutcome(attempt_id=attempt_id, candidate=_deserialize_stored_candidate(stored_candidate_json))
+
+    stop_heartbeat = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop, args=(session_factory, leased, worker_id, lease_seconds, stop_heartbeat), daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        outcome = runner.run_verification(config, evaluate, outcome)
+    finally:
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=5)
+
+    with session_factory() as session:
+        recorded = True
         if outcome.evaluation is not None:
+            evaluator_id = task_row_evaluator_id(session, task_slug, task_version)
+            fixture_id = ensure_fixture_row(session, task_slug)
             evaluation = EvaluationOutcome(
                 evaluator_id=evaluator_id, fixture_id=fixture_id,
                 schedule_digest=outcome.candidate.manifest.digest(),
                 verdict=outcome.verdict.value if outcome.verdict else None,
                 result=outcome.evaluation,
             )
-        recorded = repository.record_outcome(
-            session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-            attempt_id=leased.attempt_id, candidate=candidate, evaluation=evaluation, lease_seconds=lease_seconds,
-        )
+            recorded = repository.record_evaluation(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                candidate_id=candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
+            )
         if not recorded:
             return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
         terminal_status = outcome.verdict.value if outcome.verdict else outcome.attribution.value
@@ -221,6 +344,24 @@ def execute_leased_work(
             attempt_id=leased.attempt_id, terminal_status=terminal_status, done=outcome.verdict is not None,
         )
     return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
+
+
+def execute_leased_work(
+    session_factory: sessionmaker, leased: LeasedWork, *, worker_id: str, candidate_variant: str = "reference",
+    work_root: Path, lease_seconds: int = repository.DEFAULT_LEASE_SECONDS, cancel_event: threading.Event | None = None,
+    engineering_delay_seconds: float = 0,
+) -> ExecutionResult:
+    """Dispatch a leased work item to the executor for its phase (ENG015-007).
+    A generic worker pool claims whatever is ready across both queues
+    (repository.claim_work_item's default), so the same worker loop
+    (worker/loop.py) is unchanged: it just calls this once per claimed item,
+    regardless of which phase that item happens to be."""
+    if leased.work_type == "verification":
+        return execute_leased_verification(session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds)
+    return execute_leased_engineering(
+        session_factory, leased, worker_id=worker_id, candidate_variant=candidate_variant, work_root=work_root,
+        lease_seconds=lease_seconds, cancel_event=cancel_event, engineering_delay_seconds=engineering_delay_seconds,
+    )
 
 
 def task_row_evaluator_id(session, task_slug: str, task_version: str) -> uuid.UUID:

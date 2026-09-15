@@ -22,14 +22,19 @@ from .metrics import log_event
 
 def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ...]) -> list[str]:
     """Remove local work-root directories for attempts reconcile_expired_leases()
-    just authoritatively decided to replace, in this same call.
+    just authoritatively decided on, in this same call - replaced with a new
+    attempt, advanced from engineering to verification, resumed from an
+    already-persisted evaluation, or requeued for another verification
+    attempt (ENG015-007: not only "replaced" any more, since a dead lease at
+    either phase boundary can leave a stale local allocation behind).
 
     execute_leased_work lays out each attempt as
     `<work_root>/<attempt_id>/runs/attempt-<...>/{engineer,build}`; only those
     two writable allocations are removed here, mirroring exactly what
     LocalAttemptRunner's own cleanup phase removes for an attempt that
-    finished normally. Immutable evidence (attempt.json, stored artifacts
-    under .../artifacts/) is left untouched.
+    finished normally - removing both unconditionally is safe even when only
+    one exists (or neither does). Immutable evidence (attempt.json, stored
+    artifacts under .../artifacts/) is left untouched.
 
     Deliberately takes `attempt_ids` from the caller rather than re-deriving
     "which leases look expired" with its own separate query: a second,
@@ -38,7 +43,7 @@ def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ..
     look "expired" to an independent point-in-time SELECT even though the
     reconciler's own locked pass (which re-checks under FOR UPDATE at lock
     time) correctly did not touch that row. Only attempt_ids the reconciler
-    has already committed as replaced are ever passed in.
+    has already committed a decision for are ever passed in.
     """
     removed = []
     for attempt_id in attempt_ids:
@@ -57,8 +62,11 @@ def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ..
 def reconcile_once(session_factory: sessionmaker, work_root: Path | None = None) -> repository.ReconciliationSummary:
     with session_factory() as session:
         summary = repository.reconcile_expired_leases(session)
-    if summary.resumed or summary.replaced or summary.exhausted:
-        log_event("reconciler.summary", resumed=summary.resumed, replaced=summary.replaced, exhausted=summary.exhausted)
+    if summary.resumed or summary.replaced or summary.exhausted or summary.advanced or summary.requeued:
+        log_event(
+            "reconciler.summary", resumed=summary.resumed, replaced=summary.replaced, exhausted=summary.exhausted,
+            advanced=summary.advanced, requeued=summary.requeued,
+        )
     if work_root is not None and summary.orphaned_attempt_ids:
         removed = _remove_orphan_allocations(work_root, summary.orphaned_attempt_ids)
         if removed:

@@ -5,12 +5,19 @@ RETURNING statement, the same pattern established for campaign draft/freeze
 in ENG-014: the database's own row-level locking enforces the guarantee,
 not application-level timing. Workers and the reconciler communicate with
 persistence only through this module - no ad hoc queries elsewhere.
+
+ENG015-007 splits what was one leased `engineering` work item covering the
+whole attempt into two independently leased phases: `engineering` (produces
+and persists a candidate) and `verification` (builds and scores it). Each
+has its own lease generation, heartbeat, fencing, and finalize - a crash in
+either phase is recovered independently, and a dead verifier never causes
+engineering to repeat (the persisted candidate is reused as-is).
 """
 
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from aieb_core.models import EntrantRevision, TaskRevision
@@ -42,6 +49,7 @@ class LeasedWork:
     attempt_id: uuid.UUID
     trial_id: uuid.UUID
     generation: int
+    work_type: str = "engineering"
 
 
 def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
@@ -91,17 +99,20 @@ def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
     return created
 
 
-def claim_work_item(session: Session, *, worker_id: str, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> LeasedWork | None:
+_ATTEMPT_PHASE_FOR_WORK_TYPE = {"engineering": "engineering", "verification": "verifying"}
+
+
+def claim_work_item(session: Session, *, worker_id: str, work_type: str | None = None, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> LeasedWork | None:
     """Acquire one ready work item atomically. SKIP LOCKED lets two contending
-    workers each get a different item (or none) without blocking on each other."""
-    candidate = (
-        select(WorkItemRow.id)
-        .where(WorkItemRow.type == "engineering", WorkItemRow.state == "ready")
-        .order_by(WorkItemRow.id)
-        .with_for_update(skip_locked=True)
-        .limit(1)
-        .cte("candidate")
-    )
+    workers each get a different item (or none) without blocking on each
+    other. `work_type=None` (the default) claims whatever is ready across
+    both `engineering` and `verification` queues - a real worker pool
+    services both phases, not a phase-dedicated one; pass an explicit
+    `work_type` only to isolate one phase's queue (as some tests do)."""
+    query = select(WorkItemRow.id).where(WorkItemRow.state == "ready")
+    if work_type is not None:
+        query = query.where(WorkItemRow.type == work_type)
+    candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     leased = session.execute(
         update(WorkItemRow)
@@ -113,10 +124,15 @@ def claim_work_item(session: Session, *, worker_id: str, lease_seconds: int = DE
         session.commit()
         return None
     session.execute(
-        update(AttemptRow).where(AttemptRow.id == leased.attempt_id).values(phase="engineering", worker_id=worker_id, lease_generation=leased.generation)
+        update(AttemptRow).where(AttemptRow.id == leased.attempt_id).values(
+            phase=_ATTEMPT_PHASE_FOR_WORK_TYPE.get(leased.type, leased.type), worker_id=worker_id, lease_generation=leased.generation,
+        )
     )
     session.commit()
-    return LeasedWork(work_item_id=leased.id, attempt_id=leased.attempt_id, trial_id=session.get(AttemptRow, leased.attempt_id).trial_id, generation=leased.generation)
+    return LeasedWork(
+        work_item_id=leased.id, attempt_id=leased.attempt_id,
+        trial_id=session.get(AttemptRow, leased.attempt_id).trial_id, generation=leased.generation, work_type=leased.type,
+    )
 
 
 def heartbeat(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> bool:
@@ -137,6 +153,14 @@ class CandidateOutcome:
     tree_digest: str
     manifest_digest: str
     validation_status: str
+    stored_candidate: dict = field(default_factory=dict)
+    """The full StoredCandidate (aieb_runner.artifacts) serialized to JSON -
+    manifest plus every changed file's artifact-store reference. Persisted so
+    an independently-leased verification phase (a different worker, a
+    different process, possibly after this one crashed) can reconstruct the
+    candidate from the database alone, without any in-memory state shared
+    with whatever produced it. Callers that only exercise the leasing/fencing
+    logic itself (not real candidate reconstruction) may leave this empty."""
 
 
 @dataclass(frozen=True)
@@ -148,25 +172,16 @@ class EvaluationOutcome:
     result: dict
 
 
-def record_outcome(
-    session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID,
-    candidate: CandidateOutcome, evaluation: EvaluationOutcome | None, lease_seconds: int = DEFAULT_LEASE_SECONDS,
-) -> bool:
-    """Artifact-first step: persist what was produced BEFORE the work item is marked
-    done. If the caller crashes between this commit and finalize(), the reconciler
-    finds this row and completes finalization instead of wastefully replacing the
-    attempt (EX-03).
-
-    The fencing check is a real UPDATE (extending the lease, doubling as an
-    implicit heartbeat), not a plain SELECT: a plain SELECT takes no row lock
-    under READ COMMITTED, so a concurrent reconciler sweep could expire this
-    same lease and create a replacement attempt after this check passed but
-    before this transaction commits, letting a since-abandoned worker's
-    results land anyway. An UPDATE here takes the same row lock the
-    reconciler's SELECT ... FOR UPDATE SKIP LOCKED contends for, so the two
-    correctly serialize: whichever transaction locks the row first commits
-    its decision before the other's WHERE clause is even (re-)evaluated.
-    """
+def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_seconds: int) -> bool:
+    """Shared fencing primitive: a real UPDATE extending the lease (doubling as
+    an implicit heartbeat), not a plain SELECT - a plain SELECT takes no row
+    lock under READ COMMITTED, so a concurrent reconciler sweep could expire
+    this same lease and act on it between that check and this transaction's
+    own commit, letting an already-abandoned worker's results land anyway. An
+    UPDATE here takes the same row lock the reconciler's
+    SELECT ... FOR UPDATE SKIP LOCKED contends for, so the two correctly
+    serialize: whichever transaction locks the row first commits its
+    decision before the other's WHERE clause is even (re-)evaluated."""
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     fenced = session.execute(
         update(WorkItemRow)
@@ -174,24 +189,93 @@ def record_outcome(
         .values(lease_expiry=lease_expiry)
         .returning(WorkItemRow.id)
     ).scalar_one_or_none()
-    if fenced is None:
+    return fenced is not None
+
+
+def record_candidate(
+    session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID,
+    candidate: CandidateOutcome, lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> uuid.UUID | None:
+    """Artifact-first step of the engineering phase: persist the collected
+    candidate BEFORE the engineering work item is marked done. If the caller
+    crashes between this commit and advance_to_verification(), the
+    reconciler finds this row and advances straight to verification instead
+    of wastefully repeating engineering (EX-03, extended by ENG015-007 to the
+    engineering/verification boundary specifically).
+
+    Returns the new candidate row's id, or None if this worker/generation no
+    longer holds the lease (fenced out - the caller must not proceed)."""
+    if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
-        return False
+        return None
     candidate_row = CandidateRow(
         attempt_id=attempt_id, tree_digest=candidate.tree_digest, manifest_digest=candidate.manifest_digest,
-        validation_status=candidate.validation_status,
+        validation_status=candidate.validation_status, stored_candidate=candidate.stored_candidate,
     )
     session.add(candidate_row)
     session.flush()
-    if evaluation is not None:
-        session.add(
-            EvaluationRow(
-                candidate_id=candidate_row.id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
-                schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
-            )
-        )
+    session.commit()
+    return candidate_row.id
+
+
+def advance_to_verification(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID) -> bool:
+    """Marks the engineering work item done (its candidate is already durably
+    persisted by record_candidate - this is the engineering phase's own
+    terminal transition, not the whole attempt's) and enqueues a new,
+    independently-leased `verification` work item for the SAME attempt - not
+    a new attempt, just the next phase of this one. Fenced the same way as
+    every other transition here: a stale engineering worker returning after
+    its lease was reassigned must not be able to advance a replacement
+    attempt's work item."""
+    result = session.execute(
+        update(WorkItemRow)
+        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .values(state="done")
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return False
+    session.execute(update(AttemptRow).where(AttemptRow.id == attempt_id).values(phase="verifying"))
+    session.add(WorkItemRow(attempt_id=attempt_id, type="verification", state="ready"))
     session.commit()
     return True
+
+
+def record_evaluation(
+    session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, candidate_id: uuid.UUID,
+    evaluation: EvaluationOutcome, lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> bool:
+    """Artifact-first step of the verification phase: persist the evaluation
+    verdict BEFORE the verification work item is marked done, mirroring
+    record_candidate's role in the engineering phase. If the caller crashes
+    between this commit and finalize(), the reconciler finds this row and
+    finalizes from it rather than repeating verification."""
+    if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
+        session.rollback()
+        return False
+    session.add(
+        EvaluationRow(
+            candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
+            schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
+        )
+    )
+    session.commit()
+    return True
+
+
+def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> tuple[uuid.UUID, dict] | None:
+    """Read back the persisted candidate for an attempt - id plus its
+    serialized StoredCandidate JSON - so an independently-leased
+    verification phase can reconstruct it. Returns None if no candidate has
+    been recorded (should not happen: verification is only ever enqueued
+    after record_candidate succeeds), letting the caller fail safe rather
+    than crash on a KeyError."""
+    row = session.execute(
+        select(CandidateRow).where(CandidateRow.attempt_id == attempt_id).order_by(CandidateRow.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return row.id, row.stored_candidate
 
 
 def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID, terminal_status: str, done: bool) -> bool:
@@ -216,70 +300,116 @@ class ReconciliationSummary:
     resumed: int = 0
     replaced: int = 0
     exhausted: int = 0
+    advanced: int = 0
+    requeued: int = 0
     orphaned_attempt_ids: tuple[uuid.UUID, ...] = ()
 
 
 def reconcile_expired_leases(session: Session, *, default_max_replacements: int = 2) -> ReconciliationSummary:
     """Recover work items whose lease expired without a fenced finalize.
+    Handles both work-item types, each recovered according to what that
+    phase's own artifact-first evidence shows (ENG015-007):
 
-    If a candidate was already recorded (record_outcome succeeded before the
-    worker died), complete finalization from that evidence instead of
-    replacing the attempt - no re-execution, no duplicate scoring (EX-03).
-    Otherwise the attempt is replaced, up to the frozen campaign's
-    max_replacements policy; beyond that the trial is left unresolved rather
-    than silently retried forever.
+    - `engineering`, candidate already persisted (record_candidate succeeded
+      before the worker died): advance straight to verification - engineering
+      is never repeated once its output already exists (EX-03).
+    - `engineering`, no candidate: replaced with a brand new attempt, up to
+      the frozen campaign's max_replacements policy; beyond that the trial
+      is left unresolved rather than silently retried forever.
+    - `verification`, evaluation already persisted (record_evaluation
+      succeeded before the verifier died): finalize from that evidence - no
+      re-verification, no duplicate scoring.
+    - `verification`, no evaluation: requeue a fresh `verification` work item
+      for the SAME attempt and candidate - a dead verifier never causes
+      engineering to repeat - up to the same max_replacements cap; beyond
+      that the trial is left unresolved.
 
-    `orphaned_attempt_ids` names only attempts this same locked pass decided
-    to replace - the caller (reconciler.py) uses that list, not a separate
-    later read, to know which local work directories are now safe to
-    delete. A row is only "expired" here if it is still lease_expiry < now()
-    at the moment this SELECT ... FOR UPDATE SKIP LOCKED actually acquires
-    the row lock: a concurrent heartbeat extending the same lease either
-    commits first (this row is then simply excluded from `expired`, since
-    FOR UPDATE re-reads the current committed row) or blocks behind this
-    transaction's lock and then correctly fails its own fenced check once
-    this transaction has committed the row as 'failed'. Either way, a lease
-    that is genuinely still being renewed can never be the source of an
-    orphaned-attempt_id in this list.
+    `orphaned_attempt_ids` names every attempt this same locked pass touched
+    - the caller (reconciler.py) uses that list, not a separate later read,
+    to know which local work directories (`engineer/`, `build/`, whichever
+    exists) are now safe to delete; deleting both unconditionally is safe
+    even when only one exists. A row is only "expired" here if it is still
+    lease_expiry < now() at the moment this SELECT ... FOR UPDATE SKIP LOCKED
+    actually acquires the row lock: a concurrent heartbeat extending the same
+    lease either commits first (this row is then simply excluded from
+    `expired`, since FOR UPDATE re-reads the current committed row) or blocks
+    behind this transaction's lock and then correctly fails its own fenced
+    check once this transaction has committed the row as 'failed'. Either
+    way, a lease that is genuinely still being renewed can never be the
+    source of an orphaned-attempt_id in this list.
     """
-    resumed = replaced = exhausted = 0
+    resumed = replaced = exhausted = advanced = requeued = 0
     orphaned: list[uuid.UUID] = []
     expired = session.execute(
         select(WorkItemRow)
-        .where(WorkItemRow.type == "engineering", WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
+        .where(WorkItemRow.type.in_(("engineering", "verification")), WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
         .with_for_update(skip_locked=True)
     ).scalars().all()
     for item in expired:
         attempt = session.get(AttemptRow, item.attempt_id)
-        candidate = session.execute(select(CandidateRow).where(CandidateRow.attempt_id == attempt.id)).scalar_one_or_none()
-        if candidate is not None:
-            evaluation = session.execute(select(EvaluationRow).where(EvaluationRow.candidate_id == candidate.id)).scalar_one_or_none()
-            item.state = "done" if evaluation is not None and evaluation.verdict is not None else "failed"
-            attempt.phase = "terminal"
-            attempt.terminal_status = evaluation.verdict if evaluation is not None else "infrastructure_invalid"
-            resumed += 1
-            continue
-
-        item.state = "failed"
-        attempt.phase = "terminal"
-        attempt.terminal_status = "infrastructure_invalid"
-        orphaned.append(attempt.id)
         trial = session.get(TrialRow, attempt.trial_id)
         campaign = session.get(CampaignRow, trial.campaign_id)
         max_replacements = (
             campaign.resolved["protocol"]["max_replacements"] if campaign is not None and campaign.resolved else default_max_replacements
         )
-        attempt_count = session.execute(select(func.count()).select_from(AttemptRow).where(AttemptRow.trial_id == trial.id)).scalar_one()
-        if attempt_count - 1 < max_replacements:
-            new_attempt = AttemptRow(trial_id=trial.id, number=attempt_count + 1, phase="queued", lease_generation=0)
-            session.add(new_attempt)
-            session.flush()
-            session.add(WorkItemRow(attempt_id=new_attempt.id, type="engineering", state="ready"))
-            replaced += 1
+        candidate = session.execute(select(CandidateRow).where(CandidateRow.attempt_id == attempt.id)).scalar_one_or_none()
+
+        if item.type == "engineering":
+            if candidate is not None:
+                # Artifact-first: the candidate was already durably persisted
+                # before this worker died - resume by moving on to
+                # verification, never repeat engineering.
+                item.state = "done"
+                attempt.phase = "verifying"
+                session.add(WorkItemRow(attempt_id=attempt.id, type="verification", state="ready"))
+                advanced += 1
+                orphaned.append(attempt.id)
+                continue
+            item.state = "failed"
+            attempt.phase = "terminal"
+            attempt.terminal_status = "infrastructure_invalid"
+            orphaned.append(attempt.id)
+            attempt_count = session.execute(select(func.count()).select_from(AttemptRow).where(AttemptRow.trial_id == trial.id)).scalar_one()
+            if attempt_count - 1 < max_replacements:
+                new_attempt = AttemptRow(trial_id=trial.id, number=attempt_count + 1, phase="queued", lease_generation=0)
+                session.add(new_attempt)
+                session.flush()
+                session.add(WorkItemRow(attempt_id=new_attempt.id, type="engineering", state="ready"))
+                replaced += 1
+            else:
+                exhausted += 1
+            continue
+
+        # item.type == "verification"
+        evaluation = (
+            session.execute(select(EvaluationRow).where(EvaluationRow.candidate_id == candidate.id)).scalar_one_or_none()
+            if candidate is not None else None
+        )
+        if evaluation is not None and evaluation.verdict is not None:
+            item.state = "done"
+            attempt.phase = "terminal"
+            attempt.terminal_status = evaluation.verdict
+            resumed += 1
+            orphaned.append(attempt.id)
+            continue
+        item.state = "failed"
+        orphaned.append(attempt.id)
+        verification_attempts = session.execute(
+            select(func.count()).select_from(WorkItemRow).where(WorkItemRow.attempt_id == attempt.id, WorkItemRow.type == "verification")
+        ).scalar_one()
+        if verification_attempts - 1 < max_replacements:
+            # Retry verification in place - same attempt, same persisted
+            # candidate - a dead verifier never causes engineering to repeat.
+            session.add(WorkItemRow(attempt_id=attempt.id, type="verification", state="ready"))
+            requeued += 1
         else:
+            attempt.phase = "terminal"
+            attempt.terminal_status = "infrastructure_invalid"
             exhausted += 1
     session.commit()
-    return ReconciliationSummary(resumed=resumed, replaced=replaced, exhausted=exhausted, orphaned_attempt_ids=tuple(orphaned))
+    return ReconciliationSummary(
+        resumed=resumed, replaced=replaced, exhausted=exhausted, advanced=advanced, requeued=requeued, orphaned_attempt_ids=tuple(orphaned),
+    )
 
 
 def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
