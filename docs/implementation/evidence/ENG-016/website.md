@@ -6,7 +6,12 @@ public routes: `/`, `/results`, `/compare`, `/entrants/:slug`, `/tasks`, `/tasks
 `/admin/*` is explicitly out of scope (ENG-017/018, Prompt 14).
 
 Date: 2026-09-15, revised 2026-09-16 after a second independent review found six real gaps in the
-first pass, all fixed here (see DECISIONS.md ENG016-003 through ENG016-006).
+first pass (see DECISIONS.md ENG016-003 through ENG016-006), then revised again the same day after
+a third independent review found findings #2, #3, and #7 from that second pass were only partially
+fixed (see DECISIONS.md ENG016-007 through ENG016-009, and "Third-pass fixes" below). ENG-016
+remains IN_PROGRESS: the third review's finding #5 (real HTTP/browser integration tests, broader
+accessibility coverage) is deliberately not attempted here - a real separate effort, disclosed as
+open rather than bundled into this pass.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -95,6 +100,82 @@ match) - Home/Results now correctly take the first page's first item. `TaskCatal
 and `Corrections` all gained a real "Next page" control following `next_cursor`, where none existed
 before.
 
+## Third-pass fixes (2026-09-16, second independent review of the second pass)
+
+A third review found findings #2, #3, and #7 from the prior review only partially addressed, plus
+three new gaps (#4, #6, #7 in that review's own numbering). All fixed here except #5 (integration/
+accessibility test coverage), disclosed as open below.
+
+**Cross-release comparison still violated spec journey 6.1** ("A cross-release comparison shows
+separate panels with a non-comparable label, never a calculated winner" - unconditional, not
+"unless the cohorts happen to match"). The prior fix treated a matching `campaign.cohort_digest`
+across two different publications as sufficient proof of comparability and computed paired
+differences across them - but `Cohort` records the frozen track/suite/protocol/budget/hardware
+identity, not the exact resolved task list, entrant revisions, or repetition plan, so a matching
+digest never actually proved matching observations. Fixed: `GET /v1/comparisons` now treats ANY
+comparison across different publications as unconditionally non-comparable, regardless of
+`cohort_digest` - paired differences are only ever computed when every entrant comes from the SAME
+publication. The `TaskPairedDifference` schema's own docstring was also corrected: it is a per-task
+rate difference from each entrant's own aggregated `per_task` cell, NOT the project/family-resampled,
+repetition-matched statistic spec section 28 describes (`aieb_analysis.paired_project_difference`) -
+that requires per-repetition observations grouped by underlying project, and nothing in the hosted
+persistence schema populates the `project_id` that function's own signature requires (a real,
+disclosed structural gap, not attempted here).
+
+**The Results table's per-entrant metrics were still suite-wide numbers repeated on every row**, and
+resolved-task/valid-trial counts were recomputed in the browser rather than returned by the API.
+Fixed at the source: `aieb_analysis.metrics.summarize()` gained real per-entrant breakdowns -
+`per_entrant_valid_trials`, `per_entrant_resolved_tasks`, `per_entrant_total_tasks`,
+`per_entrant_cost_per_resolution`, `per_entrant_verifier_cost_usd`,
+`per_entrant_median_engineering_seconds`, `per_entrant_deadline_rate`,
+`per_entrant_infrastructure_attrition` - each mirrors the exact population/exclusion rule its
+suite-wide counterpart already used, just grouped per entrant (the same pattern `per_entrant`/
+`per_category` already established). `summarize()` also now echoes `required_repetitions`, so the
+frontend can label "Resolved tasks (all-5)" with the real k instead of a generic "all-k".
+`Results.tsx` now reads all of these directly off the typed `AnalysisSnapshot` - the JS-side
+`buildEntrantRows` no longer iterates `per_task` cells to derive counts. Per-entrant coverage
+against the frozen plan (valid vs *planned* trial counts) and a per-entrant aggregate Wilson
+uncertainty interval remain unavailable and are named in `snapshot.limitations` rather than
+fabricated: the former needs `planned_cells` wired to a real caller (ENG-011, a pre-existing
+disclosed gap), the latter cannot be soundly computed by pooling per-task confidence intervals
+without a declared hierarchical model.
+
+**Publication provenance could be misrepresented two ways.** (1) `ReleaseDetail.tsx` inferred the
+"frozen task list" from which tasks happened to have a `snapshot.per_task` cell - a planned task
+with zero observations disappeared entirely, the exact case incomplete-coverage reporting must
+preserve. Fixed: `GET /v1/publications/{id}/results` gained `frozen_tasks`, read from the campaign's
+own frozen manifest (`campaign.resolved["tasks"]`), and a `cohort` object (track/suite_id/
+protocol_id/dependency_mode/hardware_class from `campaign.resolved["cohort"]`) - real manifest data,
+not inferred from result rows. A task with no observations still appears in the list, flagged "no
+observations", rather than silently vanishing. (2) An entrant's "results by release" resolved every
+historical result to whichever entrant revision is newest RIGHT NOW, even though a historical result
+may have used an older revision. Fixed: `GET /v1/entrants/by-slug/{slug}/results` now looks up the
+EXACT entrant revision that publication's own frozen campaign manifest used
+(`campaign.resolved["entrants"]`) and returns it as `entrant_version` per row - pinned to the
+configuration that actually produced that result, not a guess. The entrant profile page's header
+(model/capabilities/etc.) still shows the most-recent revision - that remains a real, disclosed
+limitation, now narrowed to just the header, not the per-result data too.
+
+**Compare showed only an aggregate rate per entrant.** `Compare.tsx`'s `EntrantPanel` now also
+fetches and shows each entrant's real configuration (version, model, capabilities via
+`GET /entrants/by-slug/{slug}`) and, from that entrant's own publication's snapshot, the same
+per-entrant cost/median-time/deadline-rate/coverage numbers the Results table shows - not merely
+"Rate: X".
+
+**Downloaded Results JSON was not an immutable publication bundle.** `Results.tsx`'s download
+previously serialized only `snapshot`, omitting the publication ID, snapshot digest, cohort/protocol
+identity, and dates shown on screen. Fixed: the download now includes the full
+`PublicationResultsResponse` (publication id, campaign id, snapshot digest, status, supersedes_id,
+created_at, cohort_digest, cohort, frozen_tasks, snapshot) - everything the page itself displays.
+
+**A visible encoding defect** (`Â·` instead of `·` between Home's two links) is fixed by using a
+JS unicode escape (`·`) directly in the JSX rather than a literal byte in the source file - this
+makes the separator's correctness independent of any file/transport encoding layer, rather than
+merely re-saving the same literal character and hoping the mojibake does not recur.
+
+See DECISIONS.md ENG016-007 (comparison), ENG016-008 (per-entrant metrics/provenance), ENG016-009
+(Compare/download/encoding) for full detail and test references.
+
 ## Known, disclosed gaps that remain (not fabricated data)
 
 - **Run evidence** (`/runs/:trialId`): the only backing endpoint, `GET /v1/trials/{id}`, is
@@ -111,10 +192,29 @@ before.
   malicious-content test uses a real API field (a task requirement description) instead.
 - Real-browser visual/responsive inspection: no visual browser tooling was available in this
   environment.
+- **Genuine repetition-matched paired statistics** (spec section 28: "resampling projects/families
+  then repetitions according to the declared hierarchical model", `aieb_analysis.
+  paired_project_difference`): the hosted persistence schema (`trial`/`attempt`/`candidate`/
+  `evaluation`) never tracks `project_id`, which that function's own signature requires - it has no
+  production caller anywhere in this codebase. The per-task rate difference `GET /v1/comparisons`
+  returns within a single publication is honestly labeled as exactly that, not this stricter
+  statistic - building real per-repetition, project-tracked pairing is a persistence-schema change,
+  not a bug fix, and is future work.
+- **"Planned" trial counts** (as opposed to valid ones) and **a per-entrant aggregate Wilson
+  uncertainty interval** are not in `AnalysisSnapshot` - the former needs `planned_cells` wired to a
+  real caller (the same pre-existing ENG-011 gap), the latter is not statistically sound to compute
+  by pooling per-task confidence intervals without a declared hierarchical model. Both are named in
+  `snapshot.limitations`, not fabricated.
+- **Frontend tests mock at the typed-API-client boundary, not real HTTP.** They exercise real hook/
+  component/render code, but never a real `fetch`, generated-client serialization, CORS, or an
+  actual running backend - and structural accessibility automation (`axe-core`) covers only Home and
+  TaskCatalog, not every page. A real end-to-end journey (seeded API, real browser, every page) is a
+  distinct, larger effort - deliberately not attempted in this pass (third review's finding #5),
+  disclosed as open rather than silently claimed via the existing 27 typed-mock tests.
 
 ## Testing
 
-`apps/web/src/pages/*.test.tsx`: 26 tests (Vitest + Testing Library), against a typed spy on the API
+`apps/web/src/pages/*.test.tsx`: 27 tests (Vitest + Testing Library), against a typed spy on the API
 client (`src/test/mockApi.ts` - MSW's network interception did not reliably patch `fetch` under this
 environment's jsdom + very-recent-Node combination, so this session mocks at the typed-client
 boundary instead; still real hook/component/render code):
@@ -124,7 +224,8 @@ boundary instead; still real hook/component/render code):
 - Honest empty/error/withdrawn/superseded/not-found/authorization-required states throughout -
   UI-01's "no placeholder leaderboard scores."
 - A working error-recovery Retry (`Home`): a failed query followed by a successful refetch.
-- Cohort-comparable vs. non-comparable comparison, including real `paired_differences` rendering.
+- Cohort-comparable vs. non-comparable comparison, including real `paired_differences` rendering and
+  Compare's per-entrant exact configuration (version/model/capabilities) plus cost/time/coverage.
 - Null rates sort last and display "Unknown," never a fabricated zero.
 - Up-to-4 entrant selection with the 5th checkbox disabled.
 - URL-backed category filter and cursor-based "Next page" pagination.
@@ -133,12 +234,27 @@ boundary instead; still real hook/component/render code):
 - Structural accessibility (`axe-core`: label association, table semantics, landmark structure -
   color-contrast disabled since jsdom cannot evaluate real color).
 
-`services/api`'s own test suite (36 tests in `tests/test_api_service.py`, 3 in
+`services/api`'s own test suite (39 tests in `tests/test_api_service.py`, 3 in
 `tests/test_api_cors.py`) covers: CORS allow/deny, newest-first pagination across multiple pages,
 snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), real
-cohort-comparability (same-publication always comparable; cross-publication requires matching
-`cohort_digest`) with real paired-difference output, `supersedes_id`/`cohort_digest`/`created_at` on
-publication results, and the task-catalog/corrections listings from the first pass.
+cohort-comparability (same-publication always comparable; cross-publication is now UNCONDITIONALLY
+non-comparable, including when `cohort_digest` happens to match) with real paired-difference output,
+`supersedes_id`/`cohort_digest`/`created_at`/`cohort`/`frozen_tasks` on publication results, the
+task-catalog/corrections listings, the frozen task list preserving a zero-observation task, and
+entrant results pinning the exact revision a historical publication actually used. `aieb_analysis`'s
+own `tests/test_analysis.py` (15 tests) covers the new per-entrant cost/time/deadline/attrition
+breakdowns and `required_repetitions`.
+
+**On the Python test count**: a prior review correctly noted an environment without
+`AIEB_DATABASE_URL` configured skips (not fails) every PostgreSQL-dependent test class
+(`test_worker_leasing.py`, `test_attempt_lifecycle.py`'s DB-touching cases, `test_api_service.py`,
+`test_api_cors.py`, and others) - stating a single "N tests passing" number without naming that
+precondition is misleading. Against a real disposable Postgres instance
+(`docker run ... postgres:16`, `AIEB_DATABASE_URL` set, `alembic upgrade head` applied): 125 tests
+discovered, 124 passed, 1 skipped (a pre-existing, intentionally-skipped case unrelated to
+`AIEB_DATABASE_URL`). Without `AIEB_DATABASE_URL` set: 125 discovered, 64 passed, 61 skipped - all
+OK, none failed; the skips are the expected, honest behavior for a missing precondition, not a
+hidden test failure.
 
 A real `uvicorn` instance was started against the real test Postgres and hit directly with `curl`
 (including a real CORS preflight with an `Origin` header, and the new `/v1/entrants/by-slug/*`

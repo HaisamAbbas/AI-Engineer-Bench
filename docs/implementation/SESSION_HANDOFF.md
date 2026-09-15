@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus the third review's finding #5 - real HTTP/browser integration tests - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -265,6 +265,49 @@ Retry). Full regression: 115 Python tests, 26 frontend tests, clean `tsc`/`vite 
 disclosed gaps: run evidence's redaction boundary, task ticket text (`instruction.md`), candidate
 logs/diffs, and real-browser visual inspection - see `docs/implementation/evidence/ENG-016/
 website.md`.
+
+## Prompt 13 third-pass review - three second-pass fixes were only partial, plus three new gaps
+
+A third independent review found findings #2, #3, and #7 from the second-pass review only partially
+addressed, plus three more real gaps. All fixed except the review's own finding #5, deliberately
+deferred as a separate effort - see DECISIONS.md ENG016-007/008/009 for full detail:
+
+1. **Cross-release comparison still violated spec journey 6.1** ("never a calculated winner" -
+   unconditional). The second pass allowed paired differences across different publications
+   whenever `campaign.cohort_digest` matched - but `Cohort` doesn't carry the exact task list,
+   entrant revisions, or repetition plan, so a matching digest never proved matching observations.
+   Fixed: cross-publication comparisons are now unconditionally non-comparable; paired differences
+   only exist within a single publication (ENG016-007).
+2. **Per-entrant cost/time/deadline/attrition were still suite-wide numbers**, and resolved-task/
+   valid-trial counts were recomputed in the browser. Fixed at the source:
+   `aieb_analysis.metrics.summarize()` gained real per-entrant breakdowns for all of these (mirroring
+   how `per_entrant`/`per_category` already group by entrant) plus `required_repetitions` for a real
+   "all-k" label; `Results.tsx` now reads all of it directly, no client-side derivation
+   (ENG016-008).
+3. **Publication provenance could be misrepresented**: `ReleaseDetail.tsx` inferred the frozen task
+   list from which tasks had a snapshot cell (a zero-observation task vanished); entrant profile
+   results always showed whichever revision is newest now, even for old historical results. Fixed:
+   `frozen_tasks`/`cohort` now come from `campaign.resolved` (the real frozen manifest), and each
+   entrant result row now carries the EXACT `entrant_version` that publication's campaign actually
+   used (ENG016-008).
+4. **Compare showed only an aggregate rate** - fixed with a real per-entrant panel (version, model,
+   capabilities, cost, time, coverage), not merely "Rate: X" (ENG016-009).
+5. **Downloaded Results JSON omitted publication ID, snapshot digest, cohort/protocol identity** -
+   fixed to download the full response bundle, not just `snapshot` (ENG016-009).
+6. **A mojibake `Â·` between Home's two links** - fixed with a JS unicode escape immune to any
+   file/transport encoding layer (ENG016-009).
+
+Not attempted: the review's finding #5 (real HTTP/browser integration tests exercising actual
+`fetch`/CORS/a running backend, and full-page accessibility automation beyond Home/TaskCatalog) - a
+distinct, substantially larger effort, disclosed as open in `docs/implementation/evidence/ENG-016/
+website.md` rather than bundled into this pass.
+
+Full regression after this pass: 125 Python tests (1 skipped, against real Postgres - includes 15
+`aieb_analysis` tests and 39 `test_api_service.py` tests, up from 13/36 respectively), 27 frontend
+tests, `tsc --noEmit` and `vite build` clean. Also corrected: a prior "115 Python tests passing"
+claim did not name that PostgreSQL-dependent test classes are skipped (not failed) without
+`AIEB_DATABASE_URL` configured - stated explicitly now (125 discovered either way; 64 pass/61 skip
+without the database, 124 pass/1 skip with it).
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 
