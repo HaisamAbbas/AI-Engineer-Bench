@@ -85,13 +85,20 @@ export interface paths {
          *     `entrant_publication_ids` (same order/length as `entrant_ids`) names one
          *     per entrant for a genuine cross-release comparison; an entrant with no
          *     corresponding entry falls back to `publication_id` (the common case: all
-         *     entrants come from the same, single publication). Cohort compatibility
-         *     is real, not assumed: entrants are only paired-comparable when their
-         *     publications' campaigns share the same `cohort_digest` - the same
-         *     frozen task/entrant/repetition plan, not merely "some publication
-         *     exists." Incompatible entrants still get their own eligible aggregate
-         *     (separate panels), just no paired difference - never a fabricated
-         *     calculated winner across genuinely different cohorts (spec journey 6.1).
+         *     entrants come from the same, single publication).
+         *
+         *     Paired per-task differences are ONLY ever computed within a single
+         *     publication. Spec journey 6.1 is unconditional: "A cross-release
+         *     comparison shows separate panels with a non-comparable label, never a
+         *     calculated winner" - not "unless the cohorts happen to match." An
+         *     earlier version of this endpoint treated equal `cohort_digest` values
+         *     across different publications as sufficient proof of comparable
+         *     observations; that was wrong on its own terms too, since `Cohort` itself
+         *     does not carry the exact task list, entrant revisions, or repetition
+         *     plan - a matching digest does not prove matching observations (review
+         *     finding #1, 2026-09-16). Entrants from different publications therefore
+         *     always get separate eligible panels with no paired difference, exactly
+         *     as spec 6.1 requires - never a fabricated calculated winner.
          */
         get: operations["get_comparison_v1_comparisons_get"];
         put?: never;
@@ -321,10 +328,68 @@ export interface components {
             per_entrant: {
                 [key: string]: number | null;
             };
+            /**
+             * Per Entrant Cost Per Resolution
+             * @default {}
+             */
+            per_entrant_cost_per_resolution: {
+                [key: string]: number | null;
+            };
+            /**
+             * Per Entrant Deadline Rate
+             * @default {}
+             */
+            per_entrant_deadline_rate: {
+                [key: string]: number | null;
+            };
+            /**
+             * Per Entrant Infrastructure Attrition
+             * @default {}
+             */
+            per_entrant_infrastructure_attrition: {
+                [key: string]: number | null;
+            };
+            /**
+             * Per Entrant Median Engineering Seconds
+             * @default {}
+             */
+            per_entrant_median_engineering_seconds: {
+                [key: string]: number | null;
+            };
+            /**
+             * Per Entrant Resolved Tasks
+             * @default {}
+             */
+            per_entrant_resolved_tasks: {
+                [key: string]: number;
+            };
+            /**
+             * Per Entrant Total Tasks
+             * @default {}
+             */
+            per_entrant_total_tasks: {
+                [key: string]: number;
+            };
+            /**
+             * Per Entrant Valid Trials
+             * @default {}
+             */
+            per_entrant_valid_trials: {
+                [key: string]: number;
+            };
+            /**
+             * Per Entrant Verifier Cost Usd
+             * @default {}
+             */
+            per_entrant_verifier_cost_usd: {
+                [key: string]: number | null;
+            };
             /** Per Task */
             per_task: {
                 [key: string]: components["schemas"]["TaskCellStats"];
             };
+            /** Required Repetitions */
+            required_repetitions?: number | null;
             /** Schema Version */
             schema_version: string;
             /** Successful Engineering Median Seconds */
@@ -451,6 +516,25 @@ export interface components {
             suite_id: string;
             track: components["schemas"]["Track"];
         };
+        /**
+         * CohortIdentity
+         * @description The frozen cohort's own identifying fields
+         *     (`campaign.resolved["cohort"]`) - real manifest data, not inferred from
+         *     result rows, so a release page can show suite/track/dependency-mode/
+         *     profile identifiers (review finding #2) without recomputing anything.
+         */
+        CohortIdentity: {
+            /** Dependency Mode */
+            dependency_mode: string;
+            /** Hardware Class */
+            hardware_class: string;
+            /** Protocol Id */
+            protocol_id: string;
+            /** Suite Id */
+            suite_id: string;
+            /** Track */
+            track: string;
+        };
         /** ComparisonResponse */
         ComparisonResponse: {
             /** Cohort Comparable */
@@ -518,7 +602,14 @@ export interface components {
         /**
          * EntrantResultEntry
          * @description One publication an entrant slug appears in - the "results by release"
-         *     spec section 5 names for the entrant profile page.
+         *     spec section 5 names for the entrant profile page. `entrant_version`
+         *     names the EXACT entrant revision that publication's frozen campaign
+         *     actually used (`campaign.resolved["entrants"]`), not "whichever revision
+         *     happens to be newest right now" - a historical result must stay pinned
+         *     to the configuration that produced it even after a newer revision of
+         *     the same slug is registered (review finding #3). `None` only if the
+         *     campaign's resolved manifest could not be read at all (a real, disclosed
+         *     failure mode, not silently defaulted to "current").
          */
         EntrantResultEntry: {
             /** Aggregate Rate */
@@ -530,6 +621,8 @@ export interface components {
             campaign_id: string;
             /** Created At */
             created_at: string;
+            /** Entrant Version */
+            entrant_version?: string | null;
             /**
              * Publication Id
              * Format: uuid
@@ -610,6 +703,26 @@ export interface components {
             cohort: components["schemas"]["Cohort"];
             protocol: components["schemas"]["ProtocolRevision"];
         };
+        /**
+         * FrozenTaskEntry
+         * @description One task from the campaign's own frozen manifest
+         *     (`campaign.resolved["tasks"]`) - NOT inferred from which tasks happen to
+         *     have an observation in the published snapshot. A planned task with zero
+         *     observations (the exact case incomplete-coverage reporting must
+         *     preserve, spec section 28) still appears here, since it comes from the
+         *     manifest the campaign actually froze, not from what got scored
+         *     (review finding #3).
+         */
+        FrozenTaskEntry: {
+            /** Category */
+            category: string;
+            /** Family Id */
+            family_id: string;
+            /** Slug */
+            slug: string;
+            /** Version */
+            version: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -672,10 +785,16 @@ export interface components {
              * Format: uuid
              */
             campaign_id: string;
+            cohort?: components["schemas"]["CohortIdentity"] | null;
             /** Cohort Digest */
             cohort_digest: string | null;
             /** Created At */
             created_at: string;
+            /**
+             * Frozen Tasks
+             * @default []
+             */
+            frozen_tasks: components["schemas"]["FrozenTaskEntry"][];
             /**
              * Id
              * Format: uuid
@@ -798,8 +917,18 @@ export interface components {
         };
         /**
          * TaskPairedDifference
-         * @description One task's paired outcome difference between exactly two entrants
-         *     within the same trial/repetition cell (spec: "paired task outcomes").
+         * @description A per-task rate difference between two entrants IN THE SAME
+         *     publication, computed from each entrant's own aggregated `per_task` rate
+         *     cell. This is NOT the project/family-resampled, repetition-matched
+         *     statistic spec section 28 describes ("resampling projects/families then
+         *     repetitions according to the declared hierarchical model") - that
+         *     requires per-repetition observations grouped by underlying project,
+         *     which the persisted publication snapshot does not retain (only
+         *     aggregated per-task rate/n). Building that is real future work (the
+         *     existing `aieb_analysis.paired_project_difference` implements the
+         *     correct hierarchical procedure already, but nothing in the hosted
+         *     persistence schema populates the `project_id` it requires yet -
+         *     disclosed, not silently claimed here). Review finding #1 (2026-09-16).
          */
         TaskPairedDifference: {
             /** Difference */

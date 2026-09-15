@@ -5,10 +5,14 @@ import { formatRate, formatUtc } from "../lib/format";
 
 /** "/entrants/:slug" - exact version, model(s), settings, results by
  * release. Looked up by slug (matching aieb_analysis snapshots' per_entrant
- * keys), resolving to the most recent revision for that slug - a specific
- * historical result's exact configuration can differ once a slug has more
- * than one revision, since the snapshot itself carries no per-result
- * revision pointer; that is a disclosed limitation, not a silent guess. */
+ * keys); the header profile resolves to the most recent revision for that
+ * slug (real limitation: the manifest fields shown there - model, prompt/
+ * tools digests, capabilities - can differ from what an older historical
+ * result actually used). Each row in "Results by release" below is NOT
+ * subject to that limitation: it names the exact entrant_version that
+ * publication's frozen campaign manifest actually used
+ * (`campaign.resolved["entrants"]`), pinned per result rather than guessed
+ * from "whichever revision is newest now" (review finding #3). */
 export function EntrantProfile() {
   const { slug } = useParams();
   const entrant = useEntrantRevisionBySlug(slug);
@@ -23,8 +27,9 @@ export function EntrantProfile() {
     <section>
       <h1>{manifest.id}</h1>
       <p role="note">
-        Showing the most recent revision known for this entrant slug; a specific historical result below may have
-        used a different revision - the snapshot does not record which.
+        The profile below shows the most recent revision known for this entrant slug. Each row in "Results by
+        release" separately names the exact version that release's frozen campaign actually used, which can differ
+        from the profile above.
       </p>
       <dl>
         <dt>Track</dt>
@@ -55,6 +60,7 @@ export function EntrantProfile() {
           <thead>
             <tr>
               <th scope="col">Release</th>
+              <th scope="col">Entrant version</th>
               <th scope="col">Status</th>
               <th scope="col">Rate</th>
               <th scope="col">Published</th>
@@ -68,6 +74,7 @@ export function EntrantProfile() {
                   <th scope="row">
                     <Link to={`/releases/${entry.publication_id}`}>{entry.publication_id}</Link>
                   </th>
+                  <td>{entry.entrant_version ?? "Unknown"}</td>
                   <td>{entry.status}</td>
                   <td className="tabular-nums">{formatRate(entry.aggregate_rate)}</td>
                   <td title={created.localTitle}>{created.display}</td>

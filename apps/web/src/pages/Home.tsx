@@ -24,7 +24,9 @@ export function Home() {
       {releases.isSuccess && <LatestPublication items={releases.data.items} />}
 
       <p>
-        <Link to="/results">View results</Link> · <Link to="/docs">Run locally</Link>
+        <Link to="/results">View results</Link>
+        {" · "}
+        <Link to="/docs">Run locally</Link>
       </p>
     </section>
   );

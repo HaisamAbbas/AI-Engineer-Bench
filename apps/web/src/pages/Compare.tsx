@@ -1,17 +1,22 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { usePublicationResults, useComparison } from "../api/hooks";
+import { usePublicationResults, useComparison, useEntrantRevisionBySlug } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
-import { formatRate, formatPercentagePointDifference } from "../lib/format";
+import { formatRate, formatPercentagePointDifference, formatUsd, formatSeconds, formatCount } from "../lib/format";
 
-/** "/compare" - up to 4 entrants side by side, paired task outcomes when
- * cohort-comparable, and genuine cross-release comparison: an entrant can
- * be pinned to a specific OTHER publication via `entrant_publication_ids`
- * (same order as `entrant_ids`, empty string falling back to the shared
- * `publication`). Cohort compatibility is real (GET /v1/comparisons checks
- * campaign.cohort_digest), not assumed - an incompatible pairing shows
- * separate panels and a non-comparable label, never a fabricated winner
- * (spec journey 6.1). */
+/** "/compare" - up to 4 entrants side by side: exact configuration (agent
+ * version, model, capabilities), per-entrant cost/time/coverage (the same
+ * typed per-entrant analysis fields the Results table shows, not merely an
+ * aggregate rate - review finding #4), and paired task outcomes ONLY when
+ * every entrant comes from the SAME publication. An entrant can be pinned
+ * to a specific OTHER publication via `entrant_publication_ids` (same order
+ * as `entrant_ids`, empty string falling back to the shared `publication`)
+ * for a genuine cross-release comparison - but spec journey 6.1 is
+ * unconditional: "A cross-release comparison shows separate panels with a
+ * non-comparable label, never a calculated winner." Comparability is
+ * therefore never based on `cohort_digest` matching across publications
+ * (review finding #1) - it is entirely "are these entrants in the same
+ * publication or not," decided server-side (`GET /v1/comparisons`). */
 export function Compare() {
   const [params, setParams] = useSearchParams();
   const publicationId = params.get("publication") ?? undefined;
@@ -97,22 +102,15 @@ export function Compare() {
             </p>
           )}
           <div className="compare-grid">
-            {entrantIds.map((entrantId) => {
-              const entry = comparison.data.entrants[entrantId];
-              return (
-                <article key={entrantId} className="compare-panel">
-                  <h2>{entrantId}</h2>
-                  <button type="button" onClick={() => removeEntrant(entrantId)}>
-                    Remove
-                  </button>
-                  {entry.eligible ? (
-                    <p>Rate: {formatRate(entry.aggregate)}</p>
-                  ) : (
-                    <p>Not eligible: {entry.reason}</p>
-                  )}
-                </article>
-              );
-            })}
+            {entrantIds.map((entrantId, index) => (
+              <EntrantPanel
+                key={entrantId}
+                entrantId={entrantId}
+                publicationId={entrantPublicationIds?.[index] || publicationId}
+                entry={comparison.data.entrants[entrantId]}
+                onRemove={() => removeEntrant(entrantId)}
+              />
+            ))}
           </div>
           {comparison.data.cohort_comparable && comparison.data.paired_differences && (
             <PairedDifferences pairs={comparison.data.paired_differences} />
@@ -139,6 +137,69 @@ export function Compare() {
         </button>
       </p>
     </section>
+  );
+}
+
+/** One entrant's side-by-side panel (spec journey 6.1 / section 5: "Side-by-side
+ * configurations, paired task outcomes, cost/time"). Fetches this entrant's own
+ * configuration (agent version, model, capabilities) and, from its own
+ * publication's snapshot, the same per-entrant cost/time/coverage numbers the
+ * Results table shows - not merely an aggregate rate. */
+function EntrantPanel({
+  entrantId,
+  publicationId,
+  entry,
+  onRemove,
+}: {
+  entrantId: string;
+  publicationId: string | undefined;
+  entry: NonNullable<ReturnType<typeof useComparison>["data"]>["entrants"][string];
+  onRemove: () => void;
+}) {
+  const revision = useEntrantRevisionBySlug(entrantId);
+  const results = usePublicationResults(publicationId);
+  const snapshot = results.data?.snapshot;
+
+  return (
+    <article className="compare-panel">
+      <h2>{entrantId}</h2>
+      <button type="button" onClick={onRemove}>
+        Remove
+      </button>
+      {revision.isSuccess && (
+        <dl>
+          <dt>Version</dt>
+          <dd>{revision.data.manifest.agent_version}</dd>
+          <dt>Model</dt>
+          <dd>{revision.data.manifest.engineer_model.reported_model ?? revision.data.manifest.engineer_model.requested_model}</dd>
+          <dt>Capabilities</dt>
+          <dd>{revision.data.manifest.capabilities.join(", ")}</dd>
+        </dl>
+      )}
+      {entry.eligible ? (
+        <dl>
+          <dt>Rate</dt>
+          <dd className="tabular-nums">{formatRate(entry.aggregate)}</dd>
+          {snapshot && (
+            <>
+              <dt>Resolved tasks</dt>
+              <dd className="tabular-nums">
+                {formatCount(snapshot.per_entrant_resolved_tasks?.[entrantId] ?? 0)}/
+                {formatCount(snapshot.per_entrant_total_tasks?.[entrantId] ?? 0)}
+              </dd>
+              <dt>Cost / resolution</dt>
+              <dd className="tabular-nums">{formatUsd(snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null)}</dd>
+              <dt>Median engineering time</dt>
+              <dd className="tabular-nums">{formatSeconds(snapshot.per_entrant_median_engineering_seconds?.[entrantId] ?? null)}</dd>
+              <dt>Deadline rate</dt>
+              <dd className="tabular-nums">{formatRate(snapshot.per_entrant_deadline_rate?.[entrantId] ?? null)}</dd>
+            </>
+          )}
+        </dl>
+      ) : (
+        <p>Not eligible: {entry.reason}</p>
+      )}
+    </article>
   );
 }
 

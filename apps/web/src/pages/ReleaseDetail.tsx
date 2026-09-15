@@ -17,8 +17,13 @@ export function ReleaseDetail() {
   if (results.isError) return <ErrorState error={results.error} onRetry={() => results.refetch()} />;
 
   const data = results.data;
-  const taskIds = [...new Set(Object.keys(data.snapshot.per_task).map((key) => key.slice(0, key.lastIndexOf(":"))))].sort();
+  // The frozen task list comes from the campaign's own manifest
+  // (`campaign.resolved["tasks"]`, exposed as `frozen_tasks`), NOT inferred
+  // from which tasks happen to have a snapshot.per_task cell - a planned
+  // task with zero observations must not silently disappear (review finding
+  // #3; spec section 28's incomplete-coverage reporting must preserve it).
   const created = formatUtc(data.created_at);
+  const observedTaskIds = new Set(Object.keys(data.snapshot.per_task).map((key) => key.slice(0, key.lastIndexOf(":"))));
 
   return (
     <section>
@@ -28,8 +33,22 @@ export function ReleaseDetail() {
         <dd>{data.status}</dd>
         <dt>Campaign</dt>
         <dd>{data.campaign_id}</dd>
-        <dt>Cohort</dt>
+        <dt>Cohort digest</dt>
         <dd>{data.cohort_digest ?? "Unknown"}</dd>
+        {data.cohort && (
+          <>
+            <dt>Suite / track</dt>
+            <dd>
+              {data.cohort.suite_id} / {data.cohort.track}
+            </dd>
+            <dt>Protocol / dependency mode</dt>
+            <dd>
+              {data.cohort.protocol_id} / {data.cohort.dependency_mode}
+            </dd>
+            <dt>Hardware class (profile)</dt>
+            <dd>{data.cohort.hardware_class}</dd>
+          </>
+        )}
         <dt>Evaluation date</dt>
         <dd title={created.localTitle}>{created.display}</dd>
       </dl>
@@ -40,13 +59,18 @@ export function ReleaseDetail() {
         <p role="alert">This release has been superseded by a later, corrected snapshot.</p>
       )}
       <h2>Frozen task list</h2>
-      {taskIds.length === 0 ? (
-        <p>No tasks are recorded in this release's snapshot.</p>
+      {data.frozen_tasks.length === 0 ? (
+        <p>No tasks are recorded in this release's frozen manifest.</p>
       ) : (
         <ul>
-          {taskIds.map((taskId) => (
-            <li key={taskId}>{taskId}</li>
-          ))}
+          {[...data.frozen_tasks]
+            .sort((a, b) => a.slug.localeCompare(b.slug))
+            .map((task) => (
+              <li key={task.slug}>
+                {task.slug} ({task.version}) - {task.category}
+                {!observedTaskIds.has(task.slug) && <span className="badge badge-incomplete"> no observations</span>}
+              </li>
+            ))}
         </ul>
       )}
       <h2>Changelog</h2>

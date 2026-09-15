@@ -18,45 +18,61 @@ interface EntrantRow {
   resolvedTasks: number;
   totalTasks: number;
   validTrials: number;
+  costPerResolution: number | null;
+  verifierCostUsd: number | null;
+  medianEngineeringSeconds: number | null;
+  deadlineRate: number | null;
+  infrastructureAttrition: number | null;
   categories: [string, number | null][];
 }
 
+/** Every number here is read directly off the typed AnalysisSnapshot the API
+ * returns - none of it is recomputed from per_task cells (spec: "Do not
+ * recompute scores in JavaScript", review finding #2). The `per_entrant_*`
+ * fields are themselves authoritative aieb_analysis output, mirroring
+ * `per_entrant`/`per_category`'s own per-entrant grouping. */
 function buildEntrantRows(snapshot: AnalysisSnapshot): EntrantRow[] {
   const entrantIds = Object.keys(snapshot.per_entrant);
-  const allTaskIds = new Set<string>();
-  for (const key of Object.keys(snapshot.per_task)) {
-    allTaskIds.add(key.slice(0, key.lastIndexOf(":")));
-  }
   return entrantIds.map((entrantId) => {
-    let resolvedTasks = 0;
-    let totalTasks = 0;
-    let validTrials = 0;
-    for (const taskId of allTaskIds) {
-      const cell = snapshot.per_task[`${taskId}:${entrantId}`];
-      if (!cell) continue;
-      totalTasks += 1;
-      validTrials += cell.n;
-      if (cell.all_k) resolvedTasks += 1;
-    }
     const categories: [string, number | null][] = snapshot.per_category
       ? Object.entries(snapshot.per_category).map(([category, byEntrant]) => [category, byEntrant[entrantId] ?? null])
       : [];
-    return { entrantId, suiteRate: snapshot.per_entrant[entrantId], resolvedTasks, totalTasks, validTrials, categories };
+    return {
+      entrantId,
+      suiteRate: snapshot.per_entrant[entrantId],
+      resolvedTasks: snapshot.per_entrant_resolved_tasks?.[entrantId] ?? 0,
+      totalTasks: snapshot.per_entrant_total_tasks?.[entrantId] ?? 0,
+      validTrials: snapshot.per_entrant_valid_trials?.[entrantId] ?? 0,
+      costPerResolution: snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null,
+      verifierCostUsd: snapshot.per_entrant_verifier_cost_usd?.[entrantId] ?? null,
+      medianEngineeringSeconds: snapshot.per_entrant_median_engineering_seconds?.[entrantId] ?? null,
+      deadlineRate: snapshot.per_entrant_deadline_rate?.[entrantId] ?? null,
+      infrastructureAttrition: snapshot.per_entrant_infrastructure_attrition?.[entrantId] ?? null,
+      categories,
+    };
   });
 }
 
 /** "/results" - cohort selector (which publication), results table with the
- * columns spec section 5 names (entrant revision, resolved-task estimate,
- * valid trials, per-category rates, coverage, cost/time, evaluation
- * dates), sort, select up to 4 entrants, download JSON. Numbers are exactly
- * what the API returns (the shared aieb_analysis output, typed end to end
- * via AnalysisSnapshot) - none are recomputed here (spec 4/35).
+ * columns spec section 5 names (entrant revision, resolved-task estimate
+ * labeled with the real k, valid trials, per-entrant cost/verifier-cost/
+ * median-engineering-time/deadline-rate/infrastructure-attrition,
+ * per-category rates, coverage, evaluation date), sort, select up to 4
+ * entrants, download the full provenance bundle (publication id, snapshot/
+ * cohort digests, frozen task list, cohort identity, snapshot). Every number
+ * is read directly from the typed AnalysisSnapshot the API returns (review
+ * finding #2: per-entrant cost/time/deadline/attrition breakdowns are now
+ * real `aieb_analysis.metrics.summarize()` output fields, mirroring how
+ * `per_entrant`/`per_category` already group by entrant, not blended
+ * suite-wide numbers repeated on every row) - none are recomputed here
+ * (spec: "Do not recompute scores in JavaScript").
  *
- * "Planned" trial counts and per-entrant median engineering time/cost are
- * not in the current analysis output (only a suite-wide total exists for
- * time/cost; "planned" isn't tracked per cell, only whether a required
- * repetition count was met overall) - shown as "Unknown"/suite-wide rather
- * than fabricated per-entrant. */
+ * "Planned" trial counts (as opposed to valid ones) and a per-entrant
+ * aggregate Wilson uncertainty interval remain unavailable: the former
+ * needs `planned_cells` wired to a real caller (ENG-011, disclosed
+ * separately), and the latter cannot be soundly computed by pooling
+ * per-task confidence intervals without a declared hierarchical model - both
+ * are listed in `snapshot.limitations` rather than fabricated. */
 export function Results() {
   const [params, setParams] = useSearchParams();
   const releases = useReleases();
@@ -107,9 +123,7 @@ export function Results() {
       {results.isError && <ErrorState error={results.error} onRetry={() => results.refetch()} />}
       {results.isSuccess && (
         <ResultsTable
-          snapshot={results.data.snapshot}
-          status={results.data.status}
-          notice={results.data.notice ?? undefined}
+          data={results.data}
           publicationCreatedAt={releases.data.items.find((p) => p.id === effectivePublicationId)?.created_at}
           selected={selected}
           setSelected={setSelected}
@@ -123,9 +137,7 @@ export function Results() {
 }
 
 function ResultsTable({
-  snapshot,
-  status,
-  notice,
+  data,
   publicationCreatedAt,
   selected,
   setSelected,
@@ -133,9 +145,7 @@ function ResultsTable({
   setSortBy,
   publicationId,
 }: {
-  snapshot: AnalysisSnapshot;
-  status: string;
-  notice: string | undefined;
+  data: PublicationResultsData;
   publicationCreatedAt: string | undefined;
   selected: Set<string>;
   setSelected: (s: Set<string>) => void;
@@ -143,8 +153,11 @@ function ResultsTable({
   setSortBy: (s: "entrant" | "rate") => void;
   publicationId: string;
 }) {
+  const { snapshot, status } = data;
+  const notice = data.notice ?? undefined;
   const rows = buildEntrantRows(snapshot);
   const categoryNames = snapshot.per_category ? Object.keys(snapshot.per_category).sort() : [];
+  const allKLabel = snapshot.required_repetitions ? `Resolved tasks (all-${snapshot.required_repetitions})` : "Resolved tasks (all-k)";
 
   if (rows.length === 0) {
     return (
@@ -174,7 +187,24 @@ function ResultsTable({
   }
 
   function downloadJson() {
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+    // The whole PublicationResultsResponse, not only `snapshot` - the
+    // publication id, snapshot digest, cohort/protocol identity, and dates
+    // shown on screen must also be in the downloaded bundle (spec: downloads
+    // carry the publication ID and protocol hash shown on screen; review
+    // finding #6, a bare `snapshot` download previously omitted all of it).
+    const bundle = {
+      publication_id: data.id,
+      campaign_id: data.campaign_id,
+      snapshot_digest: data.snapshot_digest,
+      status: data.status,
+      supersedes_id: data.supersedes_id,
+      created_at: data.created_at,
+      cohort_digest: data.cohort_digest,
+      cohort: data.cohort,
+      frozen_tasks: data.frozen_tasks,
+      snapshot: data.snapshot,
+    };
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -196,6 +226,24 @@ function ResultsTable({
             {snapshot.complete_for_rank ? "Complete" : "Incomplete"}
           </span>
         </dd>
+        {data.cohort && (
+          <>
+            <dt>Suite / track</dt>
+            <dd>
+              {data.cohort.suite_id} / {data.cohort.track}
+            </dd>
+            <dt>Protocol / dependency mode</dt>
+            <dd>
+              {data.cohort.protocol_id} / {data.cohort.dependency_mode}
+            </dd>
+            <dt>Hardware class (profile)</dt>
+            <dd>{data.cohort.hardware_class}</dd>
+          </>
+        )}
+        <dt>Cohort digest (provenance)</dt>
+        <dd className="tabular-nums">{data.cohort_digest ?? "Unknown"}</dd>
+        <dt>Snapshot digest (provenance)</dt>
+        <dd className="tabular-nums">{data.snapshot_digest}</dd>
         <dt>Suite rate (fixed-weight, all entrants)</dt>
         <dd className="tabular-nums">{formatRate(snapshot.suite_rate)}</dd>
         <dt>Cost per resolution (suite-wide)</dt>
@@ -237,8 +285,13 @@ function ResultsTable({
                 Rate
               </button>
             </th>
-            <th scope="col">Resolved tasks (all-k)</th>
+            <th scope="col">{allKLabel}</th>
             <th scope="col">Valid trials</th>
+            <th scope="col">Cost / resolution</th>
+            <th scope="col">Verifier cost</th>
+            <th scope="col">Median engineering time</th>
+            <th scope="col">Deadline rate</th>
+            <th scope="col">Infrastructure attrition</th>
             {categoryNames.map((category) => (
               <th scope="col" key={category}>
                 {category} rate
@@ -258,6 +311,11 @@ function ResultsTable({
                 {formatCount(row.resolvedTasks)}/{formatCount(row.totalTasks)}
               </td>
               <td className="tabular-nums">{formatCount(row.validTrials)}</td>
+              <td className="tabular-nums">{formatUsd(row.costPerResolution)}</td>
+              <td className="tabular-nums">{formatUsd(row.verifierCostUsd)}</td>
+              <td className="tabular-nums">{formatSeconds(row.medianEngineeringSeconds)}</td>
+              <td className="tabular-nums">{formatRate(row.deadlineRate)}</td>
+              <td className="tabular-nums">{formatRate(row.infrastructureAttrition)}</td>
               {row.categories.map(([category, rate]) => (
                 <td className="tabular-nums" key={category}>
                   {formatRate(rate)}
