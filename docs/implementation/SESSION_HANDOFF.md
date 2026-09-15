@@ -1,11 +1,36 @@
 # Session handoff
 
-Updated: 2026-09-14
-Current phase: Prompt 12 — ENG-015 complete (PostgreSQL worker leasing and crash recovery)
+Updated: 2026-09-15
+Current phase: Post-Prompt-12 audit remediation (AUDIT-001) — critical/security findings fixed; 13 lower-priority findings from the same review still pending triage
 
 ## Current state
 
-ENG-015 is complete. `aieb_api/worker/` (repository, runner_bridge, loop, reconciler, metrics)
+An independent review spanning Prompts 01-12 raised 17 findings across ENG-002/009/011/013/
+014/015. Four were verified as real and fixed immediately (see DECISIONS.md AUDIT-001):
+(1) `aieb task validate` never actually validated `TaskRevision` - five of twelve task.yaml
+files had genuine schema defects (unquoted digest strings parsed as integers, invalid
+`category`/`egress_policy` values) that passed CLI validation anyway; the CLI now validates for
+real and all five task.yaml files were corrected; (2) hosted auth trusted a bearer token's
+`aieb_roles` claim directly instead of consulting the persisted `role_bindings` table -
+`resolve_roles` is now the sole authorization source, and a related bug (artifact ownership
+comparing an OIDC subject string against an internal UUID, which could never match) was fixed
+alongside it; (3) worker cancellation was checked only once, at claim time - a cancel arriving
+mid-run now interrupts the attempt via a second background poll thread; (4) `aieb_analysis`'s
+`summarize()` could not detect a wholly-missing planned task/entrant cell, only an
+under-repeated existing one - fixed via an optional `planned_cells` parameter. All four are
+covered by tests against the real code paths, and the full existing regression suite
+(71+ tests across core/CLI/API/worker/analysis) still passes.
+
+The remaining 13 findings are deliberately NOT fixed yet - placeholder digests across every
+task.yaml (real but project-wide, needs a real-hash-computation design decision), publication
+endpoint status/auth gating, whether "twelve distinct family IDs" is genuine project diversity
+or renamed near-duplicates, TOOL-02's ambiguity-simulation fidelity, persistence-level
+immutability triggers, snapshot-digest integrity verification, a Windows drive-path extraction
+edge case, blanket `RuntimeError` candidate attribution, and the worker's dependency on
+`tests.maintainer.*`/`suites/dev` as a development-only evaluator registry. Each needs the same
+verify-before-fix discipline used for the four above before committing to a remediation.
+
+ENG-015 was completed in Prompt 12 before this review. `aieb_api/worker/` (repository, runner_bridge, loop, reconciler, metrics)
 adds atomic work acquisition (`SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`),
 generation/fencing on every state transition, heartbeat/expiry, artifact-first finalization
 (the candidate/evaluation row commits before the work item is marked done, so a crash between
@@ -96,9 +121,13 @@ $env:AIEB_ENV = "test"
 
 ## Recommended next prompt
 
-Prompt 13 (ENG-016): the public website and compare views, now that ENG-011's analysis package
-and ENG-014's registry/results API exist to serve it. Separately, independent task reviews
-remain a precondition before any admitted-only ENG-013 release manifest can be created; ENG-012
-remains blocked on provider/model authorization, credentials, and spend cap; ENG-017 (admin
-campaigns, budget reservations, `POST /campaigns/{id}/start`) is the next hosted-API dependency
-now that ENG-015's leasing layer exists for it to dispatch onto.
+Triage the 13 remaining AUDIT-001 findings before starting Prompt 13: verify each against the
+code (like the four already fixed), then decide and execute remediation in priority order. The
+placeholder-digest finding in particular touches every task.yaml and any suite-wide fix should
+be planned once, not applied ad hoc per task. After that: Prompt 13 (ENG-016, the public website
+and compare views, now that ENG-011's analysis package and ENG-014's registry/results API exist
+to serve it). Separately, independent task reviews remain a precondition before any
+admitted-only ENG-013 release manifest can be created; ENG-012 remains blocked on provider/model
+authorization, credentials, and spend cap; ENG-017 (admin campaigns, budget reservations,
+`POST /campaigns/{id}/start`) is the next hosted-API dependency now that ENG-015's leasing layer
+exists for it to dispatch onto.
