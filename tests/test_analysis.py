@@ -30,8 +30,24 @@ class AnalysisTests(unittest.TestCase):
   result=summarize(rows)
   self.assertEqual(result["per_entrant"]["left"],1.0)
   self.assertEqual(result["per_entrant"]["right"],0.0)
-  self.assertEqual(result["per_category"]["rag"],(1.0+0.0)/2)
-  self.assertEqual(result["per_category"]["tool"],(1.0+0.0)/2)
+  self.assertEqual(result["per_category"]["rag"],{"left":1.0,"right":0.0})
+  self.assertEqual(result["per_category"]["tool"],{"left":1.0,"right":0.0})
+ def test_per_category_rate_is_reported_per_entrant_not_blended_across_entrants(self):
+  # A prior version of per_category averaged every entrant's rate for a
+  # category into one blended number, letting a strong entrant's category
+  # performance leak into a weak entrant's reported rate (and vice versa).
+  # Here "left" excels at rag but fails tool, and "right" is the reverse -
+  # a blended per-category number would report identical, uninformative
+  # rates for both categories; the correct output tells them apart.
+  rows=(
+   TrialObservation("a","f","p","left",0,True,True,category="rag"),
+   TrialObservation("b","f","p","left",0,False,True,category="tool"),
+   TrialObservation("a","f","p","right",0,False,True,category="rag"),
+   TrialObservation("b","f","p","right",0,True,True,category="tool"),
+  )
+  result=summarize(rows)
+  self.assertEqual(result["per_category"]["rag"],{"left":1.0,"right":0.0})
+  self.assertEqual(result["per_category"]["tool"],{"left":0.0,"right":1.0})
  def test_per_category_is_none_when_no_observation_carries_a_category(self):
   result=summarize((TrialObservation("a","f","p","e",0,True,True),))
   self.assertIsNone(result["per_category"])

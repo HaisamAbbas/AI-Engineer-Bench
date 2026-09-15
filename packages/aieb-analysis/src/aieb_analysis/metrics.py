@@ -60,10 +60,13 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
   return sum(rate*weights.get(task,1) for task,rate in filtered)/total_weight
 
  # The results table needs a rate per entrant (across that entrant's own
- # task cells) and per task category, not only the single suite-wide number -
- # both are derivable from the same per_task cells already computed above.
+ # task cells) and, per entrant again, a rate per task category - not a
+ # category rate blended across every competing entrant, which would let one
+ # entrant's performance leak into another's reported number. Both are
+ # derivable from the same per_task cells already computed above.
+ entrants=sorted({e for _,e in cells})
  per_entrant={}
- for entrant in sorted({e for _,e in cells}):
+ for entrant in entrants:
   per_entrant[entrant]=_weighted_over([(task,per_task[f"{task}:{e}"]["rate"]) for task,e in cells if e==entrant])
  task_category={}
  for item in observations:
@@ -73,7 +76,10 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
   per_category={}
   for category in sorted(set(task_category.values())):
    tasks_in_category={task for task,c in task_category.items() if c==category}
-   per_category[category]=_weighted_over([(task,per_task[key]["rate"]) for key,_ in per_task.items() for task in [key.split(":")[0]] if task in tasks_in_category])
+   per_category[category]={
+    entrant:_weighted_over([(task,per_task[f"{task}:{e}"]["rate"]) for task,e in cells if e==entrant and task in tasks_in_category])
+    for entrant in entrants
+   }
 
  return {"schema_version":"aieb.analysis/v1","per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
 
