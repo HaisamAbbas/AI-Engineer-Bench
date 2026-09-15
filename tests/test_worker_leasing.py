@@ -201,6 +201,44 @@ class WorkerLeasingTests(unittest.TestCase):
             third = repository.claim_work_item(session, worker_id="worker-2")
         self.assertIsNone(third)  # exhausted: only two ready items existed
 
+    # ---- review finding #5: shared storage is the actual default, not merely documented --
+
+    def test_verification_recovers_the_candidate_with_no_shared_filesystem_at_all(self) -> None:
+        """Review finding #5: a prior version's independence test still
+        pointed both phases at the same local directory, and candidate bytes
+        lived only in a worker-local FilesystemArtifactStore - "the database
+        alone" was only true if operators separately provisioned a shared/
+        network mount across every worker host, which was not actually the
+        default. The hosted worker now stores candidate bytes in Postgres
+        (PostgresArtifactStore, the same AIEB_DATABASE_URL every worker
+        already needs to lease work at all) - proven directly here by giving
+        engineering and verification COMPLETELY SEPARATE, never-shared
+        work_root directories (simulating two different hosts with no
+        filesystem in common whatsoever), and confirming verification still
+        succeeds and scores correctly from the database alone."""
+        self._frozen_enqueued_campaign()
+        engineering_root = ROOT / ".cache" / "eng015-tests" / f"host-a-{uuid.uuid4().hex}"
+        verification_root = ROOT / ".cache" / "eng015-tests" / f"host-b-{uuid.uuid4().hex}"
+        engineering_root.mkdir(parents=True, exist_ok=True)
+        verification_root.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.session_factory() as session:
+                engineering = repository.claim_work_item(session, worker_id="host-a-worker")
+            engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="host-a-worker", work_root=engineering_root)
+            self.assertTrue(engineering_result.finalized)
+
+            with self.session_factory() as session:
+                verification = repository.claim_work_item(session, worker_id="host-b-worker", work_type="verification")
+            verification_result = execute_leased_work(self.session_factory, verification, worker_id="host-b-worker", work_root=verification_root)
+            self.assertEqual(verification_result.execution_validity, "valid")
+            self.assertEqual(verification_result.verdict, "pass")
+            self.assertTrue(verification_result.finalized)
+        finally:
+            import shutil
+
+            shutil.rmtree(engineering_root, ignore_errors=True)
+            shutil.rmtree(verification_root, ignore_errors=True)
+
     # ---- 2. death before launch (claimed, never executed) --------------
 
     def test_death_before_launch_is_replaced_not_double_counted(self) -> None:
@@ -679,7 +717,84 @@ class WorkerLeasingTests(unittest.TestCase):
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never scored a candidate that failed identity verification
 
+    def test_corrupted_reference_id_is_infrastructure_invalid_not_a_candidate_contract_violation(self) -> None:
+        """Review finding #3 (second pass): the manifest-digest check covers
+        `stored.manifest`, but NOT `file_references` - corrupting a
+        reference's id (or its blob digest/length/scope) previously still
+        passed that check, and reconstruction's resulting ArtifactError was
+        classified as a candidate CONTRACT_VIOLATION, not infrastructure
+        corruption. Reproduced directly: corrupt one file's reference id to
+        a UUID that was never stored, leaving the manifest (and its digest)
+        completely untouched. This must be infrastructure_invalid, since the
+        candidate itself was already accepted as contract-compliant when it
+        was collected - what is broken here is the STORED REFERENCE, not the
+        candidate's content."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+
+        with self.session_factory() as session:
+            candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
+            stored = dict(candidate.stored_candidate)
+            self.assertTrue(stored["file_references"], "expected at least one changed file reference to corrupt")
+            stored["file_references"] = [dict(entry) for entry in stored["file_references"]]
+            stored["file_references"][0] = dict(stored["file_references"][0])
+            stored["file_references"][0]["reference"] = dict(stored["file_references"][0]["reference"])
+            stored["file_references"][0]["reference"]["id"] = str(uuid.uuid4())  # never actually stored
+            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
+            session.commit()
+
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+
+        self.assertEqual(result.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(result.verdict)
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "host_failure")
+            evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
+            self.assertEqual(evaluations, [])
+
     # ---- review finding #4: legacy/malformed stored_candidate rows -------
+
+    def test_malformed_nested_reference_is_infrastructure_invalid_not_an_attribute_error(self) -> None:
+        """Review finding #4: the deserializer previously caught only
+        (KeyError, TypeError, ValueError) around plain dict access and
+        uuid.UUID(...) - a malformed nested reference such as `"id": []`
+        raised an uncaught AttributeError ('list' object has no attribute
+        'replace') instead of the typed StoredCandidateUnavailableError every
+        other malformed-input path already used. Reproduced directly with
+        exactly that payload shape."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+
+        with self.session_factory() as session:
+            candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
+            stored = dict(candidate.stored_candidate)
+            stored["file_references"] = [dict(entry) for entry in stored["file_references"]]
+            if stored["file_references"]:
+                stored["file_references"][0] = dict(stored["file_references"][0])
+                stored["file_references"][0]["reference"] = dict(stored["file_references"][0]["reference"])
+                stored["file_references"][0]["reference"]["id"] = []  # malformed: not a UUID string at all
+            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
+            session.commit()
+
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        # Must not raise AttributeError (or anything else uncaught) out of this call.
+        result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+
+        self.assertEqual(result.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(result.verdict)
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "infrastructure_invalid")
 
     def test_legacy_empty_stored_candidate_is_infrastructure_invalid_not_a_crash(self) -> None:
         """Review finding #4: a pre-ENG015-007 candidate row gets '{}' from
@@ -772,6 +887,92 @@ class WorkerLeasingTests(unittest.TestCase):
         with self.session_factory() as session:
             rows = session.execute(select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate_id)).scalars().all()
             self.assertEqual(len(rows), 1)  # never a duplicate row
+        # The authoritative verdict/result always come from the FIRST persisted
+        # row, whether this call wrote it or a matching retry just replayed it.
+        self.assertEqual(second.verdict, "pass")
+        self.assertEqual(second.newly_recorded, False)
+
+    def test_record_evaluation_returns_the_first_persisted_verdict_not_a_conflicting_retry(self) -> None:
+        """Review finding #2: on IntegrityError, record_evaluation previously
+        returned True without comparing the stored verdict/result against the
+        retry payload - a caller finalizing from ITS OWN in-memory outcome
+        (rather than what record_evaluation actually reports) could finalize
+        a different verdict than the evaluation row that is actually
+        persisted. This proves the fix directly: a first call records "pass";
+        a second call under the IDENTICAL identity (candidate_id, evaluator,
+        fixture, schedule_digest - the same unique constraint key) tries to
+        record "fail" instead (e.g. a nondeterministic evaluator, or a bug) -
+        record_evaluation must report the FIRST persisted verdict ("pass"),
+        never silently accept the second, different one as if it had been
+        written."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+            self.assertTrue(repository.advance_to_verification(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation, attempt_id=engineering.attempt_id,
+            ))
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+            evaluator_id = self._any_evaluator_id(session)
+            fixture_id = self._any_fixture_id(session)
+            first = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                candidate_id=candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=evaluator_id, fixture_id=fixture_id, schedule_digest="s" * 64, verdict="pass", result={"pass": True},
+                ),
+            )
+        self.assertEqual(first.verdict, "pass")
+        self.assertTrue(first.newly_recorded)
+
+        with self.session_factory() as session:
+            conflicting = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                candidate_id=candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=evaluator_id, fixture_id=fixture_id, schedule_digest="s" * 64, verdict="fail", result={"pass": False},
+                ),
+            )
+        # The authoritative result is the FIRST persisted row - never the
+        # conflicting retry's own "fail" verdict.
+        self.assertEqual(conflicting.verdict, "pass")
+        self.assertFalse(conflicting.newly_recorded)
+        with self.session_factory() as session:
+            rows = session.execute(select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate_id)).scalars().all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].verdict, "pass")  # never overwritten by the conflicting retry
+
+    def test_record_candidate_raises_on_a_genuine_content_conflict(self) -> None:
+        """Review finding #2: record_candidate previously returned an
+        existing row's id based only on (attempt_id, tree_digest), without
+        comparing manifest_digest, validation_status, or stored_candidate -
+        a retry with genuinely DIFFERENT content under the same identity was
+        silently accepted as if it had succeeded. Fixed to raise
+        CandidateConflictError instead."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+            repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+        with self.session_factory() as session:
+            with self.assertRaises(repository.CandidateConflictError):
+                repository.record_candidate(
+                    session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                    attempt_id=engineering.attempt_id,
+                    candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="DIFFERENT" + "m" * 55, validation_status="valid"),
+                )
+        with self.session_factory() as session:
+            rows = session.execute(select(api_models.CandidateRow).where(api_models.CandidateRow.attempt_id == engineering.attempt_id)).scalars().all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].manifest_digest, "m" * 64)  # the original content, never overwritten
 
     # ---- 7. duplicate completion ----------------------------------------
 
@@ -891,6 +1092,51 @@ class WorkerLeasingTests(unittest.TestCase):
             self.assertEqual(item.state, "failed")
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never scored once cancelled
+
+    def test_verification_cancellation_arriving_mid_verify_interrupts_the_attempt(self) -> None:
+        """Review finding #1 (second pass): the prior cancellation test only
+        ever passed an ALREADY-SET cancel_event before dispatch - it never
+        proved cancellation arriving genuinely DURING a running VERIFY call
+        is interrupted, nor exercised the new background cancellation-poll
+        thread execute_leased_verification starts on its own. This uses a
+        deliberately slow (20-second) evaluator and cancels the campaign
+        1.5 seconds after verification starts - no cancel_event is passed in
+        at all, so the only thing that can detect this is the background
+        poll thread execute_leased_verification starts internally."""
+        from aieb_api.worker import runner_bridge
+
+        slow_module = "tests.fixtures.worker.slow_evaluator"
+        original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], slow_module)
+        try:
+            campaign_id = self._frozen_enqueued_campaign()
+            with self.session_factory() as session:
+                engineering = repository.claim_work_item(session, worker_id="w1")
+            engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+            self.assertTrue(engineering_result.finalized)
+
+            with self.session_factory() as session:
+                verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+
+            def cancel_soon() -> None:
+                time.sleep(1.5)
+                with self.session_factory() as session:
+                    repository.cancel_campaign(session, campaign_id)
+
+            threading.Thread(target=cancel_soon, daemon=True).start()
+            start = time.monotonic()
+            result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root, lease_seconds=3)
+            elapsed = time.monotonic() - start
+        finally:
+            runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = original
+
+        self.assertEqual(result.execution_validity, "cancelled")
+        self.assertLess(elapsed, 10)  # interrupted well before the 20-second evaluator sleep would finish
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "cancelled")
+            evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
+            self.assertEqual(evaluations, [])  # never scored once cancelled mid-VERIFY
 
 
 if __name__ == "__main__":
