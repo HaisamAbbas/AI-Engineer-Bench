@@ -70,7 +70,8 @@ describe("Results", () => {
     await userEvent.click(screen.getByRole("button", { name: "Rate" }));
     const rows = screen.getAllByRole("row").slice(1); // drop header row
     const lastRow = rows[rows.length - 1];
-    expect(within(lastRow).getByText("Unknown")).toBeInTheDocument();
+    const rateCell = within(lastRow).getAllByRole("cell")[0]; // th[row]=Entrant, td[0]=Rate, ...
+    expect(rateCell).toHaveTextContent("Unknown");
   });
 
   it("limits entrant selection to 4 and disables further checkboxes", async () => {
