@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/rag03@sha256:33333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, citation_service.server], contract_digest: "4d68d79cd71ead72f52c2698c35b73fb0d63f618168edaf0ae9ad00e583d56d8", model_profile_id: deterministic-citation-v1}
 submission: {include: [citation_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: current-citation-version,severity: mandatory,description: current version},{id: current-source-span,severity: mandatory,description: current span},{id: relevant-current-content,severity: mandatory,description: current content}]
-evaluator: {evaluator_digest: "125fa1afaaf21a1976b9bd59673da718b882ce76d13c4d54be7e53f0483c71a6", development_fixture: rag03-dev-v1, official_fixture_ref: maintainer-only:rag03-v1}
+evaluator: {evaluator_digest: "93ea73d299d121a727540f5462212fed8aedb2e7b3a4a1aa8028cec5777d0098", development_fixture: rag03-dev-v1, official_fixture_ref: maintainer-only:rag03-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

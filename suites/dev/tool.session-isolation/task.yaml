@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/tool03@sha256:3333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, session_service.server], contract_digest: "1231f3bba3102451b330587816b2065242ccf60253d30943a55e711f2128c160", model_profile_id: deterministic-tool-fixture-v1}
 submission: {include: [session_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: no-cross-user-leak,severity: mandatory,description: state identity-scoped},{id: own-session-completes,severity: mandatory,description: each session retains own state}]
-evaluator: {evaluator_digest: "c0b2490513ba35e8d799dbd35d758dc91762062ed6982d25a7c816c5d13f8578", development_fixture: tool03-dev-v1, official_fixture_ref: maintainer-only:tool03-v1}
+evaluator: {evaluator_digest: "72eefde53bc8ad5f0f28fdf4974206af151b1b38d4b46d10d8a0d907dec316b5", development_fixture: tool03-dev-v1, official_fixture_ref: maintainer-only:tool03-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

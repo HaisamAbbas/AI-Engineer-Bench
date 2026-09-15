@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/tool04@sha256:3333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, correction_service.server], contract_digest: "fd65af2bfde9e236ba8d4598184b827065abf0b4221c66edbfc0ba8d4ba5917e", model_profile_id: deterministic-tool-fixture-v1}
 submission: {include: [correction_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: corrected-target-used,severity: mandatory,description: correction replaces stale target},{id: original-untouched,severity: mandatory,description: original not executed}]
-evaluator: {evaluator_digest: "ec60a44a43e89040c78729e7aeecb023234c663402f6a96313c817e0559249a1", development_fixture: tool04-dev-v1, official_fixture_ref: maintainer-only:tool04-v1}
+evaluator: {evaluator_digest: "9284331756b9d417180a85c7e09db47d89354450678e2dc03e3a7ce87a9d9436", development_fixture: tool04-dev-v1, official_fixture_ref: maintainer-only:tool04-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

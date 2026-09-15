@@ -106,6 +106,28 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def hash_evaluator_closure(evaluator_module: str) -> str:
+    """Hash the evaluator's actual trusted dependency closure, not just its
+    own file. A review found that hashing only `evaluator.py` let evaluator
+    *behavior* change silently through code it imports without changing
+    `evaluator_digest` at all - every evaluator but rag01's imports
+    `tests/maintainer/common.py` (`CandidateProcess`, `request`), and rag01's
+    own scoring logic lives partly in its sibling `fixture.py`. This hashes
+    every `.py` file in the evaluator's own package directory plus
+    `tests/maintainer/common.py` when it exists, so a change to either
+    changes the digest."""
+    root = _repo_root()
+    package_dir = root.joinpath(*evaluator_module.split(".")[:-1])
+    files = {p for p in package_dir.glob("*.py") if "__pycache__" not in p.parts}
+    common = root / "tests" / "maintainer" / "common.py"
+    if common.exists():
+        files.add(common)
+    entries = []
+    for path in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
+        entries.append(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes())
+    return hashlib.sha256(b"\0".join(entries)).hexdigest()
+
+
 def _verify_content_digests(task: Path, revision: TaskRevision) -> None:
     """Review finding #2: repository_digest/provenance_digest/contract_digest/
     service_topology_digest name real on-disk content this repo actually
@@ -124,9 +146,7 @@ def _verify_content_digests(task: Path, revision: TaskRevision) -> None:
     }
     runtime = TASK_RUNTIMES.get(revision.id)
     if runtime is not None:
-        evaluator_path = _repo_root().joinpath(*runtime[1].split(".")).with_suffix(".py")
-        if evaluator_path.exists():
-            expected["evaluator_digest"] = (hash_file(evaluator_path), revision.evaluator.evaluator_digest)
+        expected["evaluator_digest"] = (hash_evaluator_closure(runtime[1]), revision.evaluator.evaluator_digest)
     mismatches = [field for field, (actual, claimed) in expected.items() if actual != claimed]
     if mismatches:
         raise CliError(

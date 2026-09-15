@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from aieb_core.models import BudgetRole
 from aieb_runner.accounting import BudgetEnforcement, UsageLedger, UsageReceipt, reserve_cost
-from aieb_cli.main import EXIT_INVALID, EXIT_UNSOLVED, main
+from aieb_cli.main import EXIT_INVALID, EXIT_UNSOLVED, hash_evaluator_closure, main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +94,29 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, EXIT_INVALID)
         self.assertIn("digests do not match", result["message"])
         self.assertIn("provenance_digest", result["message"])
+
+    def test_evaluator_digest_covers_the_shared_harness_and_sibling_modules(self) -> None:
+        """Independent review finding: hashing only evaluator.py let evaluator
+        behavior change silently through code it imports (11 of 12 evaluators
+        import tests/maintainer/common.py's CandidateProcess/request; rag01
+        also has its own sibling fixture.py) without evaluator_digest
+        changing at all. hash_evaluator_closure must be sensitive to both."""
+        common = ROOT / "tests" / "maintainer" / "common.py"
+        original = common.read_bytes()
+        self.addCleanup(common.write_bytes, original)
+        before = hash_evaluator_closure("tests.maintainer.rag02.evaluator")
+        common.write_bytes(original + b"\n# tamper\n")
+        after = hash_evaluator_closure("tests.maintainer.rag02.evaluator")
+        self.assertNotEqual(before, after)
+
+        fixture = ROOT / "tests" / "maintainer" / "rag01" / "fixture.py"
+        original_fixture = fixture.read_bytes()
+        self.addCleanup(fixture.write_bytes, original_fixture)
+        common.write_bytes(original)  # restore before measuring the fixture-only change
+        before = hash_evaluator_closure("tests.maintainer.rag01.evaluator")
+        fixture.write_bytes(original_fixture + b"\n# tamper\n")
+        after = hash_evaluator_closure("tests.maintainer.rag01.evaluator")
+        self.assertNotEqual(before, after)
 
     def test_unsolved_lock_and_invalid_resume_are_safe(self) -> None:
         self.campaign.write_text(json.dumps({"schema_version": "aieb.local-campaign/v1", "id": self.campaign_id, "task_dir": "suites/dev/rag.document-freshness", "candidate": "baseline"}), encoding="utf-8")

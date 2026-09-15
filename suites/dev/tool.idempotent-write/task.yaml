@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/tool02@sha256:3333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, write_service.server], contract_digest: "2be83d558c7bdd8e5fa12ac9d39a51104ec461db55eff80537c4cdc02da8d811", model_profile_id: deterministic-tool-fixture-v1}
 submission: {include: [write_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: ambiguous-retry-resolves,severity: mandatory,description: retry resolves request},{id: exactly-once-effect,severity: mandatory,description: one external effect}]
-evaluator: {evaluator_digest: "e9c614b8e4761fadff97832cd6cc2fa6ba325391ec01991140cd834dd6ebc5da", development_fixture: tool02-dev-v1, official_fixture_ref: maintainer-only:tool02-v1}
+evaluator: {evaluator_digest: "907863f440d756173cf9c72d49a667fa1ec9c2bdd2a9e1170a0605be8ea08f43", development_fixture: tool02-dev-v1, official_fixture_ref: maintainer-only:tool02-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

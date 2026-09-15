@@ -37,7 +37,7 @@ requirements:
   - {id: incremental-unaffected-write-scope, severity: mandatory, description: A mutation may not rebuild unrelated backend records.}
   - {id: citation-version-mapping, severity: mandatory, description: Hits cite the current version and chunk ID.}
 evaluator:
-  evaluator_digest: "9ee3a8920a76875a73f9ef890cfa4d4bd328d08b143413a36d6d313a29b47eff"
+  evaluator_digest: "bf9b0e3391f4b75b8b825f8882cef8ac14a82e87657bf12e32d513a3c0002aa1"
   development_fixture: rag01-dev-v1
   official_fixture_ref: maintainer-only:rag01-heldout-v1
 profile_compatibility: [cpu-fixture-standard-v1]

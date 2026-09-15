@@ -13,5 +13,5 @@ requirements:
  - {id: document-correspondence, severity: mandatory, description: Each result retains its source document ID despite shuffled output.}
  - {id: valid-documents-retained, severity: mandatory, description: Partial failures do not drop valid documents.}
  - {id: repeated-id-last-wins, severity: mandatory, description: Repeated IDs use the final occurrence.}
-evaluator: {evaluator_digest: "771bccb39999260757600fd8cd98e0dbff44bcac5ddc53f831c41a0eb6989653", development_fixture: ext02-dev-v1, official_fixture_ref: maintainer-only:ext02-heldout-v1}
+evaluator: {evaluator_digest: "f3e4f23ba327020f8e188a7a0d623a0b7cefa8a1dc220f1ec5c80fc4222e672d", development_fixture: ext02-dev-v1, official_fixture_ref: maintainer-only:ext02-heldout-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

@@ -13,7 +13,12 @@ genuinely exists in this repo today and can be hashed for real:
   provenance_digest         sha256 of provenance.json
   contract_digest            sha256 of contracts/application-api.md
   service_topology_digest   sha256 of environment/README.md
-  evaluator_digest            sha256 of the trusted evaluator's own source file
+  evaluator_digest            sha256 of the evaluator's full trusted dependency
+                               closure (its own package directory plus the
+                               shared tests/maintainer/common.py harness most
+                               evaluators import) - not just evaluator.py, which
+                               would miss behavior living in an imported sibling
+                               module (see hash_evaluator_closure)
 
 `environment.official_image`'s sha256 is different in kind: it names a
 container image this project has never built or pushed (the registry host,
@@ -39,12 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from aieb_cli.main import TASK_RUNTIMES, hash_file, hash_tree  # noqa: E402
-
-
-def evaluator_source_path(evaluator_module: str) -> Path:
-    # "tests.maintainer.rag01.evaluator" -> tests/maintainer/rag01/evaluator.py
-    return ROOT.joinpath(*evaluator_module.split(".")).with_suffix(".py")
+from aieb_cli.main import TASK_RUNTIMES, hash_evaluator_closure, hash_file, hash_tree  # noqa: E402
 
 
 def compute_digests(task_dir: Path, evaluator_module: str) -> dict[str, str]:
@@ -53,7 +53,7 @@ def compute_digests(task_dir: Path, evaluator_module: str) -> dict[str, str]:
         "provenance_digest": hash_file(task_dir / "provenance.json"),
         "contract_digest": hash_file(task_dir / "contracts" / "application-api.md"),
         "service_topology_digest": hash_file(task_dir / "environment" / "README.md"),
-        "evaluator_digest": hash_file(evaluator_source_path(evaluator_module)),
+        "evaluator_digest": hash_evaluator_closure(evaluator_module),
     }
 
 

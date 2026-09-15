@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/ext01@sha256:33333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, missingness_service.server], contract_digest: "91fc156bd6fa4d4417f8ab621a0b28878d6ffa82c42db26cd4970c9ce93537b9", model_profile_id: deterministic-extraction-fixture-v1}
 submission: {include: [missingness_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: absent-not-invented,severity: mandatory,description: absent fields remain absent},{id: present-values-preserved,severity: mandatory,description: supplied values remain exact}]
-evaluator: {evaluator_digest: "f630da3288cedfd6c57c43b02c55ebd7d39bc96491b3c59f7b1094176341f472", development_fixture: ext01-dev-v1, official_fixture_ref: maintainer-only:ext01-v1}
+evaluator: {evaluator_digest: "2b24bb6b7549bc1d356630073443b1d69de88c39ff11de1b2a00018017124b99", development_fixture: ext01-dev-v1, official_fixture_ref: maintainer-only:ext01-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

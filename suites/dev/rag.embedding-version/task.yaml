@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/rag04@sha256:33333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, embedding_service.server], contract_digest: "d0510e6b9437a58aaab0e4990e637e76ba41540a2f743e9353cc63bb7b49c91f", model_profile_id: deterministic-embedding-v1}
 submission: {include: [embedding_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: current-space-searchable,severity: mandatory,description: compatible query works},{id: cross-version-safe,severity: mandatory,description: incompatible query safe},{id: no-silent-mixing,severity: mandatory,description: no mixed spaces}]
-evaluator: {evaluator_digest: "1eb67ae24695b87ffe0e50418b5a40a7cd4d7896de81df56c55fd0be8acce695", development_fixture: rag04-dev-v1, official_fixture_ref: maintainer-only:rag04-v1}
+evaluator: {evaluator_digest: "131290d07b2aa5fdc1ce80a7818fea1bd85520fac716401fb95e35e0240727ad", development_fixture: rag04-dev-v1, official_fixture_ref: maintainer-only:rag04-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

@@ -9,5 +9,5 @@ environment: {official_image: "registry.example/aieb/rag02@sha256:33333333333333
 application: {dependency_mode: fixture, entrypoint: [python, -m, search_service.server], contract_digest: "dfbf1b7f47728447009e9ae12be88049587d71ec970b2d78e4bd76ae48a743d3", model_profile_id: deterministic-search-v1}
 submission: {include: [search_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready, severity: mandatory, description: ready},{id: filter-before-top-k, severity: mandatory, description: filter before rank},{id: no-cross-filter-results, severity: mandatory, description: no unmatched results},{id: top-k-respected, severity: mandatory, description: bound respected}]
-evaluator: {evaluator_digest: "32dae6717938be19d92b56802264be5612e8f696c8b02745b198a2df078bcc08", development_fixture: rag02-dev-v1, official_fixture_ref: maintainer-only:rag02-v1}
+evaluator: {evaluator_digest: "ca6f2e5cac63aa4c84b7d26fd673c3dffd22807c052b3ce611c03873c16d4c5d", development_fixture: rag02-dev-v1, official_fixture_ref: maintainer-only:rag02-v1}
 profile_compatibility: [cpu-fixture-standard-v1]
