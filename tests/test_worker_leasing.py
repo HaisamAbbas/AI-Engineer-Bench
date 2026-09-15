@@ -159,6 +159,25 @@ class WorkerLeasingTests(unittest.TestCase):
             )
             session.commit()
 
+    def _run_to_completion(self, worker_id: str = "w1", *, max_phases: int = 2, **kwargs) -> list:
+        """Claim and execute whatever is ready, repeatedly, until nothing is
+        ready or max_phases calls have run. A normal successful attempt now
+        takes two independently-leased phases (engineering, then
+        verification) instead of one - this mirrors exactly what
+        worker/loop.py's run_worker already does (claim -> execute -> claim
+        -> execute), just without the idle-sleep/poll machinery a single
+        synchronous test doesn't need."""
+        from aieb_api.worker.runner_bridge import execute_leased_work
+
+        results = []
+        for _ in range(max_phases):
+            with self.session_factory() as session:
+                leased = repository.claim_work_item(session, worker_id=worker_id)
+            if leased is None:
+                break
+            results.append(execute_leased_work(self.session_factory, leased, worker_id=worker_id, work_root=self.work_root, **kwargs))
+        return results
+
     # ---- 1. two workers contending for work -----------------------------
 
     def test_two_workers_never_claim_the_same_item(self) -> None:
@@ -258,36 +277,191 @@ class WorkerLeasingTests(unittest.TestCase):
             candidates = session.execute(select(api_models.CandidateRow)).scalars().all()
             self.assertEqual(candidates, [])  # killed before any candidate was collected
 
-    # ---- 4. death after upload, before finalization ---------------------
+    # ---- 4. death after candidate persistence, before verification lease --
 
-    def test_death_after_artifact_upload_is_resumed_not_replaced(self) -> None:
+    def test_engineering_death_after_candidate_persistence_advances_to_verification(self) -> None:
+        """ENG015-007's own required scenario: a worker dies after
+        record_candidate commits (the candidate is durably persisted) but
+        before advance_to_verification commits - the engineering work item is
+        still 'leased', not 'done'. Reconciliation must recognize the
+        candidate already exists and advance straight to an independently
+        leased verification work item, never repeat engineering."""
         self._frozen_enqueued_campaign()
         with self.session_factory() as session:
-            leased = repository.claim_work_item(session, worker_id="crashy-worker")
-            recorded = repository.record_outcome(
-                session, work_item_id=leased.work_item_id, worker_id="crashy-worker", generation=leased.generation,
-                attempt_id=leased.attempt_id,
+            engineering = repository.claim_work_item(session, worker_id="doomed-engineer")
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="doomed-engineer", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
                 candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+        self.assertIsNotNone(candidate_id)
+        # The worker dies here: advance_to_verification() is never called.
+        self._backdate_lease(engineering.work_item_id)
+
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.advanced, 1)
+        self.assertEqual(summary.replaced, 0)
+        self.assertEqual(summary.resumed, 0)
+        self.assertEqual(summary.requeued, 0)
+
+        with self.session_factory() as session:
+            engineering_item = session.get(api_models.WorkItemRow, engineering.work_item_id)
+            self.assertEqual(engineering_item.state, "done")
+            attempt = session.get(api_models.AttemptRow, engineering.attempt_id)
+            self.assertEqual(attempt.phase, "verifying")
+            self.assertIsNone(attempt.terminal_status)  # not terminal yet - only advanced, not finalized
+            ready = session.execute(select(api_models.WorkItemRow).where(api_models.WorkItemRow.state == "ready")).scalars().all()
+            self.assertEqual(len(ready), 1)
+            self.assertEqual(ready[0].type, "verification")
+            self.assertEqual(ready[0].attempt_id, engineering.attempt_id)  # same attempt - no re-engineering
+            candidates = session.execute(select(api_models.CandidateRow).where(api_models.CandidateRow.attempt_id == engineering.attempt_id)).scalars().all()
+            self.assertEqual(len(candidates), 1)  # the persisted candidate was reused, not recreated
+
+    def test_verification_death_after_evaluation_recorded_is_resumed_not_requeued(self) -> None:
+        """The verification-phase analogue of artifact-first resume: a
+        verifier dies after record_evaluation commits but before finalize() -
+        reconciliation must finalize from that already-persisted evaluation,
+        not requeue a duplicate verification attempt."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="engineer-1")
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+            self.assertTrue(repository.advance_to_verification(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation, attempt_id=engineering.attempt_id,
+            ))
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="crashy-verifier", work_type="verification")
+            recorded = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="crashy-verifier", generation=verification.generation,
+                candidate_id=candidate_id,
                 evaluation=repository.EvaluationOutcome(
                     evaluator_id=self._any_evaluator_id(session), fixture_id=self._any_fixture_id(session),
                     schedule_digest="s" * 64, verdict="pass", result={"pass": True},
                 ),
             )
         self.assertTrue(recorded)
-        # The process "dies" here: finalize() is never called.
-        self._backdate_lease(leased.work_item_id)
+        # The verifier dies here: finalize() is never called.
+        self._backdate_lease(verification.work_item_id)
 
         summary = reconcile_once(self.session_factory)
         self.assertEqual(summary.resumed, 1)
         self.assertEqual(summary.replaced, 0)
+        self.assertEqual(summary.advanced, 0)
+        self.assertEqual(summary.requeued, 0)
 
         with self.session_factory() as session:
-            item = session.get(api_models.WorkItemRow, leased.work_item_id)
+            item = session.get(api_models.WorkItemRow, verification.work_item_id)
             self.assertEqual(item.state, "done")
-            attempt = session.get(api_models.AttemptRow, leased.attempt_id)
+            attempt = session.get(api_models.AttemptRow, engineering.attempt_id)
             self.assertEqual(attempt.terminal_status, "pass")
             ready = session.execute(select(api_models.WorkItemRow).where(api_models.WorkItemRow.state == "ready")).scalars().all()
             self.assertEqual(ready, [])  # no wasted replacement/duplicate scoring
+
+    def test_verifier_death_with_no_evaluation_retries_verification_without_re_engineering(self) -> None:
+        """A dead verifier that never recorded an evaluation at all must not
+        cause engineering to repeat - only a fresh verification work item for
+        the SAME attempt and the SAME already-persisted candidate."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="engineer-1")
+            repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+            self.assertTrue(repository.advance_to_verification(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation, attempt_id=engineering.attempt_id,
+            ))
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="dead-verifier", work_type="verification")
+        # The verifier dies immediately - no record_evaluation call at all.
+        self._backdate_lease(verification.work_item_id)
+
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.requeued, 1)
+        self.assertEqual(summary.resumed, 0)
+        self.assertEqual(summary.replaced, 0)
+        self.assertEqual(summary.advanced, 0)
+
+        with self.session_factory() as session:
+            old_item = session.get(api_models.WorkItemRow, verification.work_item_id)
+            self.assertEqual(old_item.state, "failed")
+            attempt = session.get(api_models.AttemptRow, engineering.attempt_id)
+            self.assertIsNone(attempt.terminal_status)  # not terminal - retrying, not exhausted
+            ready = session.execute(select(api_models.WorkItemRow).where(api_models.WorkItemRow.state == "ready")).scalars().all()
+            self.assertEqual(len(ready), 1)
+            self.assertEqual(ready[0].type, "verification")
+            self.assertEqual(ready[0].attempt_id, engineering.attempt_id)  # same attempt, not replaced
+            engineering_items = session.execute(
+                select(api_models.WorkItemRow).where(api_models.WorkItemRow.attempt_id == engineering.attempt_id, api_models.WorkItemRow.type == "engineering")
+            ).scalars().all()
+            self.assertEqual(len(engineering_items), 1)  # no second engineering item was ever created
+
+    def test_stale_verifier_cannot_record_or_finalize_after_lease_reassignment(self) -> None:
+        """The verification-phase analogue of the existing stale-engineering-
+        worker fencing test: once reconciliation has requeued a dead
+        verifier's work item, that verifier's own generation is fenced out of
+        both record_evaluation and finalize - a legitimate second verifier's
+        own calls on the replacement item must still succeed."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="engineer-1")
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+            self.assertTrue(repository.advance_to_verification(
+                session, work_item_id=engineering.work_item_id, worker_id="engineer-1", generation=engineering.generation, attempt_id=engineering.attempt_id,
+            ))
+        with self.session_factory() as session:
+            first = repository.claim_work_item(session, worker_id="stale-verifier", work_type="verification")
+        self._backdate_lease(first.work_item_id)
+        reconcile_once(self.session_factory)  # marks the original 'failed'; requeues a replacement 'ready' item
+
+        with self.session_factory() as session:
+            second = repository.claim_work_item(session, worker_id="live-verifier", work_type="verification")
+        self.assertIsNotNone(second)
+        self.assertNotEqual(second.work_item_id, first.work_item_id)
+        self.assertEqual(second.attempt_id, first.attempt_id)  # same attempt - not a new one
+
+        with self.session_factory() as session:
+            stale_record = repository.record_evaluation(
+                session, work_item_id=first.work_item_id, worker_id="stale-verifier", generation=first.generation,
+                candidate_id=candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=self._any_evaluator_id(session), fixture_id=self._any_fixture_id(session),
+                    schedule_digest="s" * 64, verdict="pass", result={"pass": True},
+                ),
+            )
+        self.assertFalse(stale_record)
+        with self.session_factory() as session:
+            stale_finalize = repository.finalize(
+                session, work_item_id=first.work_item_id, worker_id="stale-verifier", generation=first.generation,
+                attempt_id=first.attempt_id, terminal_status="pass", done=True,
+            )
+        self.assertFalse(stale_finalize)
+        # live-verifier's own legitimate work on the replacement item still succeeds.
+        with self.session_factory() as session:
+            legitimate_record = repository.record_evaluation(
+                session, work_item_id=second.work_item_id, worker_id="live-verifier", generation=second.generation,
+                candidate_id=candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=self._any_evaluator_id(session), fixture_id=self._any_fixture_id(session),
+                    schedule_digest="s" * 64, verdict="pass", result={"pass": True},
+                ),
+            )
+        self.assertTrue(legitimate_record)
+        with self.session_factory() as session:
+            legitimate_finalize = repository.finalize(
+                session, work_item_id=second.work_item_id, worker_id="live-verifier", generation=second.generation,
+                attempt_id=second.attempt_id, terminal_status="pass", done=True,
+            )
+        self.assertTrue(legitimate_finalize)
 
     def _any_evaluator_id(self, session) -> uuid.UUID:
         return session.execute(select(api_models.EvaluatorRevisionRow.id)).scalar_one()
@@ -302,23 +476,25 @@ class WorkerLeasingTests(unittest.TestCase):
         session.commit()
         return row.id
 
-    # ---- second-pass review: record_outcome's fence must be a real lock -----
+    # ---- second-pass review: record_candidate's fence must be a real lock ---
 
-    def test_concurrent_reconciler_cannot_race_a_record_outcome_still_in_flight(self) -> None:
-        """Review finding #1: record_outcome's fencing check was a plain SELECT,
-        which takes no row lock under READ COMMITTED - a concurrent reconciler
-        sweep could expire-and-replace the same attempt between that check and
-        record_outcome's own commit, letting an already-abandoned worker's
-        results land anyway. The fix makes the fencing check a real UPDATE, so
-        it takes the same row lock the reconciler's SELECT ... FOR UPDATE SKIP
-        LOCKED contends for.
+    def test_concurrent_reconciler_cannot_race_a_record_candidate_still_in_flight(self) -> None:
+        """Review finding #1: record_outcome's (now record_candidate's)
+        fencing check was a plain SELECT, which takes no row lock under READ
+        COMMITTED - a concurrent reconciler sweep could expire-and-replace the
+        same attempt between that check and the commit, letting an
+        already-abandoned worker's results land anyway. The fix makes the
+        fencing check a real UPDATE, so it takes the same row lock the
+        reconciler's SELECT ... FOR UPDATE SKIP LOCKED contends for. Still
+        true after ENG015-007's split - the mechanism is shared
+        (_fenced_lease_touch) between record_candidate and record_evaluation.
 
-        This calls the real repository.record_outcome (not a reimplementation),
-        using a SQLAlchemy before_commit hook to pause it - with its fencing
-        UPDATE already executed and its row lock already held - while a genuine
-        concurrent reconciler sweep runs in a second real thread, and confirms
-        the reconciler skips the row entirely rather than reconciling out from
-        under the in-flight transaction."""
+        This calls the real repository.record_candidate (not a
+        reimplementation), using a SQLAlchemy before_commit hook to pause it -
+        with its fencing UPDATE already executed and its row lock already
+        held - while a genuine concurrent reconciler sweep runs in a second
+        real thread, and confirms the reconciler skips the row entirely
+        rather than reconciling out from under the in-flight transaction."""
         from sqlalchemy import event
 
         self._frozen_enqueued_campaign()
@@ -328,7 +504,7 @@ class WorkerLeasingTests(unittest.TestCase):
 
         barrier = threading.Barrier(2)
 
-        def record_via_real_function() -> bool:
+        def record_via_real_function() -> uuid.UUID | None:
             with self.session_factory() as session:
                 def _pause_before_commit(sess: object) -> None:
                     barrier.wait(timeout=5)
@@ -336,16 +512,15 @@ class WorkerLeasingTests(unittest.TestCase):
 
                 event.listen(session, "before_commit", _pause_before_commit)
                 try:
-                    return repository.record_outcome(
+                    return repository.record_candidate(
                         session, work_item_id=leased.work_item_id, worker_id="racer", generation=leased.generation,
                         attempt_id=leased.attempt_id,
                         candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
-                        evaluation=None,
                     )
                 finally:
                     event.remove(session, "before_commit", _pause_before_commit)
 
-        results: list[bool] = []
+        results: list[uuid.UUID | None] = []
         record_thread = threading.Thread(target=lambda: results.append(record_via_real_function()))
 
         def reconcile_concurrently() -> None:
@@ -358,7 +533,8 @@ class WorkerLeasingTests(unittest.TestCase):
         record_thread.join(timeout=10)
         reconcile_thread.join(timeout=10)
 
-        self.assertEqual(results, [True])
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0])
         with self.session_factory() as session:
             item = session.get(api_models.WorkItemRow, leased.work_item_id)
             self.assertEqual(item.state, "leased")  # untouched: the reconciler skipped the locked row
@@ -447,19 +623,24 @@ class WorkerLeasingTests(unittest.TestCase):
         runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module)
         try:
             self._frozen_enqueued_campaign()
-            with self.session_factory() as session:
-                leased = repository.claim_work_item(session, worker_id="w1")
-            result = execute_leased_work(self.session_factory, leased, worker_id="w1", work_root=self.work_root)
+            # Two phases now: engineering succeeds and hands off; verification
+            # is where the raising evaluator actually runs and fails.
+            results = self._run_to_completion(worker_id="w1")
         finally:
             runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = original
 
-        self.assertEqual(result.execution_validity, "infrastructure_invalid")
-        self.assertIsNone(result.verdict)
+        self.assertEqual(len(results), 2)
+        engineering_result, verification_result = results
+        self.assertTrue(engineering_result.finalized)  # engineering itself succeeded
+        self.assertEqual(verification_result.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(verification_result.verdict)
         with self.session_factory() as session:
-            item = session.get(api_models.WorkItemRow, leased.work_item_id)
-            self.assertEqual(item.state, "failed")
-            attempt = session.get(api_models.AttemptRow, leased.attempt_id)
+            attempt = session.execute(select(api_models.AttemptRow)).scalars().one()
             self.assertEqual(attempt.terminal_status, "scorer_error")
+            verification_item = session.execute(
+                select(api_models.WorkItemRow).where(api_models.WorkItemRow.type == "verification")
+            ).scalars().one()
+            self.assertEqual(verification_item.state, "failed")
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never fabricate a verdict from a crashed scorer
 
@@ -468,16 +649,24 @@ class WorkerLeasingTests(unittest.TestCase):
     def test_duplicate_finalize_call_is_a_no_op_not_a_double_score(self) -> None:
         self._frozen_enqueued_campaign()
         with self.session_factory() as session:
-            leased = repository.claim_work_item(session, worker_id="w1")
-        result = execute_leased_work(self.session_factory, leased, worker_id="w1", work_root=self.work_root)
-        self.assertTrue(result.finalized)
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
 
         with self.session_factory() as session:
-            second_attempt = repository.finalize(
-                session, work_item_id=leased.work_item_id, worker_id="w1", generation=leased.generation,
-                attempt_id=leased.attempt_id, terminal_status="pass", done=True,
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        verification_result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(verification_result.finalized)
+
+        # Duplicate completion (ENG015-007's own required scenario): a second
+        # finalize call on the SAME verification work item/generation - the
+        # actual call that produces a verdict - must be a no-op.
+        with self.session_factory() as session:
+            duplicate = repository.finalize(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                attempt_id=verification.attempt_id, terminal_status="pass", done=True,
             )
-        self.assertFalse(second_attempt)  # already 'done'; WHERE state='leased' excludes it
+        self.assertFalse(duplicate)  # already 'done'; WHERE state='leased' excludes it
 
     # ---- 8. cancellation and orphan teardown -----------------------------
 
