@@ -164,6 +164,21 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertEqual(scorer.attribution, FailureAttribution.SCORER_ERROR)
         self.assertTrue(scorer.retryable)
 
+    def test_bare_runtime_error_from_evaluator_is_scorer_error_not_candidate_failure(self) -> None:
+        """Review finding #16: only CandidateUnavailableError means "the
+        candidate is broken"; an evaluator's own unrelated bug raising a bare
+        RuntimeError (a generic, widely-used Python exception any code could
+        raise by accident) must not be misattributed as a scored candidate
+        failure - it must fall through to SCORER_ERROR like any other
+        unexpected trusted-evaluator exception."""
+        bare_runtime_error = self.runner.run(
+            self.config("bare-runtime-error", self.script("bare.py", self.reference_editor())),
+            lambda _: (_ for _ in ()).throw(RuntimeError("evaluator's own bug, nothing to do with the candidate")),
+        )
+        self.assertEqual(bare_runtime_error.execution_validity, ExecutionValidity.INFRASTRUCTURE_INVALID)
+        self.assertIsNone(bare_runtime_error.verdict)
+        self.assertEqual(bare_runtime_error.attribution, FailureAttribution.SCORER_ERROR)
+
     def test_configuration_and_teardown_failures_do_not_become_verdicts(self) -> None:
         invalid = AttemptConfig(
             attempt_id="bad-config",

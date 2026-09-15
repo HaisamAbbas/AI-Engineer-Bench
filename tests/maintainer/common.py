@@ -6,6 +6,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from aieb_runner.lifecycle import CandidateUnavailableError
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0)); return int(sock.getsockname()[1])
@@ -32,11 +34,11 @@ class CandidateProcess:
             if self.process.poll() is not None:
                 message = self.process.stderr.read() if self.process.stderr else ""
                 if self.process.stderr: self.process.stderr.close()
-                raise RuntimeError(f"candidate process stopped: {message}")
+                raise CandidateUnavailableError(f"candidate process stopped: {message}")
             try:
                 if request(self.base, "GET", "/health")[0] == 200: return self
             except URLError: time.sleep(.04)
-        raise RuntimeError("candidate process did not become ready")
+        raise CandidateUnavailableError("candidate process did not become ready")
     def __exit__(self, *args: object) -> None:
         self.process.terminate()
         try: self.process.wait(timeout=3)

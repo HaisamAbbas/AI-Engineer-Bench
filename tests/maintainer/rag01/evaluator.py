@@ -15,6 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from aieb_runner.lifecycle import CandidateUnavailableError
+
 from .fixture import generate
 
 
@@ -85,7 +87,7 @@ class CandidateService:
                 detail = self.process.stderr.read() if self.process.stderr is not None else ""
                 if self.process.stderr is not None:
                     self.process.stderr.close()
-                raise RuntimeError(f"candidate service stopped: {detail}")
+                raise CandidateUnavailableError(f"candidate service stopped: {detail}")
             try:
                 status, _ = _request(self.base, "GET", "/health")
                 if status == 200:
@@ -96,7 +98,7 @@ class CandidateService:
         self.process.wait(timeout=3)
         if self.process.stderr is not None:
             self.process.stderr.close()
-        raise RuntimeError("candidate service did not become ready")
+        raise CandidateUnavailableError("candidate service did not become ready")
 
     def __exit__(self, *args: object) -> None:
         self.process.terminate()

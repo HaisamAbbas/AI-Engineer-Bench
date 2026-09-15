@@ -35,6 +35,16 @@ from .artifacts import (
 )
 
 
+class CandidateUnavailableError(Exception):
+    """An evaluator raises this - and only this - to report that the
+    candidate application itself is unreachable or crashed (failed to start,
+    stopped responding, etc). Deliberately distinct from Python's built-in
+    RuntimeError: relying on that generic, widely-raised type to mean
+    specifically "the candidate is broken" risked misattributing a trusted
+    evaluator's own unrelated bug (which could just as easily raise a bare
+    RuntimeError) as a scored candidate failure instead of a scorer error."""
+
+
 class AttemptPhase(StrEnum):
     PROVISION = "provision"
     ENGINEER = "engineer"
@@ -355,7 +365,7 @@ class LocalAttemptRunner:
             outcome.add(AttemptPhase.VERIFY)
             try:
                 outcome.evaluation = evaluator(build)
-            except RuntimeError as exc:
+            except CandidateUnavailableError as exc:
                 outcome.execution_validity = ExecutionValidity.VALID
                 outcome.verdict = Verdict.FAIL
                 outcome.attribution = FailureAttribution.CANDIDATE_RUNTIME_FAILURE
