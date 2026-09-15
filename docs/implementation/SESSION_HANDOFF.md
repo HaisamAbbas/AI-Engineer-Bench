@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); three further independent reviews (AUDIT-004/005/006) found 8 more real defects, all fixed; ENG-011 and ENG-015 are IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
+Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); four further independent reviews (AUDIT-004/005/006/007) found 10 more real defects, all fixed; ENG-011 and ENG-015 are IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
 
 ## Current state
 
@@ -212,6 +212,19 @@ themselves, so a PR hand-editing one directly (bypassing the generator) would sk
 check meant to catch exactly that - both paths added to the trigger. The review's other two points
 (ENG-015 leasing, ENG-011's unwired planned_cells/category) are the same already-open items from
 AUDIT-004/005, correctly re-confirmed rather than newly found.
+
+## AUDIT-007 (fifth independent review, found AUDIT-006's own fix incomplete)
+
+Two more real gaps in the AUDIT-006 fix itself, both fixed. First, AUDIT-006 scoped the cost
+numerator to `execution_valid` observations, but that isn't quite "scored" - an execution-valid
+observation can still have `passed=None` (an unresolved/indeterminate evaluation awaiting a
+verdict), and `per_task`'s own scored definition is `execution_valid AND passed is not None`.
+Reproduced directly ($3 scored success plus a $200 execution-valid-but-unresolved observation
+reported `203.0`, not `3.0`) and fixed by introducing that exact `scored` population for the cost
+numerator. Second, `total_campaign_cost_usd` only summed engineer + dev-application cost,
+excluding verifier cost despite its name - fixed to be a genuine grand total of all three
+(engineer + dev-application + verifier); there is still no infrastructure-cost field on
+`TrialObservation`, so the total doesn't include one yet, a disclosed gap rather than a silent one.
 
 ## Recommended next prompt
 
