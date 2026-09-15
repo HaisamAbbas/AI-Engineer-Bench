@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     UniqueConstraint,
@@ -404,3 +405,38 @@ class IdempotencyRecordRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (UniqueConstraint("scope", "key", name="uq_idempotency_scope_key"),)
+
+
+class WorkerArtifactBlobRow(Base):
+    """Content-addressed candidate bytes, in the SAME PostgreSQL database
+    every worker already connects to (AIEB_DATABASE_URL) - not a local
+    filesystem path that would need separate shared/network storage
+    provisioning across every worker host to make cross-host recovery real.
+    This is the hosted worker's PostgresArtifactStore backing table
+    (ENG-015 review finding #5 - "the hosted storage requirement remains
+    unimplemented"); the local CLI's FilesystemArtifactStore (ENG-003) is
+    unaffected and unchanged, since it has no database at all."""
+
+    __tablename__ = "worker_artifact_blob"
+
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class WorkerArtifactReferenceRow(Base):
+    """An access-controlled reference to one worker_artifact_blob row -
+    mirrors FilesystemArtifactStore's on-disk reference metadata exactly
+    (id/blob digest/access_scope/visibility), just persisted in Postgres
+    instead of a JSON file next to the blob."""
+
+    __tablename__ = "worker_artifact_reference"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    blob_sha256: Mapped[str] = mapped_column(String(64), ForeignKey("worker_artifact_blob.sha256"), nullable=False)
+    access_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="restricted")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint("visibility in ('public','restricted')", name="ck_worker_artifact_reference_visibility"),)
