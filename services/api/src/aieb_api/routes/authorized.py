@@ -22,10 +22,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import Identity, get_identity, require_role
+from ..auth import Identity, get_identity, require_role, resolve_roles
 from ..db import get_session
 from ..errors import not_found
-from ..models import ArtifactRefRow, ArtifactRow, AttemptRow, TrialRow
+from ..models import ArtifactRefRow, ArtifactRow, AttemptRow, TrialRow, User
 
 router = APIRouter(prefix="/v1", tags=["authorized"])
 
@@ -61,8 +61,17 @@ def download_artifact(
     ref = session.get(ArtifactRefRow, artifact_ref_id)
     if ref is None:
         raise not_found()
-    if ref.visibility == "private" and str(ref.owner_user_id) != identity.subject and "administrator" not in identity.roles:
-        raise not_found()  # API-02: deny without confirming the private reference exists
+    if ref.visibility == "private":
+        # ref.owner_user_id is the internal users.id UUID; identity.subject is the
+        # raw OIDC subject claim - these are different value spaces and must not
+        # be compared directly (an earlier version of this check compared them as
+        # strings, which could never match, so ownership-based access silently
+        # never worked). Resolve identity to its users.id row first.
+        user_id = session.execute(
+            select(User.id).where(User.oidc_issuer == identity.issuer, User.oidc_subject == identity.subject)
+        ).scalar_one_or_none()
+        if ref.owner_user_id != user_id and "administrator" not in resolve_roles(session, identity):
+            raise not_found()  # API-02: deny without confirming the private reference exists
     artifact = session.get(ArtifactRow, ref.artifact_id)
     if artifact is None:
         raise not_found()

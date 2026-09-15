@@ -4,6 +4,15 @@ Production MUST fail closed when auth is unconfigured: with no issuer/JWKS
 configured, every authenticated route rejects with 401 rather than granting
 access. A test identity provider (HS256 shared secret) exists only for
 isolated tests and refuses to run unless AIEB_ENV=test.
+
+OIDC (or the test provider) establishes WHO is calling - subject/issuer -
+nothing more. It is not consulted for WHAT that caller may do: role
+assignments are stored server-side in the `role_bindings` table (spec
+section 3/47's "Role assignments are stored server-side") and resolved by
+`resolve_roles`/`require_role` from there. A token claiming
+`aieb_roles: ["administrator"]` grants nothing on its own; an identity
+provider capable of issuing arbitrary claims must not thereby control
+authorization.
 """
 
 from __future__ import annotations
@@ -15,15 +24,18 @@ from typing import Protocol
 import jwt
 from fastapi import Depends, Request
 from jwt import PyJWKClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from .db import get_session
 from .errors import forbidden, unauthenticated
+from .models import RoleBinding, User
 
 
 @dataclass(frozen=True)
 class Identity:
     subject: str
     issuer: str
-    roles: tuple[str, ...]
 
 
 class IdentityProvider(Protocol):
@@ -47,8 +59,7 @@ class JWKSIdentityProvider:
             subject = claims["sub"]
         except (jwt.PyJWTError, KeyError) as exc:
             raise unauthenticated(f"invalid token: {exc}") from exc
-        roles = tuple(claims.get("aieb_roles", ()))
-        return Identity(subject=str(subject), issuer=self._issuer, roles=roles)
+        return Identity(subject=str(subject), issuer=self._issuer)
 
 
 class TestIdentityProvider:
@@ -65,8 +76,7 @@ class TestIdentityProvider:
             subject = claims["sub"]
         except (jwt.PyJWTError, KeyError) as exc:
             raise unauthenticated(f"invalid token: {exc}") from exc
-        roles = tuple(claims.get("aieb_roles", ()))
-        return Identity(subject=str(subject), issuer=str(claims.get("iss", "test")), roles=roles)
+        return Identity(subject=str(subject), issuer=str(claims.get("iss", "test")))
 
 
 _provider: IdentityProvider | None = None
@@ -126,9 +136,25 @@ def optional_identity(request: Request) -> Identity | None:
     return get_identity(request)
 
 
+def resolve_roles(session: Session, identity: Identity) -> tuple[str, ...]:
+    """The only source of truth for what an authenticated identity may do.
+
+    An identity with no matching `users` row (never provisioned a role by an
+    administrator) resolves to no roles at all - authenticating successfully
+    grants no authorization by itself.
+    """
+    user_id = session.execute(
+        select(User.id).where(User.oidc_issuer == identity.issuer, User.oidc_subject == identity.subject)
+    ).scalar_one_or_none()
+    if user_id is None:
+        return ()
+    return tuple(session.execute(select(RoleBinding.role).where(RoleBinding.user_id == user_id)).scalars().all())
+
+
 def require_role(*allowed_roles: str):
-    def dependency(identity: Identity = Depends(get_identity)) -> Identity:
-        if not set(identity.roles) & set(allowed_roles):
+    def dependency(identity: Identity = Depends(get_identity), session: Session = Depends(get_session)) -> Identity:
+        roles = resolve_roles(session, identity)
+        if not set(roles) & set(allowed_roles):
             raise forbidden(f"requires one of roles: {', '.join(allowed_roles)}")
         return identity
 
