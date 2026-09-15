@@ -16,10 +16,17 @@ def wilson_interval(successes:int,total:int,z:float=1.959963984540054)->tuple[fl
  p=successes/total;d=1+z*z/total;c=(p+z*z/(2*total))/d;h=z*sqrt((p*(1-p)+z*z/(4*total))/total)/d
  return (c-h,c+h)
 
-def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:int|None=None, fixed_task_weights:dict[str,float]|None=None)->dict[str,object]:
+def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:int|None=None, fixed_task_weights:dict[str,float]|None=None, planned_cells:frozenset[tuple[str,str]]|None=None)->dict[str,object]:
+ # `incomplete` from repetition counts alone only ever inspects cells that
+ # already have at least one observation; a task/entrant pair with ZERO
+ # trials has no key in `cells` and was silently invisible to that check.
+ # `planned_cells` (when the caller knows the frozen matrix) closes that gap:
+ # a wholly missing cell is checked explicitly, not inferred from what
+ # happens to be present.
  cells=defaultdict(list)
  for item in observations: cells[(item.task_id,item.entrant_id)].append(item)
  incomplete=required_repetitions is not None and any(len(values)!=required_repetitions for values in cells.values())
+ if planned_cells is not None: incomplete=incomplete or any(cell not in cells for cell in planned_cells)
  per_task={}
  for (task,entrant),values in sorted(cells.items()):
   valid=[v for v in values if v.execution_valid and v.passed is not None]; s=sum(v.passed for v in valid);n=len(valid);k=required_repetitions or n
