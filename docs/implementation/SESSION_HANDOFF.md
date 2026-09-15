@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); four further independent reviews (AUDIT-004/005/006/007) found 10 more real defects, all fixed; ENG-011 and ENG-015 are IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
+Current phase: Prompt 13 (ENG-016, public website) implemented and IN_PROGRESS; post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007, 18 real defects fixed); ENG-015 directed to split leasing into two independently-leased phases (ENG015-007, implementation not yet started); ENG-011 and ENG-015 remain IN_PROGRESS
 
 ## Current state
 
@@ -226,16 +226,44 @@ excluding verifier cost despite its name - fixed to be a genuine grand total of 
 (engineer + dev-application + verifier); there is still no infrastructure-cost field on
 `TrialObservation`, so the total doesn't include one yet, a disclosed gap rather than a silent one.
 
+## Prompt 13 (ENG-016, public website) - implemented
+
+`apps/web` (React 19/TypeScript/Vite) implements every read-only route Prompt 13 names against
+generated API types (`src/api/schema.ts`, from the checked-in OpenAPI schema). Three minimal read
+endpoints were added to `services/api` because the website genuinely needed them: `GET /v1/tasks`
+(public task catalog), `GET /v1/corrections`, and `supersedes_id` on publication results
+(ENG016-001). Disclosed, not fabricated, gaps: public run evidence shows an honest
+"requires authorization" state rather than an invented redaction boundary (ENG016-002);
+Methodology is real static content (no versioned protocol API exists to back a stub); Compare is
+scoped to one publication's cohort (cross-release comparison needs a two-publication-ID endpoint
+that doesn't exist). 11 frontend tests (Vitest + Testing Library) cover empty/error/withdrawn
+states, null-sorts-last, the 4-entrant cap, URL-backed filters, malicious-content escaping, and
+structural accessibility (axe-core); MSW was tried for network-level mocking but did not reliably
+intercept fetch under this environment's jsdom+Node25 combination, so tests mock the typed API
+client directly instead (still real hook/component code). See
+`docs/implementation/evidence/ENG-016/website.md` for full detail. Not done: real-browser visual/
+responsive inspection (no visual browser tooling available here).
+
+## ENG-015 leasing split - directed, not yet implemented
+
+Per direct instruction, ENG015-007 supersedes ENG015-001: verification becomes its own
+independently-leased PostgreSQL work item (own lease generation/heartbeat/fencing/cancellation/
+finalization), with the candidate persisted and verified before a verification work item is
+enqueued, reusing the existing evaluator pipeline. Required before ENG-015 returns to COMPLETE:
+controlled-failure tests for worker death after candidate persistence, verification lease expiry,
+stale-verifier-return, verifier-retry-without-re-engineering, and duplicate-verification-completion,
+each against real Postgres. This is a substantial change to `services/api/src/aieb_api/worker/`
+(`repository.py`'s single `engineering` work-item type splits into at least two;
+`runner_bridge.py`'s `execute_leased_work` splits into two independently-executed phases) -
+implementation has not started yet.
+
 ## Recommended next prompt
 
-Get a decision on the ENG-015 leasing-granularity question above before treating ENG-015 as
-settled, and decide whether ENG-011's `planned_cells`/`category` inputs should now be wired end to
-end from a real campaign (currently only tests supply them). Once those are resolved, Prompt 13
-(ENG-016, the public website and compare views) is next, now that ENG-011's analysis package
-(including the corrected per-entrant/per-category outputs) and ENG-014's registry/results API
-(plus its new typed TypeScript client) exist to serve it. Separately, independent task reviews
-remain a precondition before any admitted-only ENG-013 release manifest can be created; ENG-012
-remains blocked on provider/model
-authorization, credentials, and spend cap; ENG-017 (admin campaigns, budget reservations,
-`POST /campaigns/{id}/start`) is the next hosted-API dependency now that ENG-015's leasing layer
-exists for it to dispatch onto.
+Implement the ENG-015 leasing split (ENG015-007) - the largest piece of directed-but-unstarted
+work. Separately, decide whether ENG-011's `planned_cells`/`category` inputs should be wired end
+to end from a real campaign (currently only tests supply them). Prompt 14 (ENG-017/018: admin
+campaigns, budget reservations, publication/correction workflows) is the natural next prompt after
+that, since it both depends on and will exercise the ENG-015 leasing layer, and gives the website's
+Corrections/admin-adjacent pages real write paths to react to. Independent task reviews remain a
+precondition before any admitted-only ENG-013 release manifest can be created; ENG-012 remains
+blocked on provider/model authorization, credentials, and spend cap.

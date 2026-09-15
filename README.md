@@ -42,4 +42,29 @@ This writes local state under `.aieb/runs/`; it contains a controller lock, froz
 
 The equivalent development runs for EXT-02 and TOOL-01 use [ext02-local-campaign.json](examples/ext02-local-campaign.json) and [tool01-local-campaign.json](examples/tool01-local-campaign.json). The offline 18-cell pilot plan is [development-pilot-18.json](examples/development-pilot-18.json); it is prepared but not authorized or executed.
 
-See [STATUS.md](docs/implementation/STATUS.md), the [RAG-01 admission report](docs/implementation/evidence/ENG-004-005/admission-report.md), [execution/replay evidence](docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md), [CLI/accounting evidence](docs/implementation/evidence/ENG-008-009/local-cli.md), [EXT/TOOL admission evidence](docs/implementation/evidence/ENG-010/admission-report.md), [analysis evidence](docs/implementation/evidence/ENG-011/analysis.md), and [pilot preparation](docs/implementation/evidence/ENG-012/pilot-preparation.md). ENG-001's real installed-agent smoke remains blocked pending explicit provider/model authorization, credentials, and an existing cap. The recommended next implementation phase is review of the blocked pilot/ENG-013 authoring scope.
+See [STATUS.md](docs/implementation/STATUS.md), the [RAG-01 admission report](docs/implementation/evidence/ENG-004-005/admission-report.md), [execution/replay evidence](docs/implementation/evidence/ENG-006-007/vertical-lifecycle.md), [CLI/accounting evidence](docs/implementation/evidence/ENG-008-009/local-cli.md), [EXT/TOOL admission evidence](docs/implementation/evidence/ENG-010/admission-report.md), [analysis evidence](docs/implementation/evidence/ENG-011/analysis.md), and [pilot preparation](docs/implementation/evidence/ENG-012/pilot-preparation.md). ENG-001's real installed-agent smoke remains blocked pending explicit provider/model authorization, credentials, and an existing cap.
+
+## Hosted API and website (ENG-014/015/016)
+
+`services/api` is a FastAPI service persisting task/evaluator/entrant/campaign/trial/publication
+data in PostgreSQL, with OIDC-based auth and server-side role bindings; `services/api/src/aieb_api/worker`
+is a PostgreSQL-leased execution worker with crash recovery. `apps/web` is the public, read-only
+React/TypeScript website (Results, Compare, entrant profiles, task catalog/detail, run evidence,
+Methodology, Releases, Corrections, Run locally) built against `services/api`'s generated OpenAPI
+types - it recomputes nothing client-side. Run it locally against a real API instance:
+
+```powershell
+# services/api (see docs/implementation/evidence/ENG-014/api-service.md for full setup)
+cd services/api; ..\..\.venv\Scripts\python.exe -m alembic upgrade head; cd ..\..
+.\.venv\Scripts\python.exe -m uvicorn aieb_api.app:create_app --factory --app-dir services/api/src --port 8000
+
+# apps/web
+cd apps/web
+npm install
+npm run dev
+```
+
+Admin/publication workflows (`/admin/*`) are ENG-017/018 scope, not implemented in this website.
+See [STATUS.md](docs/implementation/STATUS.md) for what each hosted page can and cannot show yet
+given the current API surface. The recommended next implementation phase is ENG-017 (admin
+campaigns and budget reservations) and ENG-015's directed leasing-granularity split (ENG015-007).
