@@ -644,6 +644,135 @@ class WorkerLeasingTests(unittest.TestCase):
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never fabricate a verdict from a crashed scorer
 
+    # ---- review finding #3: stored candidate is checked against its own digests --
+
+    def test_stored_candidate_digest_mismatch_is_infrastructure_invalid_not_evaluated(self) -> None:
+        """Review finding #3: load_stored_candidate() previously handed
+        deserialization only the JSON blob, trusting it outright rather than
+        checking it against CandidateRow's own authoritative tree_digest/
+        manifest_digest. A stored_candidate that has diverged from the row
+        that recorded it (corruption, a hand-edit, a bug elsewhere) must be
+        caught before anything is built or scored under its identity."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+
+        with self.session_factory() as session:
+            candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
+            stored = dict(candidate.stored_candidate)
+            stored["manifest"] = dict(stored["manifest"])
+            stored["manifest"]["full_tree_hash"] = "f" * 64  # diverges from candidate.tree_digest
+            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
+            session.commit()
+
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+
+        self.assertEqual(result.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(result.verdict)
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "infrastructure_invalid")
+            evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
+            self.assertEqual(evaluations, [])  # never scored a candidate that failed identity verification
+
+    # ---- review finding #4: legacy/malformed stored_candidate rows -------
+
+    def test_legacy_empty_stored_candidate_is_infrastructure_invalid_not_a_crash(self) -> None:
+        """Review finding #4: a pre-ENG015-007 candidate row gets '{}' from
+        the a3f0c9d17b2e migration's server_default for stored_candidate.
+        Verification reading such a row back must fail safe to
+        infrastructure_invalid, never crash the worker process with a bare
+        KeyError out of _deserialize_stored_candidate."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+
+        with self.session_factory() as session:
+            candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
+            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate={}))
+            session.commit()
+
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+
+        self.assertEqual(result.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(result.verdict)
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "infrastructure_invalid")
+            item = session.get(api_models.WorkItemRow, verification.work_item_id)
+            self.assertEqual(item.state, "failed")
+
+    # ---- review finding #5: idempotent artifact-first writes --------------
+
+    def test_duplicate_record_candidate_call_returns_the_same_row_not_an_integrity_error(self) -> None:
+        """Review finding #5: record_candidate performed an unconditional
+        insert - a retry after a commit whose acknowledgement was lost (a
+        dropped connection, a restarted worker replaying the same call) hit
+        uq_candidate_attempt_tree and raised instead of returning the
+        already-recorded identity."""
+        self._frozen_enqueued_campaign()
+        candidate = repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid")
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+            first_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id, candidate=candidate,
+            )
+        self.assertIsNotNone(first_id)
+
+        with self.session_factory() as session:
+            second_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id, candidate=candidate,
+            )
+        self.assertEqual(second_id, first_id)
+        with self.session_factory() as session:
+            rows = session.execute(select(api_models.CandidateRow).where(api_models.CandidateRow.attempt_id == engineering.attempt_id)).scalars().all()
+            self.assertEqual(len(rows), 1)  # never a duplicate row
+
+    def test_duplicate_record_evaluation_call_is_treated_as_already_recorded(self) -> None:
+        """The same idempotency guarantee for record_evaluation, keyed by
+        uq_evaluation_plan_digest instead of uq_candidate_attempt_tree."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+            self.assertTrue(repository.advance_to_verification(
+                session, work_item_id=engineering.work_item_id, worker_id="w1", generation=engineering.generation, attempt_id=engineering.attempt_id,
+            ))
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+            evaluation = repository.EvaluationOutcome(
+                evaluator_id=self._any_evaluator_id(session), fixture_id=self._any_fixture_id(session),
+                schedule_digest="s" * 64, verdict="pass", result={"pass": True},
+            )
+            first = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                candidate_id=candidate_id, evaluation=evaluation,
+            )
+        self.assertTrue(first)
+
+        with self.session_factory() as session:
+            second = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                candidate_id=candidate_id, evaluation=evaluation,
+            )
+        self.assertTrue(second)
+        with self.session_factory() as session:
+            rows = session.execute(select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate_id)).scalars().all()
+            self.assertEqual(len(rows), 1)  # never a duplicate row
+
     # ---- 7. duplicate completion ----------------------------------------
 
     def test_duplicate_finalize_call_is_a_no_op_not_a_double_score(self) -> None:
@@ -722,6 +851,46 @@ class WorkerLeasingTests(unittest.TestCase):
         with self.session_factory() as session:
             attempt = session.get(api_models.AttemptRow, leased.attempt_id)
             self.assertEqual(attempt.terminal_status, "cancelled")
+
+    def test_verification_cancellation_after_handoff_is_not_scored(self) -> None:
+        """Review finding #1: cancel_event was dropped entirely on the
+        verification dispatch path (execute_leased_work only ever passed it
+        to execute_leased_engineering), and run_verification() had no
+        cancellation mechanism at all - a verification item claimed after its
+        campaign was already cancelled could still run the evaluator and
+        finalize a real score. This mirrors the existing already-cancelling
+        engineering test, but for the verification phase specifically: the
+        engineering phase completes normally and hands off, the campaign is
+        THEN cancelled, and only the subsequent verification dispatch must
+        observe it and refuse to score."""
+        campaign_id = self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+
+        with self.session_factory() as session:
+            self.assertTrue(repository.cancel_campaign(session, campaign_id))
+            verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+        self.assertIsNotNone(verification)
+
+        # Mirrors run_worker's own pre-dispatch check (loop.py): cancellation
+        # is observed before execute_leased_work is even called.
+        cancel_event = threading.Event()
+        cancel_event.set()
+        result = execute_leased_work(
+            self.session_factory, verification, worker_id="w1", work_root=self.work_root, cancel_event=cancel_event,
+        )
+
+        self.assertEqual(result.execution_validity, "cancelled")
+        self.assertIsNone(result.verdict)
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "cancelled")
+            item = session.get(api_models.WorkItemRow, verification.work_item_id)
+            self.assertEqual(item.state, "failed")
+            evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
+            self.assertEqual(evaluations, [])  # never scored once cancelled
 
 
 if __name__ == "__main__":

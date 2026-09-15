@@ -13,6 +13,9 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+_API_SRC = ROOT / "services" / "api" / "src"
+if str(_API_SRC) not in sys.path:
+    sys.path.insert(0, str(_API_SRC))
 
 from aieb_core.models import ExecutionValidity, SubmissionPolicy, Verdict
 from aieb_runner.artifacts import FilesystemArtifactStore
@@ -24,6 +27,7 @@ from aieb_runner.lifecycle import (
     LocalAttemptRunner,
     ReplacementPolicy,
 )
+from aieb_api.worker.runner_bridge import _deserialize_stored_candidate, _serialize_stored_candidate
 from tests.maintainer.rag01.evaluator import evaluate
 
 
@@ -78,16 +82,40 @@ class AttemptLifecycleTests(unittest.TestCase):
         worker's verification phase may run in an entirely different process
         (even a different worker) after the engineering phase's own process
         has already exited. This is the property the leasing split depends on;
-        prove it directly rather than only through the composed run()."""
+        prove it directly rather than only through the composed run().
+
+        Reusing self.runner/self.store here (as an earlier version of this
+        test did) would only prove the split works when both phases share one
+        in-process object - not the two-phase claim ENG-015 actually makes
+        (review finding #2). This test instead round-trips through the same
+        JSON (de)serialization services/api/aieb_api.worker.runner_bridge
+        actually persists to and reads back from PostgreSQL, and reconstructs
+        the candidate through a SECOND, independently-constructed
+        FilesystemArtifactStore instance pointed at the same root directory -
+        the same shape a real distributed deployment gets from pointing every
+        worker's AIEB_WORKER_WORK_ROOT at one shared/network filesystem. It is
+        this fixture's job to attach a fresh store to already-written bytes,
+        not to fabricate a distributed object store neither this pipeline nor
+        ENG-015 provides; see DECISIONS.md ENG015-008 for that disclosed,
+        narrowed scope (same-host or shared-filesystem workers only)."""
         config = self.config("split", self.script("split.py", self.reference_editor()))
         engineered = self.runner.run_engineering(config)
         self.assertIsNotNone(engineered.candidate)
         self.assertEqual(engineered.phases, ["provision", "engineer", "stop", "collect"])
-        # A fresh outcome, as a different worker/process would construct after
-        # loading only the persisted candidate reference from the database -
-        # not engineered itself, not sharing any other in-memory state.
-        resumed = AttemptOutcome(config.attempt_id, candidate=engineered.candidate)
-        verified = self.runner.run_verification(config, evaluate, resumed)
+
+        serialized = _serialize_stored_candidate(engineered.candidate)
+        reconstructed_candidate = _deserialize_stored_candidate(serialized)
+        self.assertEqual(reconstructed_candidate, engineered.candidate)
+
+        # A fresh outcome and a fresh ArtifactStore/runner instance, as a
+        # different worker process attached to the same shared work_root
+        # would construct after loading only the persisted JSON from the
+        # database - not engineered itself, not sharing any other in-memory
+        # state (not even the original store object) with engineering.
+        independent_store = FilesystemArtifactStore(self.root / "store")
+        independent_runner = LocalAttemptRunner(independent_store)
+        resumed = AttemptOutcome(config.attempt_id, candidate=reconstructed_candidate)
+        verified = independent_runner.run_verification(config, evaluate, resumed)
         self.assertEqual(verified.execution_validity, ExecutionValidity.VALID)
         self.assertEqual(verified.verdict, Verdict.PASS)
         self.assertTrue(verified.cleanup_clean)
