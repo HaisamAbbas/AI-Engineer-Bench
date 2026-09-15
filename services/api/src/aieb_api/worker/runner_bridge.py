@@ -84,6 +84,24 @@ def _heartbeat_loop(session_factory: sessionmaker, leased: LeasedWork, worker_id
                 return  # fenced out; nothing more this worker can legitimately do
 
 
+def _cancellation_poll_loop(
+    session_factory: sessionmaker, campaign_id: uuid.UUID, cancel_event: threading.Event, stop: threading.Event, poll_seconds: float,
+) -> None:
+    """Poll for campaign cancellation while an attempt is engineering, setting the
+    shared cancel_event as soon as it is detected - not merely once, at claim
+    time. A cancel issued while a long engineering run is already in flight
+    must still interrupt it (finding #6); checking only before dispatch stops
+    new work but leaves an already-running attempt to finish or hit its own
+    deadline regardless."""
+    while not stop.wait(poll_seconds):
+        if cancel_event.is_set():
+            return
+        with session_factory() as session:
+            if repository.is_campaign_cancelling(session, campaign_id):
+                cancel_event.set()
+                return
+
+
 def execute_leased_work(
     session_factory: sessionmaker, leased: LeasedWork, *, worker_id: str, candidate_variant: str = "reference",
     work_root: Path, lease_seconds: int = repository.DEFAULT_LEASE_SECONDS, cancel_event: threading.Event | None = None,
@@ -105,6 +123,7 @@ def execute_leased_work(
         entrant_row = session.get(EntrantRevisionRow, trial.entrant_revision_id)
         task_slug = task_row.slug
         task_version = task_row.version
+        campaign_id = trial.campaign_id
 
     runtime = TASK_RUNTIMES.get(task_slug)
     if runtime is None:
@@ -121,11 +140,20 @@ def execute_leased_work(
     store = FilesystemArtifactStore(attempt_work_root / "artifacts")
     runner = LocalAttemptRunner(store)
 
+    if cancel_event is None:
+        cancel_event = threading.Event()
+
     stop_heartbeat = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, args=(session_factory, leased, worker_id, lease_seconds, stop_heartbeat), daemon=True,
     )
     heartbeat_thread.start()
+    stop_cancel_poll = threading.Event()
+    cancel_poll_interval = max(lease_seconds / 6, 1)
+    cancel_poll_thread = threading.Thread(
+        target=_cancellation_poll_loop, args=(session_factory, campaign_id, cancel_event, stop_cancel_poll, cancel_poll_interval), daemon=True,
+    )
+    cancel_poll_thread.start()
     try:
         outcome = runner.run(
             AttemptConfig(
@@ -143,6 +171,8 @@ def execute_leased_work(
     finally:
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=5)
+        stop_cancel_poll.set()
+        cancel_poll_thread.join(timeout=5)
 
     if outcome.execution_validity == ExecutionValidity.CANCELLED:
         with session_factory() as session:
