@@ -269,11 +269,60 @@ class LocalAttemptRunner:
         }
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    def run(self, config: AttemptConfig, evaluator: Evaluator, cancel_event: Event | None = None) -> AttemptOutcome:
+    def _finalize(self, outcome: AttemptOutcome, attempt_root: Path, evidence: Path, allocations: tuple[Path, ...]) -> None:
+        """Shared terminal bookkeeping: write evidence, remove the given
+        writable allocations, compute cleanup_clean/retryable, write evidence
+        again reflecting the final state. Used both by run_engineering() (an
+        early exit with no candidate - the attempt is already terminal, no
+        verification follows) and by run_verification() (the true end of the
+        pipeline) - never by a successful run_engineering() handoff, which is
+        not yet a terminal outcome for the attempt."""
+        outcome.add(AttemptPhase.FINALIZE)
+        try:
+            if attempt_root.exists():
+                self._write_evidence(outcome, evidence)
+            outcome.add(AttemptPhase.CLEANUP)
+            for allocation in allocations:
+                if allocation.exists():
+                    shutil.rmtree(allocation)
+            outcome.cleanup_clean = all(not allocation.exists() for allocation in allocations)
+        except OSError as exc:
+            outcome.attribution = FailureAttribution.TEARDOWN_FAILURE
+            outcome.execution_validity = ExecutionValidity.INFRASTRUCTURE_INVALID
+            outcome.verdict = None
+            outcome.cleanup_clean = False
+            outcome.diagnostics.append(f"allocation cleanup failed: {exc}")
+        finally:
+            outcome.retryable = outcome.attribution in {
+                FailureAttribution.PROVIDER_OUTAGE,
+                FailureAttribution.HOST_FAILURE,
+                FailureAttribution.SCORER_ERROR,
+                FailureAttribution.TEARDOWN_FAILURE,
+            }
+            if attempt_root.exists():
+                self._write_evidence(outcome, evidence)
+                outcome.evidence_path = evidence
+
+    def run_engineering(self, config: AttemptConfig, cancel_event: Event | None = None) -> AttemptOutcome:
+        """PROVISION -> ENGINEER -> STOP -> COLLECT.
+
+        Returns an outcome that is either already terminal (attribution set,
+        `candidate` still None - configuration/host/teardown/cancellation/
+        contract-violation failure; no verification follows, the attempt is
+        finalized) or has `candidate` populated and ready for
+        run_verification(). That call may happen in this same process
+        (see run()) or independently - a different worker, a different
+        process, even after this one has exited or crashed - since the
+        collected candidate is already durably persisted in the artifact
+        store keyed by content, and verification reconstructs from
+        `config.frozen_source` plus that store, never from this call's own
+        `engineer` workspace (ENG-015's leasing split, ENG015-007). That
+        workspace is torn down before returning either way, since nothing
+        downstream reads it.
+        """
         outcome = AttemptOutcome(config.attempt_id)
         attempt_root = config.work_root / config.attempt_id
         engineer = attempt_root / "engineer"
-        build = attempt_root / "build"
         evidence = attempt_root / "attempt.json"
         process: subprocess.Popen[str] | None = None
         cancelled = False
@@ -345,7 +394,38 @@ class LocalAttemptRunner:
                 outcome.attribution = FailureAttribution.SUBMISSION_CONTRACT_VIOLATION
                 outcome.diagnostics.append(str(exc))
                 return outcome
+            return outcome
+        finally:
+            if outcome.candidate is None:
+                self._finalize(outcome, attempt_root, evidence, (engineer,))
+            else:
+                try:
+                    if engineer.exists():
+                        shutil.rmtree(engineer)
+                except OSError as exc:
+                    # Collection succeeded, but the workspace this attempt owned
+                    # could not be torn down - the same teardown-failure
+                    # attribution the original single-call pipeline would have
+                    # given if this cleanup had failed at its very end. No
+                    # verification follows; this is terminal now, not a handoff.
+                    outcome.attribution = FailureAttribution.TEARDOWN_FAILURE
+                    outcome.execution_validity = ExecutionValidity.INFRASTRUCTURE_INVALID
+                    outcome.diagnostics.append(f"engineer allocation cleanup failed: {exc}")
+                    outcome.candidate = None
+                    self._finalize(outcome, attempt_root, evidence, (engineer,))
 
+    def run_verification(self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome) -> AttemptOutcome:
+        """BUILD -> VERIFY -> FINALIZE/CLEANUP, given an outcome that already
+        carries a collected `candidate` - either from this same process's own
+        prior run_engineering() call, or reconstructed from persisted
+        artifact-store references by an entirely different worker recovering
+        after a crash (ENG015-007). Mutates and returns the same outcome.
+        """
+        attempt_root = config.work_root / config.attempt_id
+        build = attempt_root / "build"
+        evidence = attempt_root / "attempt.json"
+        attempt_root.mkdir(parents=True, exist_ok=True)
+        try:
             outcome.add(AttemptPhase.BUILD)
             try:
                 reconstruct_candidate(
@@ -383,33 +463,20 @@ class LocalAttemptRunner:
                 outcome.verdict = Verdict.PASS
             return outcome
         finally:
-            outcome.add(AttemptPhase.FINALIZE)
-            try:
-                if attempt_root.exists():
-                    self._write_evidence(outcome, evidence)
-                # Preserve the immutable artifact references and attempt JSON; only
-                # allocations carrying writable candidate state are removed.
-                outcome.add(AttemptPhase.CLEANUP)
-                for allocation in (engineer, build):
-                    if allocation.exists():
-                        shutil.rmtree(allocation)
-                outcome.cleanup_clean = not engineer.exists() and not build.exists()
-            except OSError as exc:
-                outcome.attribution = FailureAttribution.TEARDOWN_FAILURE
-                outcome.execution_validity = ExecutionValidity.INFRASTRUCTURE_INVALID
-                outcome.verdict = None
-                outcome.cleanup_clean = False
-                outcome.diagnostics.append(f"allocation cleanup failed: {exc}")
-            finally:
-                outcome.retryable = outcome.attribution in {
-                    FailureAttribution.PROVIDER_OUTAGE,
-                    FailureAttribution.HOST_FAILURE,
-                    FailureAttribution.SCORER_ERROR,
-                    FailureAttribution.TEARDOWN_FAILURE,
-                }
-                if attempt_root.exists():
-                    self._write_evidence(outcome, evidence)
-                    outcome.evidence_path = evidence
+            self._finalize(outcome, attempt_root, evidence, (build,))
+
+    def run(self, config: AttemptConfig, evaluator: Evaluator, cancel_event: Event | None = None) -> AttemptOutcome:
+        """Convenience wrapper preserving the original single-call contract for
+        existing (local CLI) callers: engineering and verification happen in
+        this same process/call, back to back. ENG-015's hosted worker instead
+        calls run_engineering() and run_verification() from two
+        independently-leased PostgreSQL work items (ENG015-007) - potentially
+        different processes, with a real gap between them where either side
+        can crash and be recovered independently."""
+        outcome = self.run_engineering(config, cancel_event)
+        if outcome.candidate is None:
+            return outcome
+        return self.run_verification(config, evaluator, outcome)
 
     def run_with_replacements(
         self,

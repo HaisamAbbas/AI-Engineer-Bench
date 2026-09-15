@@ -18,6 +18,7 @@ from aieb_core.models import ExecutionValidity, SubmissionPolicy, Verdict
 from aieb_runner.artifacts import FilesystemArtifactStore
 from aieb_runner.lifecycle import (
     AttemptConfig,
+    AttemptOutcome,
     EngineeringCommand,
     FailureAttribution,
     LocalAttemptRunner,
@@ -69,6 +70,35 @@ class AttemptLifecycleTests(unittest.TestCase):
             f"shutil.copyfile({reference}, Path.cwd() / 'knowledge_service' / 'backend.py')\n"
             + extra
         )
+
+    def test_engineering_and_verification_can_run_as_two_independent_calls(self) -> None:
+        """ENG015-007: verification must be resumable from a fresh AttemptOutcome
+        carrying only the artifact-store-backed candidate reference - not the
+        same in-process object run_engineering produced - since the hosted
+        worker's verification phase may run in an entirely different process
+        (even a different worker) after the engineering phase's own process
+        has already exited. This is the property the leasing split depends on;
+        prove it directly rather than only through the composed run()."""
+        config = self.config("split", self.script("split.py", self.reference_editor()))
+        engineered = self.runner.run_engineering(config)
+        self.assertIsNotNone(engineered.candidate)
+        self.assertEqual(engineered.phases, ["provision", "engineer", "stop", "collect"])
+        # A fresh outcome, as a different worker/process would construct after
+        # loading only the persisted candidate reference from the database -
+        # not engineered itself, not sharing any other in-memory state.
+        resumed = AttemptOutcome(config.attempt_id, candidate=engineered.candidate)
+        verified = self.runner.run_verification(config, evaluate, resumed)
+        self.assertEqual(verified.execution_validity, ExecutionValidity.VALID)
+        self.assertEqual(verified.verdict, Verdict.PASS)
+        self.assertTrue(verified.cleanup_clean)
+        self.assertEqual([file.path for file in verified.candidate.manifest.files], ["knowledge_service/backend.py"])
+
+        # The composed run() (used by the local CLI, unaffected by this split)
+        # produces the same verdict for the same reference fix.
+        composed = self.runner.run(
+            self.config("composed", self.script("composed.py", self.reference_editor())), evaluate
+        )
+        self.assertEqual(composed.verdict, verified.verdict)
 
     def test_valid_fix_replays_only_submitted_files_in_fresh_build(self) -> None:
         outcome = self.runner.run(
