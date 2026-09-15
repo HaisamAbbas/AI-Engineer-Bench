@@ -239,7 +239,10 @@ class WorkItemRow(Base):
 
     __table_args__ = (
         CheckConstraint("state in ('ready','leased','done','failed')", name="ck_work_item_state"),
-        Index("ix_work_item_ready_lease", "state", "lease_expiry", postgresql_where=(state == "ready")),
+        # `type` deliberately has no CHECK constraint restricting its values:
+        # ENG015-007 added a second type ("verification", alongside the
+        # original "engineering") without a schema migration for this column.
+        Index("ix_work_item_ready_lease", "type", "state", "lease_expiry", postgresql_where=(state == "ready")),
     )
 
 
@@ -251,6 +254,13 @@ class CandidateRow(Base):
     tree_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     validation_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    # The full StoredCandidate (aieb_runner.artifacts) - manifest plus every
+    # changed file's artifact-store reference - serialized as JSON (ENG015-007).
+    # Without this, only tree/manifest digests were persisted, which cannot
+    # reconstruct a candidate: independently-leased verification (possibly a
+    # different worker, possibly after this one crashed) needs the actual
+    # file references to call reconstruct_candidate(), not just its digest.
+    stored_candidate: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
