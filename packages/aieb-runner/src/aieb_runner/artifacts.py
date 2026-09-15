@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import tarfile
@@ -79,8 +80,20 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
+
+
 def _safe_relative(path: str) -> str:
     normalized = path.replace("\\", "/")
+    # PurePosixPath("C:/outside").is_absolute() is False - POSIX has no concept
+    # of a drive letter, so it treats "C:" as an ordinary first segment. On
+    # Windows, joining destination / "C:/outside" discards destination
+    # entirely (WindowsPath recognizes the drive as a new anchor), so a
+    # candidate manifest or tar member naming a drive-qualified path could
+    # write outside the intended extraction root. Reject it explicitly before
+    # the POSIX-only checks below, which cannot see it.
+    if _DRIVE_LETTER.match(normalized):
+        raise ArtifactValidationError(f"unsafe relative path: {path!r}")
     pure = PurePosixPath(normalized)
     if not normalized or pure.is_absolute() or ".." in pure.parts or any(part in ("", ".") for part in pure.parts):
         raise ArtifactValidationError(f"unsafe relative path: {path!r}")
@@ -327,11 +340,23 @@ def safe_extract_tar(*, archive: Path, destination: Path, max_files: int = DEFAU
                 if declared > max_bytes:
                     raise ArtifactValidationError("archive exceeds expanded byte limit")
             destination.mkdir(parents=True, exist_ok=True)
+            # _safe_relative rejects an escaping path string, but a member
+            # name can still be safe as a *string* while resolving outside
+            # destination if an existing (reused, not freshly created)
+            # destination already contains a symlinked intermediate
+            # directory - no member here can plant one itself, since every
+            # member was already required to be a regular file above, but a
+            # dirty destination from a prior caller could. Resolve and verify
+            # containment for each target before ever creating directories
+            # or writing bytes.
+            clean_root = destination.resolve()
             for member in members:
                 source = bundle.extractfile(member)
                 if source is None:
                     raise ArtifactValidationError(f"archive member has no content: {member.name}")
                 target = destination / _safe_relative(member.name)
+                if not target.resolve().is_relative_to(clean_root):
+                    raise ArtifactValidationError(f"extraction target escaped destination root: {member.name}")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with source, target.open("xb") as output:
                     shutil.copyfileobj(source, output)

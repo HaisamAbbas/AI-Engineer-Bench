@@ -164,6 +164,53 @@ class CandidateArtifactsTest(unittest.TestCase):
         with self.assertRaisesRegex(ArtifactValidationError, "expanded"):
             safe_extract_tar(archive=oversized, destination=self.root / "out", max_bytes=10)
 
+    def test_safe_tar_rejects_windows_drive_qualified_member_name(self) -> None:
+        """"C:/outside/evil.txt" starts with neither "/" nor "..", so it is not
+        caught by the ordinary traversal check, yet Path(destination) /
+        "C:/outside/evil.txt" discards destination entirely on Windows."""
+        drive = self.root / "drive.tar"
+        with tarfile.open(drive, "w") as archive:
+            info = tarfile.TarInfo("C:/outside/evil.txt")
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+        with self.assertRaisesRegex(ArtifactValidationError, "unsafe"):
+            safe_extract_tar(archive=drive, destination=self.root / "out")
+
+    def test_safe_tar_rejects_escape_through_a_symlinked_existing_destination(self) -> None:
+        """A member name alone can be a perfectly safe-looking relative path
+        ("linked-dir/evil.txt") and still resolve outside destination if an
+        already-existing destination (reused across calls, not freshly
+        created) has a symlinked intermediate directory. No tar member can
+        plant that symlink itself - every member here is required to be a
+        regular file - so this models a dirty destination from a prior
+        caller, not a self-contained archive attack.
+
+        Creating a real symlink needs a privilege this sandboxed environment
+        does not grant (confirmed: WinError 1314), so this simulates the
+        resolved-outside-root condition the same way test_rejects_symlink_escape
+        simulates its symlink - by patching resolution for the one path of
+        interest - rather than skipping the check entirely."""
+        outside_target = self.root / "outside-target" / "evil.txt"
+        destination = self.root / "out2"
+        destination.mkdir()
+        escape = self.root / "escape.tar"
+        with tarfile.open(escape, "w") as archive:
+            info = tarfile.TarInfo("linked-dir/evil.txt")
+            info.size = 1
+            archive.addfile(info, io.BytesIO(b"x"))
+        real_resolve = Path.resolve
+
+        def resolve_with_symlink_escape(path: Path, *args: object, **kwargs: object) -> Path:
+            resolved = real_resolve(path, *args, **kwargs)
+            if resolved == (destination / "linked-dir" / "evil.txt").absolute():
+                return outside_target
+            return resolved
+
+        with patch.object(Path, "resolve", resolve_with_symlink_escape):
+            with self.assertRaisesRegex(ArtifactValidationError, "escaped"):
+                safe_extract_tar(archive=escape, destination=destination)
+        self.assertFalse(outside_target.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

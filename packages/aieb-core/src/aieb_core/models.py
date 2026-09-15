@@ -5,6 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from decimal import Decimal, InvalidOperation
 import math
+import re
 from typing import Annotated, Literal, TypeVar
 from uuid import UUID
 
@@ -16,6 +17,18 @@ from .canonical import content_hash
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Slug = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9._-]*$")]
 SafePath = Annotated[str, Field(min_length=1, max_length=512)]
+
+_DRIVE_LETTER = re.compile(r"^[A-Za-z]:")
+
+
+def _has_escaping_segment(normal: str) -> bool:
+    """True if a repo-relative path string could still escape a destination
+    root once joined with pathlib - not just the obvious "/"-prefixed or ".."
+    cases. A Windows drive-qualified path such as "C:/outside" does not start
+    with "/" and contains no "..", so it previously passed this check, yet
+    `Path(root) / "C:/outside"` discards `root` entirely on Windows (the
+    drive letter is treated as a new anchor)."""
+    return normal.startswith("/") or ".." in normal.split("/") or bool(_DRIVE_LETTER.match(normal))
 
 
 def _normalised_decimal(value: str | None, label: str) -> str | None:
@@ -143,7 +156,7 @@ class SubmissionPolicy(ContractModel):
     def validate_paths(cls, paths: tuple[str, ...]) -> tuple[str, ...]:
         for path in paths:
             normal = path.replace("\\", "/")
-            if normal.startswith("/") or ".." in normal.split("/") or normal == "**" or normal.startswith("**/"):
+            if _has_escaping_segment(normal) or normal == "**" or normal.startswith("**/"):
                 raise ValueError("submission paths must be repo-relative and task-specific")
         if len(set(paths)) != len(paths):
             raise ValueError("submission paths must be unique")
@@ -342,7 +355,7 @@ class CandidateFile(ContractModel):
     @classmethod
     def safe_candidate_path(cls, path: str) -> str:
         normal = path.replace("\\", "/")
-        if normal.startswith("/") or ".." in normal.split("/"):
+        if _has_escaping_segment(normal):
             raise ValueError("candidate path must be repo-relative")
         return path
 

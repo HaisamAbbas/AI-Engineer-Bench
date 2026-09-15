@@ -82,6 +82,18 @@ class CanonicalContractTest(unittest.TestCase):
         with self.assertRaises(CanonicalizationError):
             content_hash({"value": float("nan")})
 
+    def test_rejects_windows_drive_qualified_paths(self) -> None:
+        """A path like "C:/outside" starts with neither "/" nor "..", so it
+        previously passed both CandidateFile.path and SubmissionPolicy's
+        include/protected validators, yet Path(root) / "C:/outside" discards
+        root entirely on Windows (the drive letter becomes a new anchor)."""
+        raw = task().model_dump(mode="json")
+        raw["submission"]["include"] = ["C:/outside/**"]
+        with self.assertRaises(ValidationError):
+            TaskRevision.model_validate(raw)
+        with self.assertRaises(ValidationError):
+            CandidateFile(path="C:/outside/evil.txt", operation="add", sha256="a" * 64, byte_length=1, executable=False)
+
     def test_valid_and_invalid_result_envelopes_and_unknown_usage(self) -> None:
         plan = EvaluationPlan(schema_version="aieb.evaluation-plan/v1", id=uuid4(), task_digest="a" * 64, candidate_digest="b" * 64, evaluator_digest="c" * 64, fixture_digest="d" * 64, workload_seed=7, requirement_ids=("contract",))
         valid = EvaluationResult(schema_version="aieb.evaluation-result/v1", id=uuid4(), plan_id=plan.id, execution_validity="valid", verdict="pass", checks=(RequirementCheck(requirement_id="contract", status="pass"),), usage=UsageSummary())
