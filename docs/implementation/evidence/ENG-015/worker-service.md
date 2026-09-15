@@ -4,9 +4,20 @@ Date: 2026-09-14, revised 2026-09-16 (ENG015-007: engineering and verification
 split into two independently leased phases; ENG015-008: a further review of
 that split found four real gaps - verification cancellation, stored-candidate
 digest verification, legacy-row handling, and idempotent artifact-first
-writes - all fixed, plus one topology claim narrowed to what the
-implementation actually guarantees). Local development/test evidence only; no
-remote deployment occurred.
+writes - all fixed, plus one topology claim narrowed; ENG015-009: a fourth
+review found ENG015-008's own fixes for findings #1/#2/#3/#5 were each only
+partial, plus one new gap (#4) - all fixed for real this time: cancellation
+now genuinely interrupts a running BUILD/VERIFY via a background thread, not
+merely checked before/after; idempotent retries now return the AUTHORITATIVE
+persisted evaluation/candidate rather than trusting the caller's own retry
+payload, and a genuine content conflict now raises rather than silently
+succeeding; storage/reference corruption during BUILD is now classified
+infrastructure_invalid, not a candidate contract violation; a malformed
+nested stored-candidate field now raises the typed error via a Pydantic
+envelope, not a bare AttributeError; and shared storage is now a real
+PostgreSQL-backed `PostgresArtifactStore`, the hosted worker's actual
+default, not merely a documented local-filesystem limitation). Local
+development/test evidence only; no remote deployment occurred.
 
 ## What this ticket implements
 
@@ -53,34 +64,63 @@ remote deployment occurred.
   `maybe_complete_cancellation`): stops new dispatch; a worker that claims
   either an `engineering` or a `verification` work item for a cancelling
   campaign passes a set `cancel_event` into `LocalAttemptRunner.run_engineering()`
-  or `run_verification()` respectively, which poll that event (a small,
-  backward-compatible extension — see DECISIONS.md ENG015-002) instead of
-  blocking uninterruptibly. `run_engineering()` polls between deadline-poll
-  iterations while the engineering subprocess is running; `run_verification()`
-  checks cooperatively at the BUILD/VERIFY phase boundary (before BUILD, and
-  again before VERIFY) - it cannot interrupt the VERIFY call itself mid-flight,
-  since that call is a synchronous in-process evaluator function, not a
-  subprocess this runner owns and can signal (ENG015-008, review finding #1 -
-  a prior gap where cancellation was checked only during engineering and
-  silently dropped on the verification dispatch path entirely).
-- Stored-candidate integrity (ENG015-008, review finding #3): before a
-  verification phase builds or scores a candidate reconstructed from
-  persisted JSON, it recomputes that candidate's manifest digest and tree
-  hash and compares them against `CandidateRow`'s own authoritative
+  or `run_verification()` respectively. `run_verification()` runs BOTH BUILD
+  and VERIFY on a background thread, polled against `cancel_event`
+  (`LocalAttemptRunner._run_cancelable`, ENG015-009) - cancellation now
+  genuinely interrupts a phase that is actually running, not merely checked
+  before/after it (ENG015-008's own fix only checked the boundary between
+  phases, which a third review correctly identified as still letting a
+  cancellation arriving strictly DURING BUILD or VERIFY complete and persist
+  a score). Neither phase is preemptible mid-call in the strict sense - the
+  background thread running it is simply abandoned (daemon) on cancellation,
+  its eventual result discarded - but nothing from an abandoned phase is
+  ever recorded once its work item has already finalized `cancelled`.
+- Stored-candidate integrity (ENG015-008/009, review findings #2/#3/#4):
+  before a verification phase builds or scores a candidate reconstructed
+  from persisted JSON, it recomputes that candidate's manifest digest and
+  tree hash and compares them against `CandidateRow`'s own authoritative
   `manifest_digest`/`tree_digest` columns - a mismatch (corruption, a
   hand-edit, a bug elsewhere) routes to `infrastructure_invalid` rather than
-  evaluating under a falsified identity. A missing or malformed
-  `stored_candidate` (e.g. a legacy row with `{}` from the migration's
-  `server_default`, review finding #4) raises a typed
-  `StoredCandidateUnavailableError`, caught the same way, rather than a bare
-  `KeyError` crashing the worker process.
-- Idempotent artifact-first writes (ENG015-008, review finding #5):
-  `record_candidate`/`record_evaluation` catch the `IntegrityError` their own
-  unique constraints (`uq_candidate_attempt_tree`, `uq_evaluation_plan_digest`)
-  raise on a retried call whose prior commit actually succeeded but whose
-  acknowledgement was lost, and return the already-recorded row's identity
-  instead of raising - a retry lands on the same identity a fresh insert
-  would have.
+  evaluating under a falsified identity. That check covers the MANIFEST but
+  not `file_references`' own metadata (reference id, blob digest/length,
+  access scope) - a third review correctly noted corrupting those still
+  passed both checks and reconstruction's resulting `ArtifactError` was
+  misclassified as a candidate `CONTRACT_VIOLATION`. Fixed at the
+  classification, not by duplicating validation: `run_verification()`'s
+  BUILD phase now treats ANY `ArtifactError` as `infrastructure_invalid`
+  (attribution `HOST_FAILURE`) - by BUILD, the candidate's actual submission
+  content was already accepted as contract-compliant during COLLECT, so an
+  error reconstructing it now is always a storage/reference integrity
+  failure, never the candidate's own fault; `reconstruct_candidate()`
+  itself already re-verifies every file's actual bytes against the
+  manifest's own per-file digest (which the outer manifest-digest check
+  protects), so this closes the gap for reference id/blob/scope corruption
+  too, not just the manifest. A missing or malformed `stored_candidate`
+  (e.g. a legacy row's `{}` server_default, OR a malformed nested field like
+  `"id": []`) is now validated as a whole through a typed Pydantic envelope
+  (`_StoredCandidateEnvelope`) rather than manual dict indexing plus
+  `uuid.UUID(...)` - any structural or type mismatch anywhere in the payload
+  raises one well-defined `StoredCandidateUnavailableError`, never a bare
+  `KeyError`/`AttributeError` escaping to crash the worker process (a third
+  review reproduced exactly the `AttributeError` case directly).
+- Idempotent, conflict-aware artifact-first writes (ENG015-008/009, review
+  finding #2): `record_candidate`/`record_evaluation` catch the
+  `IntegrityError` their own unique constraints (`uq_candidate_attempt_tree`,
+  `uq_evaluation_plan_digest`) raise on a retried call whose prior commit
+  actually succeeded but whose acknowledgement was lost. ENG015-008's first
+  fix stopped there - returning success without comparing the retry's
+  payload against what was actually persisted, so a retry that computed a
+  genuinely DIFFERENT verdict (or candidate content) under the identical
+  identity could still get silently accepted and even finalize from its own,
+  wrong, in-memory result instead of the real persisted one. Fixed
+  properly: `record_evaluation` now returns a `RecordedEvaluation` -
+  ALWAYS the authoritative persisted verdict/result, whether newly written
+  or already there - and `runner_bridge.py` finalizes from THAT, never from
+  its own local `outcome.verdict`; `record_candidate` compares the full
+  persisted payload (manifest_digest, validation_status, stored_candidate)
+  against the retry's own, and raises `CandidateConflictError` on any real
+  mismatch instead of silently returning a different row's id as if it were
+  the one just recorded.
 - Orphan teardown (`reconciler._remove_orphan_allocations`): removes the
   writable `engineer`/`build` allocations a SIGKILLed worker (at either
   phase) never reached its own cleanup phase for; immutable `attempt.json`
@@ -112,21 +152,33 @@ CLI already uses for development verticals.
   JSON log events with the IDs spec section 39 names and keeps in-process
   counters; wiring a real OTel exporter is hosted-observability infrastructure
   work, not this ticket's scope.
-- Real distributed object storage: candidate bytes still go through the
-  existing local `FilesystemArtifactStore` (ENG-003), not S3 or an equivalent
-  network object store. Concretely, this means "a different worker can
-  recover a candidate from the database alone" is true only when every
-  worker's `AIEB_WORKER_WORK_ROOT` points at the same shared/network
-  filesystem (e.g. one NFS/SMB mount all worker hosts reach) - not
-  automatically true for arbitrary independent hosts with no shared storage
-  (ENG015-008, review finding #2; the claim was narrowed rather than a
-  distributed store being built, which is out of scope for this ticket).
-  `test_engineering_and_verification_can_run_as_two_independent_calls` proves
-  the actually-implemented guarantee: it round-trips the candidate through
-  the real JSON (de)serialization PostgreSQL actually stores, and
-  reconstructs it through a second, independently-constructed
-  `FilesystemArtifactStore` pointed at the same root directory - not the same
-  in-process object, which the pre-ENG015-008 version of this test reused.
+- ~~Real distributed object storage~~ - RESOLVED (ENG015-009). ENG015-008
+  narrowed this to "shared/network filesystem across every worker host,"
+  which a third review correctly rejected as still unimplemented by
+  default - documenting a requirement is not meeting it. The hosted worker
+  now stores candidate bytes in PostgreSQL itself
+  (`aieb_api/worker/artifact_store.py::PostgresArtifactStore`, backed by
+  the new `worker_artifact_blob`/`worker_artifact_reference` tables,
+  migration `e20d5d09b489`) instead of `FilesystemArtifactStore` - the same
+  `AIEB_DATABASE_URL` every worker already needs to lease work at all, not
+  a second infrastructure dependency (no S3/object-store client, no
+  operator-provisioned network mount). `execute_leased_engineering`/
+  `execute_leased_verification` construct this store directly; the local
+  CLI is unaffected (no database at all) and still uses
+  `FilesystemArtifactStore` exclusively.
+  `test_verification_recovers_the_candidate_with_no_shared_filesystem_at_all`
+  proves this directly: engineering and verification run against
+  COMPLETELY SEPARATE, never-shared local directories (simulating two
+  hosts with no filesystem in common whatsoever), and verification still
+  recovers and correctly scores the candidate from Postgres alone.
+  `test_engineering_and_verification_can_run_as_two_independent_calls`
+  (in `test_attempt_lifecycle.py`, testing `aieb_runner.lifecycle` directly
+  rather than the hosted worker) still uses `FilesystemArtifactStore` with
+  a second, independently-constructed instance pointed at the same
+  directory - that is a deliberate, narrower test of the generic
+  `LocalAttemptRunner`/`ArtifactStore` abstraction itself (which the local
+  CLI also relies on), not a claim about the hosted worker's own storage
+  choice.
 
 ## Environment variables (no secrets)
 
@@ -134,7 +186,7 @@ CLI already uses for development verticals.
 | --- | --- | --- |
 | `AIEB_DATABASE_URL` | Shared by `aieb-api`, `aieb-worker`, `aieb-reconciler` | none (fails closed) |
 | `AIEB_WORKER_ID` | Identity used for fencing | `worker-<pid>-<random>` |
-| `AIEB_WORKER_WORK_ROOT` | Local directory for engineering/build allocations and stored artifacts | `.aieb-worker-runs` |
+| `AIEB_WORKER_WORK_ROOT` | Local scratch directory for engineering/build process allocations only (`runs/`, `engineer/`, `build/`) - candidate BYTES themselves live in PostgreSQL (`PostgresArtifactStore`, ENG015-009), not here, so this directory need not be shared across workers | `.aieb-worker-runs` |
 | `AIEB_WORKER_POLL_SECONDS` | Idle poll interval when no work is ready | `1.0` |
 | `AIEB_WORKER_LEASE_SECONDS` | Lease duration; heartbeat renews at 1/3 of this | `60` |
 | `AIEB_WORKER_CANDIDATE_VARIANT` | Which fixture variant the deterministic editor applies (`reference`/`alternative`/`baseline`) | `reference` |
@@ -162,12 +214,17 @@ $env:AIEB_WORKER_ID = "worker-3"; Start-Process .\.venv\Scripts\aieb-worker.exe
 
 ## Test evidence (real PostgreSQL, real subprocess kills)
 
-`tests/test_worker_leasing.py` (19 tests) runs against the same disposable
+`tests/test_worker_leasing.py` (25 tests) runs against the same disposable
 Postgres container as ENG-014's tests and covers every controlled-failure
 scenario the prompt names, not just the happy path - including the five
-ENG015-007 names explicitly for the leasing split, plus five more from the
-ENG015-008 review (verification cancellation, digest mismatch, legacy/malformed
-stored_candidate, and duplicate candidate/evaluation recording):
+ENG015-007 names explicitly for the leasing split, five from the ENG015-008
+review (verification cancellation, digest mismatch, legacy/malformed
+stored_candidate, and duplicate candidate/evaluation recording), and two more
+from the ENG015-009 review (a cross-host topology proof with no shared
+filesystem at all, and cancellation genuinely interrupting a running VERIFY
+via the background poll thread rather than an already-set event) plus fixes
+for the two record_candidate/record_evaluation conflict scenarios and the
+reference-corruption/malformed-nested-field cases below:
 
 | Scenario | Test |
 | --- | --- |
@@ -187,6 +244,12 @@ stored_candidate, and duplicate candidate/evaluation recording):
 | Stored candidate diverged from its own recorded digests (ENG015-008 #3) | `test_stored_candidate_digest_mismatch_is_infrastructure_invalid_not_evaluated` |
 | Legacy/malformed `stored_candidate` row (ENG015-008 #4) | `test_legacy_empty_stored_candidate_is_infrastructure_invalid_not_a_crash` |
 | Duplicate candidate/evaluation recording under an ambiguous commit (ENG015-008 #5) | `test_duplicate_record_candidate_call_returns_the_same_row_not_an_integrity_error`, `test_duplicate_record_evaluation_call_is_treated_as_already_recorded` |
+| Cancellation genuinely interrupts a RUNNING VERIFY, not just an already-set event (ENG015-009 #1) | `test_verification_cancellation_arriving_mid_verify_interrupts_the_attempt` |
+| A conflicting evaluation retry never overrides the first persisted verdict (ENG015-009 #2) | `test_record_evaluation_returns_the_first_persisted_verdict_not_a_conflicting_retry` |
+| A conflicting candidate retry raises rather than silently succeeding (ENG015-009 #2) | `test_record_candidate_raises_on_a_genuine_content_conflict` |
+| Corrupted stored reference (not the manifest) is infrastructure_invalid, not a candidate fault (ENG015-009 #3) | `test_corrupted_reference_id_is_infrastructure_invalid_not_a_candidate_contract_violation` |
+| Malformed nested reference field never raises a bare AttributeError (ENG015-009 #4) | `test_malformed_nested_reference_is_infrastructure_invalid_not_an_attribute_error` |
+| Verification recovers a candidate with NO shared filesystem at all (ENG015-009 #5) | `test_verification_recovers_the_candidate_with_no_shared_filesystem_at_all` |
 
 `tests/test_attempt_lifecycle.py::test_engineering_and_verification_can_run_as_two_independent_calls`
 proves the split's core guarantee directly at the `LocalAttemptRunner` level:
@@ -245,18 +308,25 @@ See DECISIONS.md ENG015-006.
 
 ## Handoff
 
-Worker leasing, fencing, heartbeat, reconciliation, cancellation (now on both
-phases), stored-candidate integrity checking, idempotent artifact-first
-writes, and two independently leased phases (ENG015-007, hardened by
-ENG015-008) are implemented and tested against a real PostgreSQL instance.
-Wiring `enqueue_frozen_campaign` to a real `POST /campaigns/{id}/start`
-endpoint with budget reservations, exporting real OTel metrics, and a real
-distributed object store (candidate bytes currently require a shared/network
-filesystem across workers, not S3 or equivalent) remain ENG-017/ENG-016/
-future-work dependencies, disclosed rather than silently assumed. Local CLI
-functionality is unaffected; `aieb_runner.lifecycle.LocalAttemptRunner` gained
-one backward-compatible optional parameter (`cancel_event`, ENG015-002/
-ENG015-008) on both `run_engineering()` and (as of ENG015-008) `run_verification()`,
-and, for ENG015-007, two new public methods (`run_engineering`,
-`run_verification`) - `run()` itself is now a thin wrapper composing them, so
-existing callers (the local CLI) see no behavior change.
+Worker leasing, fencing, heartbeat, reconciliation, cancellation that
+genuinely interrupts a running BUILD/VERIFY (not merely checked at phase
+boundaries), stored-candidate integrity checking (manifest AND reference
+metadata, via correct failure classification rather than duplicated
+validation), conflict-aware idempotent artifact-first writes (a genuine
+retry conflict is now surfaced, never silently accepted), a real
+PostgreSQL-backed shared artifact store (`PostgresArtifactStore` - the
+hosted worker's actual default, not a documented local-filesystem
+limitation), and two independently leased phases (ENG015-007, hardened by
+ENG015-008 and then ENG015-009) are implemented and tested against a real
+PostgreSQL instance. Wiring `enqueue_frozen_campaign` to a real
+`POST /campaigns/{id}/start` endpoint with budget reservations, and
+exporting real OTel metrics remain ENG-017/ENG-016 dependencies. Local CLI
+functionality is unaffected: it has no database at all and continues to use
+`FilesystemArtifactStore` exclusively; `aieb_runner.lifecycle.LocalAttemptRunner`
+gained one backward-compatible optional parameter (`cancel_event`,
+ENG015-002/ENG015-008) on both `run_engineering()` and `run_verification()`,
+a private `_run_cancelable()` helper (ENG015-009) both phases use internally
+to poll that event against a background thread, and, for ENG015-007, two new
+public methods (`run_engineering`, `run_verification`) - `run()` itself is a
+thin wrapper composing them, so existing callers (the local CLI) see no
+behavior change beyond genuine cancellation now working correctly.

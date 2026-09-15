@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus the third review's finding #5 - real HTTP/browser integration tests - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus the third review's finding #5 - real HTTP/browser integration tests - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -357,6 +357,51 @@ overclaim, all addressed - see DECISIONS.md ENG015-008 for full detail:
 `tests/test_worker_leasing.py` grew from 14 to 19 tests; `tests/test_attempt_lifecycle.py`'s
 two-phase independence test was corrected as described above (still 9 tests, all passing). Full
 regression: 120 Python tests (1 skipped), against real Postgres. ENG-015 remains `COMPLETE`.
+
+## ENG-015 hardened again - a fourth review found ENG015-008's own fixes each only partial (ENG015-009)
+
+A fourth review reproduced a concrete failure for each of ENG015-008's five findings and found four
+of the five fixes still incomplete, plus one new gap - see DECISIONS.md ENG015-009 for full detail:
+
+1. **Cancellation still couldn't interrupt an active verification.** ENG015-008 only checked
+   `cancel_event` before/after BUILD and VERIFY, never during - reproduced directly with a
+   deliberately slow (20-second) evaluator, cancelling 1.5 seconds in. Fixed: `LocalAttemptRunner`
+   gained a private `_run_cancelable()` helper that runs BUILD/VERIFY on a background thread polled
+   against `cancel_event`; cancellation now returns immediately without waiting for either phase to
+   finish (the abandoned thread's eventual result, if any, is simply discarded).
+2. **An idempotent evaluation retry could finalize a DIFFERENT verdict than what was persisted.**
+   `record_evaluation` returned bare `True` on a retry's `IntegrityError` without comparing the
+   stored verdict against the retry's own payload - reproduced with a first "pass" and a conflicting
+   second "fail" under the identical identity. Fixed: `record_evaluation` now returns a
+   `RecordedEvaluation` - always the AUTHORITATIVE persisted verdict/result - and `runner_bridge.py`
+   finalizes from that, never its own local outcome. `record_candidate` gained the same treatment:
+   a genuine content mismatch on retry now raises `CandidateConflictError` instead of silently
+   returning a different row's id.
+3. **Candidate integrity validation covered the manifest but not stored reference metadata.**
+   Corrupting a `file_references` entry's id/blob digest/scope still passed the manifest-digest
+   check and was misclassified a candidate `CONTRACT_VIOLATION`. Fixed at the classification: any
+   `ArtifactError` during verification's BUILD phase is now `infrastructure_invalid`/`HOST_FAILURE`
+   - by BUILD, the candidate's own content was already accepted as contract-compliant during
+   COLLECT, so a reconstruction failure now is always a storage/reference problem, and
+   `reconstruct_candidate()`'s own existing re-verification against the manifest's per-file digest
+   already catches this class of corruption.
+4. **A malformed nested reference field still escaped the typed error** as a bare `AttributeError`
+   (`"id": []`, reproduced directly). Fixed with a typed Pydantic envelope
+   (`_StoredCandidateEnvelope`) validating the whole payload via `model_validate`, converting any
+   structural/type mismatch to `StoredCandidateUnavailableError`.
+5. **The "shared/network filesystem" narrowing from ENG015-008 was accurate but still
+   unimplemented by default.** Fixed for real: candidate bytes now live in a new
+   `PostgresArtifactStore` (`aieb_api/worker/artifact_store.py`, new `worker_artifact_blob`/
+   `worker_artifact_reference` tables, migration `e20d5d09b489`) - the same `AIEB_DATABASE_URL`
+   every worker already needs, replacing `FilesystemArtifactStore` as the hosted worker's default.
+   Proven with a new test using two completely separate, never-shared local directories for
+   engineering and verification - not documentation of a limitation, a passing test with no shared
+   filesystem at all. The local CLI is unaffected (no database at all).
+
+`tests/test_worker_leasing.py` grew from 19 to 25 tests. Full regression: all 25
+`test_worker_leasing.py`, all 9 `test_attempt_lifecycle.py`, and all 39 `test_api_service.py` tests
+pass against real PostgreSQL; the new migration's upgrade/downgrade/upgrade round-trip was verified
+directly. ENG-015 remains `COMPLETE`.
 
 ## Recommended next prompt
 
