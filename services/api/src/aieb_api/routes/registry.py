@@ -28,19 +28,18 @@ from ..errors import not_found
 from ..models import EntrantRevisionRow, TaskRevisionRow
 from ..pagination import clamp_limit, decode_cursor, page
 from ..revisions import validate_stored_manifest
-from ..schemas import EntrantRevisionResponse, TaskRevisionResponse
-from ..schemas import Page as PageEnvelope
+from ..schemas import EntrantRevisionResponse, Page, TaskCatalogEntry, TaskRevisionResponse
 
 router = APIRouter(prefix="/v1", tags=["registry"])
 
 
-@router.get("/tasks", response_model=PageEnvelope)
+@router.get("/tasks", response_model=Page[TaskCatalogEntry])
 def list_tasks(
     cursor: str | None = None,
     limit: int | None = None,
     category: str | None = Query(default=None),
     session: Session = Depends(get_session),
-) -> PageEnvelope:
+) -> Page[TaskCatalogEntry]:
     effective_limit = clamp_limit(limit)
     decoded = decode_cursor(cursor)
     query = select(TaskRevisionRow).order_by(TaskRevisionRow.created_at, TaskRevisionRow.id).limit(effective_limit + 1)
@@ -52,18 +51,13 @@ def list_tasks(
     rows = list(session.execute(query).scalars())
     page_rows, next_cursor = page(rows, effective_limit)
     items = [
-        {
-            "id": str(row.id),
-            "slug": row.slug,
-            "version": row.version,
-            "family_id": row.family_id,
-            "category": row.category,
-            "activity": row.manifest.get("activity"),
-            "created_at": row.created_at.isoformat(),
-        }
+        TaskCatalogEntry(
+            id=row.id, slug=row.slug, version=row.version, family_id=row.family_id,
+            category=row.category, activity=row.manifest.get("activity"), created_at=row.created_at.isoformat(),
+        )
         for row in page_rows
     ]
-    return PageEnvelope(items=items, next_cursor=next_cursor)
+    return Page(items=items, next_cursor=next_cursor)
 
 
 @router.get("/tasks/{slug}/revisions/{version}", response_model=TaskRevisionResponse)
@@ -75,6 +69,27 @@ def get_task_revision(slug: str, version: str, session: Session = Depends(get_se
         raise not_found()
     manifest = validate_stored_manifest(TaskRevision, row.manifest, kind="task", row_id=row.id)
     return TaskRevisionResponse(id=row.id, manifest=manifest)
+
+
+@router.get("/entrants/by-slug/{slug}", response_model=EntrantRevisionResponse)
+def get_entrant_revision_by_slug(slug: str, session: Session = Depends(get_session)) -> EntrantRevisionResponse:
+    """Public entrant profile pages link by slug, not the internal UUID
+    (`GET /entrants/{entrant_id}` below): aieb_analysis snapshots key
+    `per_entrant` by the entrant's slug (the same identifier a frozen
+    campaign's `entrant_ids` names), which carries no version - so this
+    resolves to the MOST RECENT revision for that slug. A specific
+    historical result's exact configuration can differ from "most recent"
+    once an entrant slug has more than one revision; this is a real,
+    disclosed limitation of not having a per-result revision pointer in the
+    snapshot, not a silent guess presented as exact.
+    """
+    row = session.execute(
+        select(EntrantRevisionRow).where(EntrantRevisionRow.slug == slug).order_by(EntrantRevisionRow.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    if row is None:
+        raise not_found()
+    manifest = validate_stored_manifest(EntrantRevision, row.manifest, kind="entrant", row_id=row.id)
+    return EntrantRevisionResponse(id=row.id, manifest=manifest)
 
 
 @router.get("/entrants/{entrant_id}", response_model=EntrantRevisionResponse)

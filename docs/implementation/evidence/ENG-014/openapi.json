@@ -8,6 +8,166 @@
         "title": "Activity",
         "type": "string"
       },
+      "AnalysisSnapshot": {
+        "additionalProperties": false,
+        "description": "The exact shape aieb_analysis.metrics.summarize() returns. Publication\nsnapshots are this package's authoritative output, persisted verbatim\n(spec: public results come from an immutable snapshot, never\nrecomputed) - typing it here means the frontend's generated types\nchange the moment this shape does, instead of an `as unknown as X` cast\nsilently continuing to compile against a stale shape.",
+        "properties": {
+          "complete_for_rank": {
+            "title": "Complete For Rank",
+            "type": "boolean"
+          },
+          "cost_per_resolution": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Resolution"
+          },
+          "deadline_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Rate"
+          },
+          "infrastructure_attrition": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Infrastructure Attrition"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "per_category": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "type": "object"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Category"
+          },
+          "per_entrant": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Per Entrant",
+            "type": "object"
+          },
+          "per_task": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskCellStats"
+            },
+            "title": "Per Task",
+            "type": "object"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "successful_engineering_median_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Successful Engineering Median Seconds"
+          },
+          "suite_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suite Rate"
+          },
+          "total_campaign_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Campaign Cost Usd"
+          },
+          "verifier_cost_total_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verifier Cost Total Usd"
+          }
+        },
+        "required": [
+          "schema_version",
+          "per_task",
+          "per_entrant",
+          "per_category",
+          "complete_for_rank",
+          "suite_rate",
+          "cost_per_resolution",
+          "total_campaign_cost_usd",
+          "verifier_cost_total_usd",
+          "successful_engineering_median_seconds",
+          "deadline_rate",
+          "infrastructure_attrition",
+          "limitations"
+        ],
+        "title": "AnalysisSnapshot",
+        "type": "object"
+      },
       "ApplicationProfile": {
         "additionalProperties": false,
         "properties": {
@@ -362,6 +522,113 @@
         "title": "Cohort",
         "type": "object"
       },
+      "ComparisonResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "cohort_comparable": {
+            "title": "Cohort Comparable",
+            "type": "boolean"
+          },
+          "entrants": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EntrantComparisonEligible"
+                },
+                {
+                  "$ref": "#/components/schemas/EntrantComparisonIneligible"
+                }
+              ]
+            },
+            "title": "Entrants",
+            "type": "object"
+          },
+          "non_comparable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Non Comparable Reason"
+          },
+          "paired_differences": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "$ref": "#/components/schemas/TaskPairedDifference"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paired Differences"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publication_id",
+          "cohort_comparable",
+          "entrants"
+        ],
+        "title": "ComparisonResponse",
+        "type": "object"
+      },
+      "CorrectionEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "status",
+          "supersedes_id",
+          "created_at"
+        ],
+        "title": "CorrectionEntry",
+        "type": "object"
+      },
       "DependencyMode": {
         "enum": [
           "fixture",
@@ -369,6 +636,97 @@
         ],
         "title": "DependencyMode",
         "type": "string"
+      },
+      "EntrantComparisonEligible": {
+        "additionalProperties": false,
+        "properties": {
+          "aggregate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate"
+          },
+          "eligible": {
+            "const": true,
+            "title": "Eligible",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "eligible",
+          "aggregate"
+        ],
+        "title": "EntrantComparisonEligible",
+        "type": "object"
+      },
+      "EntrantComparisonIneligible": {
+        "additionalProperties": false,
+        "properties": {
+          "eligible": {
+            "const": false,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "eligible",
+          "reason"
+        ],
+        "title": "EntrantComparisonIneligible",
+        "type": "object"
+      },
+      "EntrantResultEntry": {
+        "additionalProperties": false,
+        "description": "One publication an entrant slug appears in - the \"results by release\"\nspec section 5 names for the entrant profile page.",
+        "properties": {
+          "aggregate_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate Rate"
+          },
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publication_id",
+          "campaign_id",
+          "status",
+          "created_at",
+          "aggregate_rate"
+        ],
+        "title": "EntrantResultEntry",
+        "type": "object"
       },
       "EntrantRevision": {
         "additionalProperties": false,
@@ -610,13 +968,12 @@
         "title": "ModelProfile",
         "type": "object"
       },
-      "Page": {
+      "Page_CorrectionEntry_": {
         "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/CorrectionEntry"
             },
             "title": "Items",
             "type": "array"
@@ -636,7 +993,63 @@
         "required": [
           "items"
         ],
-        "title": "Page",
+        "title": "Page[CorrectionEntry]",
+        "type": "object"
+      },
+      "Page_PublicationSummary_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicationSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[PublicationSummary]",
+        "type": "object"
+      },
+      "Page_TaskCatalogEntry_": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskCatalogEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "Page[TaskCatalogEntry]",
         "type": "object"
       },
       "ProtocolRevision": {
@@ -683,6 +1096,118 @@
           "hard_cost_ranking"
         ],
         "title": "ProtocolRevision",
+        "type": "object"
+      },
+      "PublicationResultsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "cohort_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort Digest"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/AnalysisSnapshot"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "supersedes_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Id"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "snapshot_digest",
+          "status",
+          "supersedes_id",
+          "created_at",
+          "cohort_digest",
+          "snapshot"
+        ],
+        "title": "PublicationResultsResponse",
+        "type": "object"
+      },
+      "PublicationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "snapshot_digest",
+          "status",
+          "created_at"
+        ],
+        "title": "PublicationSummary",
         "type": "object"
       },
       "Requirement": {
@@ -809,6 +1334,187 @@
           "max_artifact_bytes"
         ],
         "title": "SubmissionPolicy",
+        "type": "object"
+      },
+      "TaskCatalogEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "family_id": {
+            "title": "Family Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "version",
+          "family_id",
+          "category",
+          "activity",
+          "created_at"
+        ],
+        "title": "TaskCatalogEntry",
+        "type": "object"
+      },
+      "TaskCellStats": {
+        "additionalProperties": false,
+        "description": "One (task, entrant) cell from aieb_analysis.metrics.summarize()'s\n`per_task` output - typed here rather than left as an untyped `dict` so a\nchange to that shape shows up as a generated-type/frontend build error,\nnot a silent runtime mismatch (review finding: \"generated types are\nbypassed for the important result contracts\").",
+        "properties": {
+          "all_k": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All K"
+          },
+          "n": {
+            "title": "N",
+            "type": "integer"
+          },
+          "pass_power_k": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pass Power K"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "s": {
+            "title": "S",
+            "type": "integer"
+          },
+          "wilson_95": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wilson 95"
+          }
+        },
+        "required": [
+          "s",
+          "n",
+          "rate",
+          "wilson_95",
+          "all_k",
+          "pass_power_k"
+        ],
+        "title": "TaskCellStats",
+        "type": "object"
+      },
+      "TaskPairedDifference": {
+        "additionalProperties": false,
+        "description": "One task's paired outcome difference between exactly two entrants\nwithin the same trial/repetition cell (spec: \"paired task outcomes\").",
+        "properties": {
+          "difference": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Difference"
+          },
+          "left_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left Rate"
+          },
+          "right_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Right Rate"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "left_rate",
+          "right_rate",
+          "difference"
+        ],
+        "title": "TaskPairedDifference",
         "type": "object"
       },
       "TaskRevision": {
@@ -1216,18 +1922,9 @@
     },
     "/v1/comparisons": {
       "get": {
+        "description": "Compare 2-4 entrants. Each entrant is looked up in its OWN publication:\n`entrant_publication_ids` (same order/length as `entrant_ids`) names one\nper entrant for a genuine cross-release comparison; an entrant with no\ncorresponding entry falls back to `publication_id` (the common case: all\nentrants come from the same, single publication). Cohort compatibility\nis real, not assumed: entrants are only paired-comparable when their\npublications' campaigns share the same `cohort_digest` - the same\nfrozen task/entrant/repetition plan, not merely \"some publication\nexists.\" Incompatible entrants still get their own eligible aggregate\n(separate panels), just no paired difference - never a fabricated\ncalculated winner across genuinely different cohorts (spec journey 6.1).",
         "operationId": "get_comparison_v1_comparisons_get",
         "parameters": [
-          {
-            "in": "query",
-            "name": "publication_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Publication Id",
-              "type": "string"
-            }
-          },
           {
             "in": "query",
             "name": "entrant_ids",
@@ -1239,6 +1936,42 @@
               "title": "Entrant Ids",
               "type": "array"
             }
+          },
+          {
+            "in": "query",
+            "name": "publication_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Publication Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "entrant_publication_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entrant Publication Ids"
+            }
           }
         ],
         "responses": {
@@ -1246,9 +1979,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Comparison V1 Comparisons Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/ComparisonResponse"
                 }
               }
             },
@@ -1314,7 +2045,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page"
+                  "$ref": "#/components/schemas/Page_CorrectionEntry_"
                 }
               }
             },
@@ -1332,6 +2063,96 @@
           }
         },
         "summary": "List Corrections",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/v1/entrants/by-slug/{slug}": {
+      "get": {
+        "description": "Public entrant profile pages link by slug, not the internal UUID\n(`GET /entrants/{entrant_id}` below): aieb_analysis snapshots key\n`per_entrant` by the entrant's slug (the same identifier a frozen\ncampaign's `entrant_ids` names), which carries no version - so this\nresolves to the MOST RECENT revision for that slug. A specific\nhistorical result's exact configuration can differ from \"most recent\"\nonce an entrant slug has more than one revision; this is a real,\ndisclosed limitation of not having a per-result revision pointer in the\nsnapshot, not a silent guess presented as exact.",
+        "operationId": "get_entrant_revision_by_slug_v1_entrants_by_slug__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntrantRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Entrant Revision By Slug",
+        "tags": [
+          "registry"
+        ]
+      }
+    },
+    "/v1/entrants/by-slug/{slug}/results": {
+      "get": {
+        "description": "Every published release this entrant slug appears in (spec section 5:\nentrant profile shows \"results by release\"). A real, if currently\nlinear, scan over published snapshots - there is no per-entrant index\ninto publications yet, since no real campaign has ever been published;\nthis is honest cross-referencing, not a stubbed empty list, and is\ndisclosed as not scaling past a small number of publications until such\nan index is added.",
+        "operationId": "get_entrant_results_v1_entrants_by_slug__slug__results_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EntrantResultEntry"
+                  },
+                  "title": "Response Get Entrant Results V1 Entrants By Slug  Slug  Results Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Entrant Results",
         "tags": [
           "results"
         ]
@@ -1400,9 +2221,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Publication Results V1 Publications  Publication Id  Results Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PublicationResultsResponse"
                 }
               }
             },
@@ -1467,7 +2286,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page"
+                  "$ref": "#/components/schemas/Page_PublicationSummary_"
                 }
               }
             },
@@ -1548,7 +2367,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page"
+                  "$ref": "#/components/schemas/Page_TaskCatalogEntry_"
                 }
               }
             },

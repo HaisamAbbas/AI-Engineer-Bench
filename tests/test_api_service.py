@@ -562,7 +562,7 @@ class ApiServiceTests(unittest.TestCase):
     # ---- corrections (review finding: no read endpoint existed) --------
 
     def test_corrections_lists_superseding_and_withdrawn_publications_only(self) -> None:
-        from aieb_core.canonical import content_hash
+        from aieb_api.snapshots import snapshot_digest as content_hash
 
         with db.session_factory()() as session:
             campaign = api_models.CampaignRow(name="corrections-test", state="frozen", draft={"a": 1})
@@ -600,8 +600,9 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(ids, {str(original_id), str(superseding_id)})
 
     def test_publication_results_include_supersedes_id(self) -> None:
-        from aieb_core.canonical import content_hash
+        from aieb_api.snapshots import snapshot_digest as content_hash
 
+        snapshot = self._analysis_snapshot({})
         with db.session_factory()() as session:
             campaign = api_models.CampaignRow(name="supersedes-test", state="frozen", draft={"a": 1})
             session.add(campaign)
@@ -609,7 +610,6 @@ class ApiServiceTests(unittest.TestCase):
             user = api_models.User(oidc_subject="reviewer-3", oidc_issuer="test")
             session.add(user)
             session.flush()
-            snapshot = {"per_entrant": {}}
             original = api_models.PublicationRow(
                 campaign_id=campaign.id, snapshot_digest=content_hash(snapshot), snapshot=snapshot,
                 reviewer_id=user.id, status="superseded",
@@ -696,18 +696,47 @@ class ApiServiceTests(unittest.TestCase):
 
     # ---- publication snapshot integrity (review finding #14) ---------
 
-    def _seed_publication(self, snapshot: dict, *, snapshot_digest: str | None = None) -> uuid.UUID:
-        from aieb_core.canonical import content_hash
+    @staticmethod
+    def _analysis_snapshot(per_entrant: dict, *, per_task: dict | None = None, **overrides: object) -> dict:
+        """A complete, schema-valid aieb_analysis.metrics.summarize() output
+        (services/api/src/aieb_api/schemas.py::AnalysisSnapshot), not the
+        loose ad hoc shape earlier tests used - AnalysisSnapshot's `extra:
+        forbid` and required fields mean a publication whose stored snapshot
+        doesn't actually look like real analysis output now fails to
+        validate (finding: "generated types are bypassed for the important
+        result contracts") - so tests must seed the real shape too."""
+        base = {
+            "schema_version": "aieb.analysis/v1",
+            "per_task": per_task or {},
+            "per_entrant": per_entrant,
+            "per_category": None,
+            "complete_for_rank": True,
+            "suite_rate": None,
+            "cost_per_resolution": None,
+            "total_campaign_cost_usd": None,
+            "verifier_cost_total_usd": None,
+            "successful_engineering_median_seconds": None,
+            "deadline_rate": None,
+            "infrastructure_attrition": None,
+            "limitations": [],
+        }
+        base.update(overrides)
+        return base
+
+    def _seed_publication(self, snapshot: dict, *, snapshot_digest: str | None = None, campaign_id: uuid.UUID | None = None) -> uuid.UUID:
+        from aieb_api.snapshots import snapshot_digest as content_hash
 
         with db.session_factory()() as session:
-            campaign = api_models.CampaignRow(name="pub-test", state="frozen", draft={"a": 1})
-            session.add(campaign)
-            session.flush()
-            user = api_models.User(oidc_subject="reviewer-1", oidc_issuer="test")
+            if campaign_id is None:
+                campaign = api_models.CampaignRow(name="pub-test", state="frozen", draft={"a": 1})
+                session.add(campaign)
+                session.flush()
+                campaign_id = campaign.id
+            user = api_models.User(oidc_subject=f"reviewer-{uuid.uuid4().hex[:8]}", oidc_issuer="test")
             session.add(user)
             session.flush()
             publication = api_models.PublicationRow(
-                campaign_id=campaign.id,
+                campaign_id=campaign_id,
                 snapshot_digest=snapshot_digest if snapshot_digest is not None else content_hash(snapshot),
                 snapshot=snapshot,
                 reviewer_id=user.id,
@@ -716,26 +745,100 @@ class ApiServiceTests(unittest.TestCase):
             session.commit()
             return publication.id
 
+    def test_releases_are_ordered_newest_first_across_pages(self) -> None:
+        """Review finding: with pagination, selecting the last item of only
+        the first page is not the newest release - spec section 4 requires
+        the newest non-withdrawn publication by default. Seed enough
+        publications to force pagination (limit=1) and confirm the first
+        page's only item is the newest, followed by strictly older ones."""
+        import time
+
+        created_ids = []
+        for _ in range(3):
+            created_ids.append(self._seed_publication(self._analysis_snapshot({})))
+            time.sleep(0.01)  # ensure distinct created_at ordering, not just insertion order
+
+        response = self.client.get("/v1/releases", params={"limit": 1})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["items"][0]["id"], str(created_ids[-1]))  # newest seeded, first returned
+        self.assertIsNotNone(body["next_cursor"])
+
+        second = self.client.get("/v1/releases", params={"limit": 1, "cursor": body["next_cursor"]})
+        self.assertEqual(second.json()["items"][0]["id"], str(created_ids[-2]))
+
     def test_publication_results_are_served_when_snapshot_matches_its_digest(self) -> None:
-        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}})
+        snapshot = self._analysis_snapshot({"agent-a": 1.0})
+        publication_id = self._seed_publication(snapshot)
         response = self.client.get(f"/v1/publications/{publication_id}/results")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["snapshot"], {"per_entrant": {"agent-a": {"rate": "1.0"}}})
+        self.assertEqual(response.json()["snapshot"], snapshot)
 
     def test_publication_results_reject_a_snapshot_that_does_not_match_its_recorded_digest(self) -> None:
         # Review finding #14: nothing recomputed snapshot_digest against the
         # stored snapshot JSONB before serving it as canonical public results.
         # Seed a row whose digest was never derived from the snapshot it holds
         # (simulating corruption or a bug elsewhere that wrote a mismatched pair).
-        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}}, snapshot_digest="0" * 64)
+        publication_id = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), snapshot_digest="0" * 64)
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
+    def test_publication_results_reject_a_snapshot_that_does_not_match_the_analysis_shape(self) -> None:
+        """A digest-matching but structurally-wrong snapshot (e.g. written by
+        code that predates a schema change, or a hand-edited row) must also
+        be caught - not just a digest mismatch. AnalysisSnapshot's own
+        validation is the second, independent check finding #6 asked for."""
+        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}})
         response = self.client.get(f"/v1/publications/{publication_id}/results")
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["code"], "service_unavailable")
 
     def test_comparison_endpoint_also_rejects_a_mismatched_snapshot(self) -> None:
-        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}}, snapshot_digest="0" * 64)
+        publication_id = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), snapshot_digest="0" * 64)
         response = self.client.get(f"/v1/comparisons?publication_id={publication_id}&entrant_ids=agent-a&entrant_ids=agent-b")
         self.assertEqual(response.status_code, 503)
+
+    def test_comparison_within_one_publication_is_always_cohort_comparable_and_returns_paired_task_differences(self) -> None:
+        snapshot = self._analysis_snapshot(
+            {"agent-a": 1.0, "agent-b": 0.5},
+            per_task={
+                "task-1:agent-a": {"s": 2, "n": 2, "rate": 1.0, "wilson_95": None, "all_k": True, "pass_power_k": 1.0},
+                "task-1:agent-b": {"s": 1, "n": 2, "rate": 0.5, "wilson_95": None, "all_k": False, "pass_power_k": 0.5},
+            },
+        )
+        publication_id = self._seed_publication(snapshot)
+        response = self.client.get(f"/v1/comparisons?publication_id={publication_id}&entrant_ids=agent-a&entrant_ids=agent-b")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["cohort_comparable"])
+        self.assertIsNone(body["non_comparable_reason"])
+        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
+        diffs = body["paired_differences"]["agent-a|agent-b"]
+        self.assertEqual(diffs, [{"task_id": "task-1", "left_rate": 1.0, "right_rate": 0.5, "difference": 0.5}])
+
+    def test_comparison_across_different_cohorts_is_not_comparable_and_has_no_paired_differences(self) -> None:
+        with db.session_factory()() as session:
+            campaign_a = api_models.CampaignRow(name="cohort-a", state="frozen", draft={"a": 1}, cohort_digest="c" * 64)
+            campaign_b = api_models.CampaignRow(name="cohort-b", state="frozen", draft={"a": 1}, cohort_digest="d" * 64)
+            session.add_all([campaign_a, campaign_b])
+            session.commit()
+            campaign_a_id, campaign_b_id = campaign_a.id, campaign_b.id
+        publication_a = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), campaign_id=campaign_a_id)
+        publication_b = self._seed_publication(self._analysis_snapshot({"agent-b": 0.5}), campaign_id=campaign_b_id)
+
+        response = self.client.get(
+            "/v1/comparisons",
+            params={"entrant_ids": ["agent-a", "agent-b"], "entrant_publication_ids": [str(publication_a), str(publication_b)]},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["cohort_comparable"])
+        self.assertIsNotNone(body["non_comparable_reason"])
+        self.assertIsNone(body["paired_differences"])
+        # Each entrant still gets its own eligible aggregate - separate panels, never a fabricated winner.
+        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
+        self.assertEqual(body["entrants"]["agent-b"], {"eligible": True, "aggregate": 0.5})
 
     def test_publication_snapshot_row_rejects_direct_update_at_the_database_level(self) -> None:
         """Mirrors test_task_revision_row_rejects_direct_update_at_the_database_level
@@ -744,7 +847,7 @@ class ApiServiceTests(unittest.TestCase):
         whatever the API layer happens to check."""
         from sqlalchemy.exc import IntegrityError
 
-        publication_id = self._seed_publication({"per_entrant": {}})
+        publication_id = self._seed_publication(self._analysis_snapshot({}))
 
         with db.session_factory()() as session:
             with self.assertRaises(IntegrityError):

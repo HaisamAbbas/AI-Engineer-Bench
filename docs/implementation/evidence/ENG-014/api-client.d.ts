@@ -79,7 +79,20 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Comparison */
+        /**
+         * Get Comparison
+         * @description Compare 2-4 entrants. Each entrant is looked up in its OWN publication:
+         *     `entrant_publication_ids` (same order/length as `entrant_ids`) names one
+         *     per entrant for a genuine cross-release comparison; an entrant with no
+         *     corresponding entry falls back to `publication_id` (the common case: all
+         *     entrants come from the same, single publication). Cohort compatibility
+         *     is real, not assumed: entrants are only paired-comparable when their
+         *     publications' campaigns share the same `cohort_digest` - the same
+         *     frozen task/entrant/repetition plan, not merely "some publication
+         *     exists." Incompatible entrants still get their own eligible aggregate
+         *     (separate panels), just no paired difference - never a fabricated
+         *     calculated winner across genuinely different cohorts (spec journey 6.1).
+         */
         get: operations["get_comparison_v1_comparisons_get"];
         put?: never;
         post?: never;
@@ -105,6 +118,60 @@ export interface paths {
          *     which, and any withdrawal) - a disclosed gap, not an invented reason.
          */
         get: operations["list_corrections_v1_corrections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/entrants/by-slug/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Entrant Revision By Slug
+         * @description Public entrant profile pages link by slug, not the internal UUID
+         *     (`GET /entrants/{entrant_id}` below): aieb_analysis snapshots key
+         *     `per_entrant` by the entrant's slug (the same identifier a frozen
+         *     campaign's `entrant_ids` names), which carries no version - so this
+         *     resolves to the MOST RECENT revision for that slug. A specific
+         *     historical result's exact configuration can differ from "most recent"
+         *     once an entrant slug has more than one revision; this is a real,
+         *     disclosed limitation of not having a per-result revision pointer in the
+         *     snapshot, not a silent guess presented as exact.
+         */
+        get: operations["get_entrant_revision_by_slug_v1_entrants_by_slug__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/entrants/by-slug/{slug}/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Entrant Results
+         * @description Every published release this entrant slug appears in (spec section 5:
+         *     entrant profile shows "results by release"). A real, if currently
+         *     linear, scan over published snapshots - there is no per-entrant index
+         *     into publications yet, since no real campaign has ever been published;
+         *     this is honest cross-referencing, not a stubbed empty list, and is
+         *     disclosed as not scaling past a small number of publications until such
+         *     an index is added.
+         */
+        get: operations["get_entrant_results_v1_entrants_by_slug__slug__results_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -224,6 +291,51 @@ export interface components {
          * @enum {string}
          */
         Activity: "repair";
+        /**
+         * AnalysisSnapshot
+         * @description The exact shape aieb_analysis.metrics.summarize() returns. Publication
+         *     snapshots are this package's authoritative output, persisted verbatim
+         *     (spec: public results come from an immutable snapshot, never
+         *     recomputed) - typing it here means the frontend's generated types
+         *     change the moment this shape does, instead of an `as unknown as X` cast
+         *     silently continuing to compile against a stale shape.
+         */
+        AnalysisSnapshot: {
+            /** Complete For Rank */
+            complete_for_rank: boolean;
+            /** Cost Per Resolution */
+            cost_per_resolution: number | null;
+            /** Deadline Rate */
+            deadline_rate: number | null;
+            /** Infrastructure Attrition */
+            infrastructure_attrition: number | null;
+            /** Limitations */
+            limitations: string[];
+            /** Per Category */
+            per_category: {
+                [key: string]: {
+                    [key: string]: number | null;
+                };
+            } | null;
+            /** Per Entrant */
+            per_entrant: {
+                [key: string]: number | null;
+            };
+            /** Per Task */
+            per_task: {
+                [key: string]: components["schemas"]["TaskCellStats"];
+            };
+            /** Schema Version */
+            schema_version: string;
+            /** Successful Engineering Median Seconds */
+            successful_engineering_median_seconds: number | null;
+            /** Suite Rate */
+            suite_rate: number | null;
+            /** Total Campaign Cost Usd */
+            total_campaign_cost_usd: number | null;
+            /** Verifier Cost Total Usd */
+            verifier_cost_total_usd: number | null;
+        };
         /** ApplicationProfile */
         ApplicationProfile: {
             /** Contract Digest */
@@ -339,11 +451,93 @@ export interface components {
             suite_id: string;
             track: components["schemas"]["Track"];
         };
+        /** ComparisonResponse */
+        ComparisonResponse: {
+            /** Cohort Comparable */
+            cohort_comparable: boolean;
+            /** Entrants */
+            entrants: {
+                [key: string]: components["schemas"]["EntrantComparisonEligible"] | components["schemas"]["EntrantComparisonIneligible"];
+            };
+            /** Non Comparable Reason */
+            non_comparable_reason?: string | null;
+            /** Paired Differences */
+            paired_differences?: {
+                [key: string]: components["schemas"]["TaskPairedDifference"][];
+            } | null;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+        };
+        /** CorrectionEntry */
+        CorrectionEntry: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Created At */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Status */
+            status: string;
+            /** Supersedes Id */
+            supersedes_id: string | null;
+        };
         /**
          * DependencyMode
          * @enum {string}
          */
         DependencyMode: "fixture" | "live";
+        /** EntrantComparisonEligible */
+        EntrantComparisonEligible: {
+            /** Aggregate */
+            aggregate: number | null;
+            /**
+             * Eligible
+             * @constant
+             */
+            eligible: true;
+        };
+        /** EntrantComparisonIneligible */
+        EntrantComparisonIneligible: {
+            /**
+             * Eligible
+             * @constant
+             */
+            eligible: false;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * EntrantResultEntry
+         * @description One publication an entrant slug appears in - the "results by release"
+         *     spec section 5 names for the entrant profile page.
+         */
+        EntrantResultEntry: {
+            /** Aggregate Rate */
+            aggregate_rate: number | null;
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Created At */
+            created_at: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Status */
+            status: string;
+        };
         /** EntrantRevision */
         EntrantRevision: {
             /** Agent Implementation */
@@ -432,12 +626,24 @@ export interface components {
             /** Settings Digest */
             settings_digest: string;
         };
-        /** Page */
-        Page: {
+        /** Page[CorrectionEntry] */
+        Page_CorrectionEntry_: {
             /** Items */
-            items: {
-                [key: string]: unknown;
-            }[];
+            items: components["schemas"]["CorrectionEntry"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** Page[PublicationSummary] */
+        Page_PublicationSummary_: {
+            /** Items */
+            items: components["schemas"]["PublicationSummary"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** Page[TaskCatalogEntry] */
+        Page_TaskCatalogEntry_: {
+            /** Items */
+            items: components["schemas"]["TaskCatalogEntry"][];
             /** Next Cursor */
             next_cursor?: string | null;
         };
@@ -458,6 +664,51 @@ export interface components {
             schema_version: "aieb.protocol/v1";
             /** Scoring Digest */
             scoring_digest: string;
+        };
+        /** PublicationResultsResponse */
+        PublicationResultsResponse: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Cohort Digest */
+            cohort_digest: string | null;
+            /** Created At */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Notice */
+            notice?: string | null;
+            snapshot: components["schemas"]["AnalysisSnapshot"];
+            /** Snapshot Digest */
+            snapshot_digest: string;
+            /** Status */
+            status: string;
+            /** Supersedes Id */
+            supersedes_id: string | null;
+        };
+        /** PublicationSummary */
+        PublicationSummary: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Created At */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Snapshot Digest */
+            snapshot_digest: string;
+            /** Status */
+            status: string;
         };
         /** Requirement */
         Requirement: {
@@ -499,6 +750,66 @@ export interface components {
              * @default []
              */
             protected: string[];
+        };
+        /** TaskCatalogEntry */
+        TaskCatalogEntry: {
+            /** Activity */
+            activity: string | null;
+            /** Category */
+            category: string;
+            /** Created At */
+            created_at: string;
+            /** Family Id */
+            family_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Slug */
+            slug: string;
+            /** Version */
+            version: string;
+        };
+        /**
+         * TaskCellStats
+         * @description One (task, entrant) cell from aieb_analysis.metrics.summarize()'s
+         *     `per_task` output - typed here rather than left as an untyped `dict` so a
+         *     change to that shape shows up as a generated-type/frontend build error,
+         *     not a silent runtime mismatch (review finding: "generated types are
+         *     bypassed for the important result contracts").
+         */
+        TaskCellStats: {
+            /** All K */
+            all_k: boolean | null;
+            /** N */
+            n: number;
+            /** Pass Power K */
+            pass_power_k: number | null;
+            /** Rate */
+            rate: number | null;
+            /** S */
+            s: number;
+            /** Wilson 95 */
+            wilson_95: [
+                number,
+                number
+            ] | null;
+        };
+        /**
+         * TaskPairedDifference
+         * @description One task's paired outcome difference between exactly two entrants
+         *     within the same trial/repetition cell (spec: "paired task outcomes").
+         */
+        TaskPairedDifference: {
+            /** Difference */
+            difference: number | null;
+            /** Left Rate */
+            left_rate: number | null;
+            /** Right Rate */
+            right_rate: number | null;
+            /** Task Id */
+            task_id: string;
         };
         /** TaskRevision */
         TaskRevision: {
@@ -706,8 +1017,9 @@ export interface operations {
     get_comparison_v1_comparisons_get: {
         parameters: {
             query: {
-                publication_id: string;
                 entrant_ids: string[];
+                publication_id?: string | null;
+                entrant_publication_ids?: string[] | null;
             };
             header?: never;
             path?: never;
@@ -721,9 +1033,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["ComparisonResponse"];
                 };
             };
             /** @description Validation Error */
@@ -755,7 +1065,69 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page"];
+                    "application/json": components["schemas"]["Page_CorrectionEntry_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_entrant_revision_by_slug_v1_entrants_by_slug__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntrantRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_entrant_results_v1_entrants_by_slug__slug__results_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntrantResultEntry"][];
                 };
             };
             /** @description Validation Error */
@@ -817,9 +1189,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PublicationResultsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -851,7 +1221,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page"];
+                    "application/json": components["schemas"]["Page_PublicationSummary_"];
                 };
             };
             /** @description Validation Error */
@@ -884,7 +1254,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page"];
+                    "application/json": components["schemas"]["Page_TaskCatalogEntry_"];
                 };
             };
             /** @description Validation Error */
