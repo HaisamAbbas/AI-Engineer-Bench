@@ -21,9 +21,18 @@ from aieb_api.app import create_app  # noqa: E402
 def main() -> None:
     app = create_app()
     schema = app.openapi()
+    text = json.dumps(schema, indent=2, sort_keys=True) + "\n"
     out = ROOT / "docs/implementation/evidence/ENG-014/openapi.json"
+    if "--check" in sys.argv[1:]:
+        if not out.exists() or out.read_text(encoding="utf-8") != text:
+            raise SystemExit(
+                f"{out.relative_to(ROOT)} is stale relative to the current API schema; "
+                "run scripts/generate_openapi.py and commit the result"
+            )
+        print(f"{out.relative_to(ROOT)} matches the current API schema")
+        return
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(schema, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    out.write_text(text, encoding="utf-8")
     print(f"wrote {out.relative_to(ROOT)} with {len(schema['paths'])} paths")
 
 
