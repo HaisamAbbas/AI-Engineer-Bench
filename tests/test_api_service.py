@@ -31,7 +31,7 @@ if DATABASE_URL:
 
     import jwt
     from fastapi.testclient import TestClient
-    from sqlalchemy import select, text
+    from sqlalchemy import select, text, update
 
     from aieb_api import auth, db
     from aieb_api.app import create_app
@@ -541,6 +541,52 @@ class ApiServiceTests(unittest.TestCase):
             session.add(api_models.ArtifactRow(content_digest="z" * 64, size=2, media_type="text/plain"))
             with self.assertRaises(IntegrityError):
                 finalize(session, scope="test-scope", key="test-key", body={"a": 1}, status_code=200, response_body={"ok": True})
+
+    # ---- persistence-level immutability (review finding #13) --------------
+
+    def test_task_revision_row_rejects_direct_update_at_the_database_level(self) -> None:
+        """Prompt 11 requires immutable frozen revisions enforced "in
+        persistence, not only in UI checks" - not merely the absence of an
+        update route. A BEFORE UPDATE trigger, not application code, is what
+        makes this a real guarantee: this update never goes through any
+        route handler at all."""
+        from sqlalchemy.exc import IntegrityError
+
+        with db.session_factory()() as session:
+            evaluator = api_models.EvaluatorRevisionRow(code_digest="e" * 64, contract_version="v1")
+            session.add(evaluator)
+            session.commit()
+            evaluator_id = evaluator.id
+
+        with db.session_factory()() as session:
+            with self.assertRaises(IntegrityError):
+                session.execute(
+                    update(api_models.EvaluatorRevisionRow).where(api_models.EvaluatorRevisionRow.id == evaluator_id).values(contract_version="v2")
+                )
+                session.commit()
+
+    def test_frozen_campaign_manifest_rejects_direct_update_but_state_can_still_change(self) -> None:
+        """The trigger must block mutation of the frozen draft/resolved
+        manifest once a campaign is no longer 'draft', while still allowing
+        the state column itself to transition (frozen -> running -> ...) -
+        those are legitimate lifecycle writes, not manifest tampering."""
+        from sqlalchemy.exc import IntegrityError
+
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="immutability-test", state="frozen", draft={"a": 1}, resolved={"b": 2})
+            session.add(campaign)
+            session.commit()
+            campaign_id = campaign.id
+
+        with db.session_factory()() as session:
+            with self.assertRaises(IntegrityError):
+                session.execute(update(api_models.CampaignRow).where(api_models.CampaignRow.id == campaign_id).values(resolved={"b": 3}))
+                session.commit()
+
+        with db.session_factory()() as session:
+            result = session.execute(update(api_models.CampaignRow).where(api_models.CampaignRow.id == campaign_id).values(state="cancelled"))
+            session.commit()
+            self.assertEqual(result.rowcount, 1)
 
 
 if __name__ == "__main__":
