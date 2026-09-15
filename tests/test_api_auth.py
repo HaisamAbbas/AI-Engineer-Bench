@@ -44,6 +44,9 @@ class AuthFailsClosedTests(unittest.TestCase):
             auth.TestIdentityProvider("secret")
 
     def test_test_identity_provider_works_when_env_is_test(self) -> None:
+        """Verify establishes identity (subject/issuer) only - it must not surface a
+        token's aieb_roles claim as authorization; that comes from resolve_roles
+        querying role_bindings server-side (see test_api_service.py)."""
         os.environ["AIEB_ENV"] = "test"
         provider = auth.TestIdentityProvider("secret")
         import jwt
@@ -51,7 +54,7 @@ class AuthFailsClosedTests(unittest.TestCase):
         token = jwt.encode({"sub": "u1", "iss": "test", "aieb_roles": ["operator"]}, "secret", algorithm="HS256")
         identity = provider.verify(token)
         self.assertEqual(identity.subject, "u1")
-        self.assertEqual(identity.roles, ("operator",))
+        self.assertFalse(hasattr(identity, "roles"))
 
     def test_set_provider_for_tests_refuses_outside_test_env(self) -> None:
         with self.assertRaises(RuntimeError):

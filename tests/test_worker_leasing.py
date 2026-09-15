@@ -505,6 +505,35 @@ class WorkerLeasingTests(unittest.TestCase):
         evidence_files = list(self.work_root.glob("*/runs/*/attempt.json"))
         self.assertEqual(len(evidence_files), 1)
 
+    def test_cancellation_arriving_mid_run_interrupts_the_attempt(self) -> None:
+        """Review finding #6: the prior test only covered a campaign already
+        cancelling before the worker claimed work. A cancel arriving while an
+        attempt is already engineering must interrupt it too, not merely block
+        new dispatch and let the in-flight attempt run to completion or deadline
+        regardless."""
+        campaign_id = self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            leased = repository.claim_work_item(session, worker_id="w1", lease_seconds=3)
+
+        def cancel_soon() -> None:
+            time.sleep(1.5)
+            with self.session_factory() as session:
+                repository.cancel_campaign(session, campaign_id)
+
+        threading.Thread(target=cancel_soon, daemon=True).start()
+        start = time.monotonic()
+        result = execute_leased_work(
+            self.session_factory, leased, worker_id="w1", work_root=self.work_root,
+            candidate_variant="reference", lease_seconds=3, engineering_delay_seconds=20,
+        )
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(result.execution_validity, "cancelled")
+        self.assertLess(elapsed, 10)  # interrupted well before the 20-second delay would have elapsed
+        with self.session_factory() as session:
+            attempt = session.get(api_models.AttemptRow, leased.attempt_id)
+            self.assertEqual(attempt.terminal_status, "cancelled")
+
 
 if __name__ == "__main__":
     unittest.main()

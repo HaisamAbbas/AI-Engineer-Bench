@@ -31,20 +31,45 @@ if DATABASE_URL:
 
     import jwt
     from fastapi.testclient import TestClient
-    from sqlalchemy import text
+    from sqlalchemy import select, text
 
     from aieb_api import auth, db
     from aieb_api.app import create_app
     from aieb_api import models as api_models
 
     def _token(roles: tuple[str, ...], subject: str = "test-subject") -> str:
+        # aieb_roles is embedded for readability only - auth.py no longer reads it
+        # for authorization; _grant_roles below is what actually grants access.
         return jwt.encode(
             {"sub": subject, "iss": "test", "aieb_roles": list(roles)},
             os.environ["AIEB_TEST_SHARED_SECRET"],
             algorithm="HS256",
         )
 
+    def _grant_roles(subject: str, roles: tuple[str, ...]) -> None:
+        """Seed the server-side role_bindings this identity needs, mirroring what
+        an administrator would provision - a token's claims alone must not grant
+        access (finding #3)."""
+        if not roles:
+            return
+        with db.session_factory()() as session:
+            user = session.execute(
+                select(api_models.User).where(api_models.User.oidc_issuer == "test", api_models.User.oidc_subject == subject)
+            ).scalar_one_or_none()
+            if user is None:
+                user = api_models.User(oidc_subject=subject, oidc_issuer="test")
+                session.add(user)
+                session.flush()
+            existing = set(
+                session.execute(select(api_models.RoleBinding.role).where(api_models.RoleBinding.user_id == user.id)).scalars().all()
+            )
+            for role in roles:
+                if role not in existing:
+                    session.add(api_models.RoleBinding(user_id=user.id, role=role, scope="test"))
+            session.commit()
+
     def _auth_header(roles: tuple[str, ...], subject: str = "test-subject") -> dict[str, str]:
+        _grant_roles(subject, roles)
         return {"Authorization": f"Bearer {_token(roles, subject)}"}
 
 

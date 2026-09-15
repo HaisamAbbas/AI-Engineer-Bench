@@ -16,3 +16,16 @@ class AnalysisTests(unittest.TestCase):
  def test_paired_difference_requires_common_cells_and_groups_projects(self):
   rows=(TrialObservation("a","f","p", "left",0,True,True),TrialObservation("a","f","p","right",0,False,True))
   paired=paired_project_difference(rows,"left","right");self.assertEqual(paired["paired_cells"],1);self.assertEqual(paired["by_project"],{"p":1.0})
+ def test_wholly_missing_planned_cell_blocks_rank(self):
+  # Review finding #7: a task/entrant pair with ZERO observations has no key
+  # in the internal cell map at all, so repetition-count checks alone never
+  # see it. Without planned_cells, this incorrectly reports complete.
+  self.assertTrue(summarize((),required_repetitions=3,fixed_task_weights={"missing":1})["complete_for_rank"])
+  # With the frozen plan supplied, the missing cell is caught explicitly.
+  result=summarize((),required_repetitions=3,fixed_task_weights={"missing":1},planned_cells=frozenset({("missing","entrant-a")}))
+  self.assertFalse(result["complete_for_rank"]);self.assertIsNone(result["suite_rate"])
+  # A partially-populated plan where every planned cell has observations
+  # still resolves complete_for_rank from repetition counts as before.
+  rows=tuple(TrialObservation("a","f","p","e",i,True,True) for i in range(3))
+  result=summarize(rows,required_repetitions=3,planned_cells=frozenset({("a","e")}))
+  self.assertTrue(result["complete_for_rank"])
