@@ -32,7 +32,7 @@ export function App() {
             <Route index element={<Home />} />
             <Route path="results" element={<Results />} />
             <Route path="compare" element={<Compare />} />
-            <Route path="entrants/:revision" element={<EntrantProfile />} />
+            <Route path="entrants/:slug" element={<EntrantProfile />} />
             <Route path="tasks" element={<TaskCatalog />} />
             <Route path="tasks/:slug/:version" element={<TaskDetail />} />
             <Route path="runs/:trialId" element={<RunEvidence />} />

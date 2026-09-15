@@ -2,24 +2,61 @@ import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useReleases, usePublicationResults } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
-import { formatRate, formatUsd, formatSeconds, formatUtc } from "../lib/format";
+import { formatRate, formatUsd, formatSeconds, formatUtc, formatCount } from "../lib/format";
 
 const MAX_COMPARE = 4;
 
-interface Snapshot {
-  per_task: Record<string, { s: number; n: number; rate: number | null; all_k: boolean | null }>;
-  per_entrant: Record<string, number | null>;
-  per_category: Record<string, Record<string, number | null>> | null;
-  complete_for_rank: boolean;
-  suite_rate: number | null;
-  cost_per_resolution: number | null;
-  successful_engineering_median_seconds: number | null;
+// Derived directly from the hook's own (generated, typed) return value
+// rather than a separately-declared alias, so it can never structurally
+// drift from what usePublicationResults actually returns.
+type PublicationResultsData = NonNullable<ReturnType<typeof usePublicationResults>["data"]>;
+type AnalysisSnapshot = PublicationResultsData["snapshot"];
+
+interface EntrantRow {
+  entrantId: string;
+  suiteRate: number | null;
+  resolvedTasks: number;
+  totalTasks: number;
+  validTrials: number;
+  categories: [string, number | null][];
 }
 
-/** "/results" - cohort selector (which publication), results table, sort,
- * select up to 4 entrants, download JSON. Numbers are exactly what the API
- * returns (the shared aieb_analysis output shape) - none are recomputed
- * here (spec 4/35). */
+function buildEntrantRows(snapshot: AnalysisSnapshot): EntrantRow[] {
+  const entrantIds = Object.keys(snapshot.per_entrant);
+  const allTaskIds = new Set<string>();
+  for (const key of Object.keys(snapshot.per_task)) {
+    allTaskIds.add(key.slice(0, key.lastIndexOf(":")));
+  }
+  return entrantIds.map((entrantId) => {
+    let resolvedTasks = 0;
+    let totalTasks = 0;
+    let validTrials = 0;
+    for (const taskId of allTaskIds) {
+      const cell = snapshot.per_task[`${taskId}:${entrantId}`];
+      if (!cell) continue;
+      totalTasks += 1;
+      validTrials += cell.n;
+      if (cell.all_k) resolvedTasks += 1;
+    }
+    const categories: [string, number | null][] = snapshot.per_category
+      ? Object.entries(snapshot.per_category).map(([category, byEntrant]) => [category, byEntrant[entrantId] ?? null])
+      : [];
+    return { entrantId, suiteRate: snapshot.per_entrant[entrantId], resolvedTasks, totalTasks, validTrials, categories };
+  });
+}
+
+/** "/results" - cohort selector (which publication), results table with the
+ * columns spec section 5 names (entrant revision, resolved-task estimate,
+ * valid trials, per-category rates, coverage, cost/time, evaluation
+ * dates), sort, select up to 4 entrants, download JSON. Numbers are exactly
+ * what the API returns (the shared aieb_analysis output, typed end to end
+ * via AnalysisSnapshot) - none are recomputed here (spec 4/35).
+ *
+ * "Planned" trial counts and per-entrant median engineering time/cost are
+ * not in the current analysis output (only a suite-wide total exists for
+ * time/cost; "planned" isn't tracked per cell, only whether a required
+ * repetition count was met overall) - shown as "Unknown"/suite-wide rather
+ * than fabricated per-entrant. */
 export function Results() {
   const [params, setParams] = useSearchParams();
   const releases = useReleases();
@@ -29,9 +66,7 @@ export function Results() {
 
   const effectivePublicationId = useMemo(() => {
     if (publicationId) return publicationId;
-    if (releases.data && releases.data.items.length > 0) {
-      return (releases.data.items[releases.data.items.length - 1] as { id: string }).id;
-    }
+    if (releases.data && releases.data.items.length > 0) return releases.data.items[0].id;
     return undefined;
   }, [publicationId, releases.data]);
 
@@ -61,23 +96,21 @@ export function Results() {
         value={effectivePublicationId}
         onChange={(event) => setParams({ publication: event.target.value })}
       >
-        {releases.data.items.map((item) => {
-          const publication = item as { id: string; created_at: string };
-          return (
-            <option key={publication.id} value={publication.id}>
-              {publication.id} ({formatUtc(publication.created_at).display})
-            </option>
-          );
-        })}
+        {releases.data.items.map((publication) => (
+          <option key={publication.id} value={publication.id}>
+            {publication.id} ({formatUtc(publication.created_at).display})
+          </option>
+        ))}
       </select>
 
       {results.isPending && <Loading label="results" />}
       {results.isError && <ErrorState error={results.error} onRetry={() => results.refetch()} />}
       {results.isSuccess && (
         <ResultsTable
-          snapshot={results.data.snapshot as Snapshot}
-          status={results.data.status as string}
-          notice={(results.data as { notice?: string }).notice}
+          snapshot={results.data.snapshot}
+          status={results.data.status}
+          notice={results.data.notice ?? undefined}
+          publicationCreatedAt={releases.data.items.find((p) => p.id === effectivePublicationId)?.created_at}
           selected={selected}
           setSelected={setSelected}
           sortBy={sortBy}
@@ -93,24 +126,27 @@ function ResultsTable({
   snapshot,
   status,
   notice,
+  publicationCreatedAt,
   selected,
   setSelected,
   sortBy,
   setSortBy,
   publicationId,
 }: {
-  snapshot: Snapshot;
+  snapshot: AnalysisSnapshot;
   status: string;
   notice: string | undefined;
+  publicationCreatedAt: string | undefined;
   selected: Set<string>;
   setSelected: (s: Set<string>) => void;
   sortBy: "entrant" | "rate";
   setSortBy: (s: "entrant" | "rate") => void;
   publicationId: string;
 }) {
-  const entrantIds = Object.keys(snapshot.per_entrant ?? {});
+  const rows = buildEntrantRows(snapshot);
+  const categoryNames = snapshot.per_category ? Object.keys(snapshot.per_category).sort() : [];
 
-  if (entrantIds.length === 0) {
+  if (rows.length === 0) {
     return (
       <EmptyState title="This publication's cohort has no entrant results yet.">
         <p>The snapshot exists but contains no per-entrant data - an empty cohort, not a fetch failure.</p>
@@ -118,13 +154,13 @@ function ResultsTable({
     );
   }
 
-  const sorted = [...entrantIds].sort((a, b) => {
+  const sorted = [...rows].sort((a, b) => {
     if (sortBy === "rate") {
-      const rateA = snapshot.per_entrant[a] ?? -1;
-      const rateB = snapshot.per_entrant[b] ?? -1;
+      const rateA = a.suiteRate ?? -1;
+      const rateB = b.suiteRate ?? -1;
       return rateB - rateA;
     }
-    return a.localeCompare(b);
+    return a.entrantId.localeCompare(b.entrantId);
   });
 
   function toggle(entrantId: string) {
@@ -153,15 +189,37 @@ function ResultsTable({
         <p role="alert">This snapshot has been withdrawn; it remains addressable but is not canonical.</p>
       )}
       {notice && <p role="alert">{notice}</p>}
-      <p>
-        Coverage:{" "}
-        <span className={snapshot.complete_for_rank ? "badge badge-complete" : "badge badge-incomplete"}>
-          {snapshot.complete_for_rank ? "Complete" : "Incomplete"}
-        </span>
-        {" · "}Suite rate: {formatRate(snapshot.suite_rate)}
-        {" · "}Cost per resolution: {formatUsd(snapshot.cost_per_resolution)}
-        {" · "}Median engineering time: {formatSeconds(snapshot.successful_engineering_median_seconds)}
-      </p>
+      <dl className="suite-summary">
+        <dt>Coverage</dt>
+        <dd>
+          <span className={snapshot.complete_for_rank ? "badge badge-complete" : "badge badge-incomplete"}>
+            {snapshot.complete_for_rank ? "Complete" : "Incomplete"}
+          </span>
+        </dd>
+        <dt>Suite rate (fixed-weight, all entrants)</dt>
+        <dd className="tabular-nums">{formatRate(snapshot.suite_rate)}</dd>
+        <dt>Cost per resolution (suite-wide)</dt>
+        <dd className="tabular-nums">{formatUsd(snapshot.cost_per_resolution)}</dd>
+        <dt>Verifier cost (suite-wide)</dt>
+        <dd className="tabular-nums">{formatUsd(snapshot.verifier_cost_total_usd)}</dd>
+        <dt>Total campaign cost (incl. invalid attempts)</dt>
+        <dd className="tabular-nums">{formatUsd(snapshot.total_campaign_cost_usd)}</dd>
+        <dt>Median successful engineering time (suite-wide)</dt>
+        <dd className="tabular-nums">{formatSeconds(snapshot.successful_engineering_median_seconds)}</dd>
+        <dt>Deadline rate</dt>
+        <dd className="tabular-nums">{formatRate(snapshot.deadline_rate)}</dd>
+        <dt>Infrastructure attrition</dt>
+        <dd className="tabular-nums">{formatRate(snapshot.infrastructure_attrition)}</dd>
+        <dt>Evaluation date</dt>
+        <dd>{publicationCreatedAt ? formatUtc(publicationCreatedAt).display : "Unknown"}</dd>
+      </dl>
+      {snapshot.limitations.length > 0 && (
+        <ul className="limitations">
+          {snapshot.limitations.map((limitation) => (
+            <li key={limitation}>{limitation}</li>
+          ))}
+        </ul>
+      )}
       <button type="button" onClick={downloadJson}>
         Download JSON
       </button>
@@ -179,25 +237,41 @@ function ResultsTable({
                 Rate
               </button>
             </th>
+            <th scope="col">Resolved tasks (all-k)</th>
+            <th scope="col">Valid trials</th>
+            {categoryNames.map((category) => (
+              <th scope="col" key={category}>
+                {category} rate
+              </th>
+            ))}
             <th scope="col">Compare</th>
           </tr>
         </thead>
         <tbody>
-          {sorted.map((entrantId) => (
-            <tr key={entrantId}>
+          {sorted.map((row) => (
+            <tr key={row.entrantId}>
               <th scope="row">
-                <Link to={`/entrants/${entrantId}`}>{entrantId}</Link>
+                <Link to={`/entrants/${row.entrantId}`}>{row.entrantId}</Link>
               </th>
-              <td className="tabular-nums">{formatRate(snapshot.per_entrant[entrantId])}</td>
+              <td className="tabular-nums">{formatRate(row.suiteRate)}</td>
+              <td className="tabular-nums">
+                {formatCount(row.resolvedTasks)}/{formatCount(row.totalTasks)}
+              </td>
+              <td className="tabular-nums">{formatCount(row.validTrials)}</td>
+              {row.categories.map(([category, rate]) => (
+                <td className="tabular-nums" key={category}>
+                  {formatRate(rate)}
+                </td>
+              ))}
               <td>
                 <label>
                   <input
                     type="checkbox"
-                    checked={selected.has(entrantId)}
-                    disabled={!selected.has(entrantId) && selected.size >= MAX_COMPARE}
-                    onChange={() => toggle(entrantId)}
+                    checked={selected.has(row.entrantId)}
+                    disabled={!selected.has(row.entrantId) && selected.size >= MAX_COMPARE}
+                    onChange={() => toggle(row.entrantId)}
                   />
-                  <span className="visually-hidden">Select {entrantId} for comparison</span>
+                  <span className="visually-hidden">Select {row.entrantId} for comparison</span>
                 </label>
               </td>
             </tr>

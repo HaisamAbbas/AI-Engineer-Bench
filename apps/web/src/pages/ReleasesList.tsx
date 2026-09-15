@@ -1,23 +1,21 @@
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useReleases } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
 import { formatUtc } from "../lib/format";
 
-interface PublicationSummary {
-  id: string;
-  campaign_id: string;
-  snapshot_digest: string;
-  status: string;
-  created_at: string;
-}
-
 export function ReleasesList() {
-  const releases = useReleases();
+  const [params, setParams] = useSearchParams();
+  const cursor = params.get("cursor") ?? undefined;
+  const releases = useReleases(cursor);
 
   if (releases.isPending) return <Loading label="releases" />;
   if (releases.isError) return <ErrorState error={releases.error} onRetry={() => releases.refetch()} />;
 
-  const items = releases.data.items as unknown as PublicationSummary[];
+  const items = releases.data.items;
+
+  function goToNextPage() {
+    if (releases.data?.next_cursor) setParams({ cursor: releases.data.next_cursor });
+  }
 
   return (
     <section>
@@ -25,7 +23,7 @@ export function ReleasesList() {
       {items.length === 0 && <EmptyState title="No releases have been published yet." />}
       {items.length > 0 && (
         <table>
-          <caption>Published releases</caption>
+          <caption>Published releases (newest first)</caption>
           <thead>
             <tr>
               <th scope="col">Release</th>
@@ -48,6 +46,11 @@ export function ReleasesList() {
             })}
           </tbody>
         </table>
+      )}
+      {releases.data?.next_cursor && (
+        <button type="button" onClick={goToNextPage}>
+          Next page
+        </button>
       )}
     </section>
   );

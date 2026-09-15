@@ -23,16 +23,22 @@ export function usePublicationResults(publicationId: string | undefined) {
   });
 }
 
-export function useComparison(publicationId: string | undefined, entrantIds: string[]) {
+export function useComparison(publicationId: string | undefined, entrantIds: string[], entrantPublicationIds?: string[]) {
   return useQuery({
-    queryKey: ["comparison", publicationId, entrantIds],
+    queryKey: ["comparison", publicationId, entrantIds, entrantPublicationIds ?? null],
     queryFn: () =>
       unwrap(
         api.GET("/v1/comparisons", {
-          params: { query: { publication_id: publicationId!, entrant_ids: entrantIds } },
+          params: {
+            query: {
+              publication_id: publicationId,
+              entrant_ids: entrantIds,
+              entrant_publication_ids: entrantPublicationIds,
+            },
+          },
         }),
       ),
-    enabled: publicationId !== undefined && entrantIds.length >= 2,
+    enabled: entrantIds.length >= 2 && (publicationId !== undefined || entrantPublicationIds !== undefined),
   });
 }
 
@@ -53,12 +59,20 @@ export function useTaskRevision(slug: string | undefined, version: string | unde
   });
 }
 
-export function useEntrantRevision(entrantId: string | undefined) {
+export function useEntrantRevisionBySlug(slug: string | undefined) {
   return useQuery({
-    queryKey: ["entrant-revision", entrantId],
-    queryFn: () => unwrap(api.GET("/v1/entrants/{entrant_id}", { params: { path: { entrant_id: entrantId! } } })),
-    enabled: entrantId !== undefined,
+    queryKey: ["entrant-revision-by-slug", slug],
+    queryFn: () => unwrap(api.GET("/v1/entrants/by-slug/{slug}", { params: { path: { slug: slug! } } })),
+    enabled: slug !== undefined,
     staleTime: Infinity,
+  });
+}
+
+export function useEntrantResults(slug: string | undefined) {
+  return useQuery({
+    queryKey: ["entrant-results", slug],
+    queryFn: () => unwrap(api.GET("/v1/entrants/by-slug/{slug}/results", { params: { path: { slug: slug! } } })),
+    enabled: slug !== undefined,
   });
 }
 

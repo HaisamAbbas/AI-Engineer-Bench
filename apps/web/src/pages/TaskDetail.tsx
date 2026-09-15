@@ -2,20 +2,6 @@ import { useParams } from "react-router-dom";
 import { useTaskRevision } from "../api/hooks";
 import { Loading, ErrorState } from "../components/QueryStates";
 
-interface TaskManifest {
-  id: string;
-  version: string;
-  family_id: string;
-  category: string;
-  activity: string;
-  source: { commit: string; license: string };
-  environment: { official_image: string; engineer_cpu: number; engineer_memory_mb: number; egress_policy: string };
-  application: { dependency_mode: string; entrypoint: string[]; model_profile_id: string };
-  submission: { include: string[]; protected: string[]; max_artifact_bytes: number };
-  requirements: { id: string; severity: string; description: string }[];
-  profile_compatibility: string[];
-}
-
 /** "/tasks/:id/:version" - ticket, environment, public requirements, origin,
  * run command. There is no separate "download public bundle" artifact
  * endpoint yet - everything shown here IS the public bundle (the manifest
@@ -27,7 +13,7 @@ export function TaskDetail() {
   if (task.isPending) return <Loading label="task" />;
   if (task.isError) return <ErrorState error={task.error} onRetry={() => task.refetch()} />;
 
-  const manifest = task.data.manifest as TaskManifest;
+  const manifest = task.data.manifest;
 
   function downloadBundle() {
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });

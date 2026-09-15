@@ -1,15 +1,7 @@
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useCorrections } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
 import { formatUtc } from "../lib/format";
-
-interface Correction {
-  id: string;
-  campaign_id: string;
-  status: string;
-  supersedes_id: string | null;
-  created_at: string;
-}
 
 /** "/corrections" - append-only corrections and reasons. There is no
  * free-text "reason" field on publication yet, so this shows that a
@@ -17,12 +9,18 @@ interface Correction {
  * (before/after publication), not why - a disclosed gap, not a fabricated
  * reason. */
 export function Corrections() {
-  const corrections = useCorrections();
+  const [params, setParams] = useSearchParams();
+  const cursor = params.get("cursor") ?? undefined;
+  const corrections = useCorrections(cursor);
 
   if (corrections.isPending) return <Loading label="corrections" />;
   if (corrections.isError) return <ErrorState error={corrections.error} onRetry={() => corrections.refetch()} />;
 
-  const items = corrections.data.items as unknown as Correction[];
+  const items = corrections.data.items;
+
+  function goToNextPage() {
+    if (corrections.data?.next_cursor) setParams({ cursor: corrections.data.next_cursor });
+  }
 
   return (
     <section>
@@ -31,7 +29,7 @@ export function Corrections() {
         <EmptyState title="No corrections have been made." />
       ) : (
         <table>
-          <caption>Append-only correction history</caption>
+          <caption>Append-only correction history (newest first). Reasons are not yet recorded - see release changelogs for what changed.</caption>
           <thead>
             <tr>
               <th scope="col">Publication</th>
@@ -62,6 +60,11 @@ export function Corrections() {
             })}
           </tbody>
         </table>
+      )}
+      {corrections.data?.next_cursor && (
+        <button type="button" onClick={goToNextPage}>
+          Next page
+        </button>
       )}
     </section>
   );
