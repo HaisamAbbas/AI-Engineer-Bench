@@ -58,6 +58,23 @@ class AnalysisTests(unittest.TestCase):
   self.assertEqual(summarize(rows)["verifier_cost_total_usd"],3.0)
   rows_missing=(TrialObservation("a","f","p","e",0,True,True,"1","2"),)
   self.assertIsNone(summarize(rows_missing)["verifier_cost_total_usd"])
+ def test_a_cell_with_enough_raw_attempts_but_not_enough_valid_ones_blocks_rank(self):
+  # Second independent review, confirmed by direct reproduction: completeness
+  # previously counted raw observations per cell, not valid/resolved ones. A
+  # cell with required_repetitions raw attempts but an infrastructure-invalid
+  # one among them (not a scored outcome) was reported complete with a
+  # smaller n instead of incomplete - exactly the gap planned_cells closes
+  # for a wholly MISSING cell, but for a cell that has attempts, just not
+  # enough valid ones.
+  rows=(
+   TrialObservation("a","f","p","e",0,True,True),
+   TrialObservation("a","f","p","e",1,True,True),
+   TrialObservation("a","f","p","e",2,None,False),  # infrastructure-invalid: not a scored outcome
+  )
+  result=summarize(rows,required_repetitions=3)
+  self.assertFalse(result["complete_for_rank"])
+  self.assertIsNone(result["suite_rate"])
+  self.assertEqual(result["per_task"]["a:e"]["n"],2)
  def test_wholly_missing_planned_cell_blocks_rank(self):
   # Review finding #7: a task/entrant pair with ZERO observations has no key
   # in the internal cell map at all, so repetition-count checks alone never
