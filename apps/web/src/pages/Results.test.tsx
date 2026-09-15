@@ -6,13 +6,19 @@ import { renderWithProviders } from "../test/renderWithProviders";
 import { mockApi } from "../test/mockApi";
 
 const SNAPSHOT_WITH_FIVE_ENTRANTS = {
+  schema_version: "aieb.analysis/v1",
   per_task: {},
   per_entrant: { a: 1.0, b: 0.5, c: 0.0, d: null, e: 0.75 },
   per_category: null,
   complete_for_rank: true,
   suite_rate: 0.5,
   cost_per_resolution: 3.5,
+  total_campaign_cost_usd: null,
+  verifier_cost_total_usd: null,
   successful_engineering_median_seconds: 120,
+  deadline_rate: null,
+  infrastructure_attrition: null,
+  limitations: [],
 };
 
 function mockOnePublication(overrides: { status?: string; snapshot?: unknown } = {}) {
@@ -30,6 +36,8 @@ function mockOnePublication(overrides: { status?: string; snapshot?: unknown } =
         snapshot_digest: "d",
         status: overrides.status ?? "published",
         supersedes_id: null,
+        created_at: "2026-01-01T00:00:00Z",
+        cohort_digest: "cohort-a",
         snapshot: overrides.snapshot ?? SNAPSHOT_WITH_FIVE_ENTRANTS,
         ...(overrides.status === "withdrawn"
           ? { notice: "this snapshot has been withdrawn; it remains addressable but is not canonical" }
