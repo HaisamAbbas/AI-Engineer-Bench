@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Prompt 13 (ENG-016, public website) implemented and IN_PROGRESS; post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007, 18 real defects fixed); ENG-015's directed leasing split (ENG015-007) is implemented and back to COMPLETE; ENG-011 remains IN_PROGRESS (planned_cells/category not yet wired to a real caller)
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented and back to COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -243,6 +243,28 @@ intercept fetch under this environment's jsdom+Node25 combination, so tests mock
 client directly instead (still real hook/component code). See
 `docs/implementation/evidence/ENG-016/website.md` for full detail. Not done: real-browser visual/
 responsive inspection (no visual browser tooling available here).
+
+## Prompt 13 second-pass review - six more gaps fixed
+
+A second independent review found the first pass didn't actually satisfy Prompt 13's acceptance
+criteria and reproduced each finding directly: (1) no CORS middleware - a real preflight was
+blocked; fixed with `AIEB_CORS_ALLOWED_ORIGINS` (ENG016-003). (2) `/v1/publications/{id}/results`
+and `/v1/comparisons` returned bare `dict`; replaced with real typed responses, which surfaced a
+genuine separate bug - snapshot digesting used `aieb_core.canonical.content_hash`, which forbids
+floats that real analysis output legitimately contains; fixed with a dedicated float-tolerant
+`snapshots.py` (ENG016-004). (3) comparison eligibility (UI-02) was never implemented - now checks
+real `cohort_digest` compatibility and returns real per-task paired differences, and cross-release
+comparison is a reachable UI path via `entrant_publication_ids`, not just a documented gap
+(ENG016-005). (4) the results table was missing most spec'd columns - added resolved-task estimate,
+valid trials, per-category rates. (5) releases/corrections were ordered oldest-first, breaking
+"latest publication" selection once paginated - reproduced directly, fixed to newest-first, and
+real pagination controls added where none existed (ENG016-006). (6) frontend tests grew from 11 to
+26, covering every page and several states that had no coverage at all (Compare's paired
+differences, EntrantProfile's results-by-release, ReleaseDetail's superseded state, error-recovery
+Retry). Full regression: 115 Python tests, 26 frontend tests, clean `tsc`/`vite build`. Remaining
+disclosed gaps: run evidence's redaction boundary, task ticket text (`instruction.md`), candidate
+logs/diffs, and real-browser visual inspection - see `docs/implementation/evidence/ENG-016/
+website.md`.
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 
