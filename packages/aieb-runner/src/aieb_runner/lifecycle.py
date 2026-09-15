@@ -414,18 +414,35 @@ class LocalAttemptRunner:
                     outcome.candidate = None
                     self._finalize(outcome, attempt_root, evidence, (engineer,))
 
-    def run_verification(self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome) -> AttemptOutcome:
+    def run_verification(
+        self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome, cancel_event: Event | None = None,
+    ) -> AttemptOutcome:
         """BUILD -> VERIFY -> FINALIZE/CLEANUP, given an outcome that already
         carries a collected `candidate` - either from this same process's own
         prior run_engineering() call, or reconstructed from persisted
         artifact-store references by an entirely different worker recovering
         after a crash (ENG015-007). Mutates and returns the same outcome.
+
+        `cancel_event` is checked cooperatively at the BUILD/VERIFY phase
+        boundary (review finding #1): a verification item claimed after its
+        campaign was already cancelled, or cancelled while BUILD is still
+        reconstructing the candidate, must not go on to produce and finalize
+        a score. The VERIFY call itself is a synchronous in-process function,
+        not a subprocess this runner owns and can signal - the same
+        limitation `evaluator` calls have always had - so a cancellation
+        arriving strictly during that one call is not interrupted mid-call;
+        only the boundaries before BUILD and before VERIFY are checked.
         """
         attempt_root = config.work_root / config.attempt_id
         build = attempt_root / "build"
         evidence = attempt_root / "attempt.json"
         attempt_root.mkdir(parents=True, exist_ok=True)
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                outcome.execution_validity = ExecutionValidity.CANCELLED
+                outcome.termination_reason = "cancelled"
+                return outcome
+
             outcome.add(AttemptPhase.BUILD)
             try:
                 reconstruct_candidate(
@@ -440,6 +457,11 @@ class LocalAttemptRunner:
                 outcome.verdict = Verdict.CONTRACT_VIOLATION
                 outcome.attribution = FailureAttribution.CANDIDATE_BUILD_FAILURE
                 outcome.diagnostics.append(str(exc))
+                return outcome
+
+            if cancel_event is not None and cancel_event.is_set():
+                outcome.execution_validity = ExecutionValidity.CANCELLED
+                outcome.termination_reason = "cancelled"
                 return outcome
 
             outcome.add(AttemptPhase.VERIFY)
@@ -476,7 +498,7 @@ class LocalAttemptRunner:
         outcome = self.run_engineering(config, cancel_event)
         if outcome.candidate is None:
             return outcome
-        return self.run_verification(config, evaluator, outcome)
+        return self.run_verification(config, evaluator, outcome, cancel_event)
 
     def run_with_replacements(
         self,

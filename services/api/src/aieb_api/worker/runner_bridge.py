@@ -55,6 +55,16 @@ class UnsupportedTaskError(ValueError):
     pass
 
 
+class StoredCandidateUnavailableError(ValueError):
+    """The persisted candidate.stored_candidate for this attempt is missing or
+    does not match the shape _serialize_stored_candidate() writes - either a
+    pre-ENG015-007 legacy row (the migration's server_default of '{}' for
+    existing rows, review finding #4) or corrupted/hand-edited JSON. Raised
+    instead of letting a bare KeyError escape from _deserialize_stored_candidate,
+    so the caller can route this attempt to infrastructure_invalid instead of
+    crashing the worker process."""
+
+
 def _editor_script(task_dir: Path, candidate_variant: str, source_dir: str, script_path: Path, delay_seconds: float = 0) -> EngineeringCommand:
     delay = f"import time\ntime.sleep({delay_seconds})\n" if delay_seconds > 0 else ""
     if candidate_variant == "baseline":
@@ -124,19 +134,28 @@ def _serialize_stored_candidate(stored: StoredCandidate) -> dict:
 
 
 def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
-    manifest = CandidateManifest.model_validate(data["manifest"])
-    file_references = tuple(
-        (
-            entry["path"],
-            ArtifactReference(
-                id=uuid.UUID(entry["reference"]["id"]),
-                blob=BlobRef(sha256=entry["reference"]["blob"]["sha256"], byte_length=entry["reference"]["blob"]["byte_length"]),
-                access_scope=entry["reference"]["access_scope"],
-                visibility=entry["reference"]["visibility"],
-            ),
+    """Reverses _serialize_stored_candidate(). Raises StoredCandidateUnavailableError
+    (never a bare KeyError/ValidationError) for anything that isn't a well-formed
+    serialized StoredCandidate - in particular the '{}' a legacy pre-ENG015-007
+    candidate row carries (review finding #4)."""
+    if not isinstance(data, dict) or "manifest" not in data or "file_references" not in data:
+        raise StoredCandidateUnavailableError("stored_candidate is missing or predates the two-phase split (ENG015-007)")
+    try:
+        manifest = CandidateManifest.model_validate(data["manifest"])
+        file_references = tuple(
+            (
+                entry["path"],
+                ArtifactReference(
+                    id=uuid.UUID(entry["reference"]["id"]),
+                    blob=BlobRef(sha256=entry["reference"]["blob"]["sha256"], byte_length=entry["reference"]["blob"]["byte_length"]),
+                    access_scope=entry["reference"]["access_scope"],
+                    visibility=entry["reference"]["visibility"],
+                ),
+            )
+            for entry in data["file_references"]
         )
-        for entry in data["file_references"]
-    )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StoredCandidateUnavailableError(f"stored_candidate is malformed: {exc}") from exc
     return StoredCandidate(manifest=manifest, file_references=file_references)
 
 
@@ -255,7 +274,7 @@ def execute_leased_engineering(
 
 def execute_leased_verification(
     session_factory: sessionmaker, leased: LeasedWork, *, worker_id: str, work_root: Path,
-    lease_seconds: int = repository.DEFAULT_LEASE_SECONDS,
+    lease_seconds: int = repository.DEFAULT_LEASE_SECONDS, cancel_event: threading.Event | None = None,
 ) -> ExecutionResult:
     """Run one leased `verification` work item: BUILD->VERIFY
     (LocalAttemptRunner.run_verification()) against a candidate an
@@ -263,6 +282,14 @@ def execute_leased_verification(
     different process, possibly a different worker, possibly long since
     exited (ENG015-007). Persists the evaluation (artifact-first, mirroring
     engineering's own record_candidate step) before finalizing.
+
+    A campaign cancelled after this attempt's engineering phase already
+    handed off (review finding #1) must not let a claimed verification item
+    go on to produce and finalize a score: this mirrors
+    execute_leased_engineering's own cancel_event plumbing - a background
+    poll thread sets the shared cancel_event as soon as cancellation is
+    observed, and LocalAttemptRunner.run_verification() checks it at the
+    BUILD/VERIFY phase boundary.
     """
     work_root = Path(work_root)
     with session_factory() as session:
@@ -270,6 +297,7 @@ def execute_leased_verification(
         task_row = session.get(TaskRevisionRow, trial.task_revision_id)
         task_slug = task_row.slug
         task_version = task_row.version
+        campaign_id = trial.campaign_id
         loaded = repository.load_stored_candidate(session, leased.attempt_id)
 
     if loaded is None:
@@ -282,7 +310,35 @@ def execute_leased_verification(
                 attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
             )
         return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
-    candidate_id, stored_candidate_json = loaded
+
+    try:
+        deserialized_candidate = _deserialize_stored_candidate(loaded.stored_candidate)
+    except StoredCandidateUnavailableError:
+        # Missing/legacy/malformed stored_candidate (review finding #4): fail
+        # safe to infrastructure_invalid rather than raising a bare KeyError
+        # out of a worker process.
+        with session_factory() as session:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+            )
+        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+
+    # The persisted candidate is checked against CandidateRow's own
+    # authoritative digests before anything is built or scored under its
+    # identity (review finding #3): stored_candidate JSON that has been
+    # corrupted, hand-edited, or otherwise diverged from the row that
+    # recorded it must not be silently evaluated as if it still matched.
+    if (
+        deserialized_candidate.manifest.full_tree_hash != loaded.tree_digest
+        or deserialized_candidate.manifest.digest() != loaded.manifest_digest
+    ):
+        with session_factory() as session:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+            )
+        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
 
     runtime = TASK_RUNTIMES.get(task_slug)
     if runtime is None:
@@ -308,18 +364,37 @@ def execute_leased_verification(
         engineering=EngineeringCommand((sys.executable, "-c", "pass"), 1),  # unused by run_verification
         access_scope=str(leased.attempt_id),
     )
-    outcome = AttemptOutcome(attempt_id=attempt_id, candidate=_deserialize_stored_candidate(stored_candidate_json))
+    outcome = AttemptOutcome(attempt_id=attempt_id, candidate=deserialized_candidate)
+
+    if cancel_event is None:
+        cancel_event = threading.Event()
 
     stop_heartbeat = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, args=(session_factory, leased, worker_id, lease_seconds, stop_heartbeat), daemon=True,
     )
     heartbeat_thread.start()
+    stop_cancel_poll = threading.Event()
+    cancel_poll_interval = max(lease_seconds / 6, 1)
+    cancel_poll_thread = threading.Thread(
+        target=_cancellation_poll_loop, args=(session_factory, campaign_id, cancel_event, stop_cancel_poll, cancel_poll_interval), daemon=True,
+    )
+    cancel_poll_thread.start()
     try:
-        outcome = runner.run_verification(config, evaluate, outcome)
+        outcome = runner.run_verification(config, evaluate, outcome, cancel_event=cancel_event)
     finally:
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=5)
+        stop_cancel_poll.set()
+        cancel_poll_thread.join(timeout=5)
+
+    if outcome.execution_validity == ExecutionValidity.CANCELLED:
+        with session_factory() as session:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="cancelled", done=False,
+            )
+        return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=None)
 
     with session_factory() as session:
         recorded = True
@@ -334,7 +409,7 @@ def execute_leased_verification(
             )
             recorded = repository.record_evaluation(
                 session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-                candidate_id=candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
+                candidate_id=loaded.candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
             )
         if not recorded:
             return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
@@ -357,7 +432,9 @@ def execute_leased_work(
     (worker/loop.py) is unchanged: it just calls this once per claimed item,
     regardless of which phase that item happens to be."""
     if leased.work_type == "verification":
-        return execute_leased_verification(session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds)
+        return execute_leased_verification(
+            session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,
+        )
     return execute_leased_engineering(
         session_factory, leased, worker_id=worker_id, candidate_variant=candidate_variant, work_root=work_root,
         lease_seconds=lease_seconds, cancel_event=cancel_event, engineering_delay_seconds=engineering_delay_seconds,

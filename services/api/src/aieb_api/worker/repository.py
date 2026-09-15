@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -204,7 +205,16 @@ def record_candidate(
     engineering/verification boundary specifically).
 
     Returns the new candidate row's id, or None if this worker/generation no
-    longer holds the lease (fenced out - the caller must not proceed)."""
+    longer holds the lease (fenced out - the caller must not proceed).
+
+    Idempotent under an ambiguous commit outcome (review finding #5): if a
+    caller retries after a commit that actually succeeded but whose
+    acknowledgement was lost (a dropped connection, a killed worker that
+    restarts and replays the same call), `uq_candidate_attempt_tree` turns
+    the retry's insert into an IntegrityError rather than a second row - that
+    error is caught here and the already-recorded row's id is returned
+    instead of raising, so a retry lands on the same identity a fresh insert
+    would have, rather than crashing the caller."""
     if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
         return None
@@ -213,7 +223,16 @@ def record_candidate(
         validation_status=candidate.validation_status, stored_candidate=candidate.stored_candidate,
     )
     session.add(candidate_row)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        existing_id = session.execute(
+            select(CandidateRow.id).where(CandidateRow.attempt_id == attempt_id, CandidateRow.tree_digest == candidate.tree_digest)
+        ).scalar_one_or_none()
+        if existing_id is None:
+            raise
+        return existing_id
     session.commit()
     return candidate_row.id
 
@@ -249,7 +268,13 @@ def record_evaluation(
     verdict BEFORE the verification work item is marked done, mirroring
     record_candidate's role in the engineering phase. If the caller crashes
     between this commit and finalize(), the reconciler finds this row and
-    finalizes from it rather than repeating verification."""
+    finalizes from it rather than repeating verification.
+
+    Idempotent the same way record_candidate() is (review finding #5): a
+    retry after an ambiguous commit hits `uq_evaluation_plan_digest` instead
+    of inserting a duplicate row; that IntegrityError is caught and treated
+    as success (the evaluation this call wanted recorded already is) rather
+    than raised."""
     if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
         return False
@@ -259,23 +284,48 @@ def record_evaluation(
             schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
         )
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.execute(
+            select(EvaluationRow.id).where(
+                EvaluationRow.candidate_id == candidate_id,
+                EvaluationRow.evaluator_id == evaluation.evaluator_id,
+                EvaluationRow.fixture_id == evaluation.fixture_id,
+                EvaluationRow.schedule_digest == evaluation.schedule_digest,
+            )
+        ).scalar_one_or_none()
+        return existing is not None
     return True
 
 
-def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> tuple[uuid.UUID, dict] | None:
-    """Read back the persisted candidate for an attempt - id plus its
-    serialized StoredCandidate JSON - so an independently-leased
-    verification phase can reconstruct it. Returns None if no candidate has
-    been recorded (should not happen: verification is only ever enqueued
-    after record_candidate succeeds), letting the caller fail safe rather
-    than crash on a KeyError."""
+@dataclass(frozen=True)
+class LoadedCandidate:
+    candidate_id: uuid.UUID
+    stored_candidate: dict
+    tree_digest: str
+    manifest_digest: str
+
+
+def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> LoadedCandidate | None:
+    """Read back the persisted candidate for an attempt - id, its serialized
+    StoredCandidate JSON, and the authoritative digests CandidateRow itself
+    recorded when the engineering phase committed - so an independently-leased
+    verification phase can both reconstruct the candidate AND check that the
+    reconstructed manifest actually matches the identity this row claims
+    (review finding #3), rather than trusting stored_candidate JSON blindly.
+    Returns None if no candidate has been recorded (should not happen:
+    verification is only ever enqueued after record_candidate succeeds),
+    letting the caller fail safe rather than crash on a KeyError."""
     row = session.execute(
         select(CandidateRow).where(CandidateRow.attempt_id == attempt_id).order_by(CandidateRow.created_at.desc()).limit(1)
     ).scalar_one_or_none()
     if row is None:
         return None
-    return row.id, row.stored_candidate
+    return LoadedCandidate(
+        candidate_id=row.id, stored_candidate=row.stored_candidate, tree_digest=row.tree_digest, manifest_digest=row.manifest_digest,
+    )
 
 
 def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID, terminal_status: str, done: bool) -> bool:
