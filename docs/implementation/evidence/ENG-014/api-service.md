@@ -62,6 +62,7 @@ Date: 2026-09-14. Local development/test evidence only; no remote deployment occ
 | `AIEB_ENV` | Set to `test` only in isolated test processes; gates `TestIdentityProvider` |
 | `AIEB_TEST_SHARED_SECRET` | HS256 shared secret; only read when `AIEB_ENV=test` |
 | `AIEB_API_HOST`, `AIEB_API_PORT` | `aieb-api` entrypoint bind address (defaults `127.0.0.1:8000`) |
+| `AIEB_CORS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to call this API (CORS); defaults to `http://localhost:5173,http://127.0.0.1:5173` (`apps/web`'s local dev server) - a real deployment sets this explicitly rather than relying on the local-dev default |
 
 ## Reproducing locally
 
