@@ -38,33 +38,40 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
  if rates:
   weighted=sum(value["rate"]*weights.get(key.split(":")[0],1) for key,value in per_task.items() if value["rate"] is not None)/sum(weights.get(key.split(":")[0],1) for key,value in per_task.items() if value["rate"] is not None)
  valid=[v for v in observations if v.execution_valid]
- successes=[v for v in valid if v.passed]
+ # A "scored" trial is execution_valid AND has a verdict (passed is not
+ # None) - the same population per_task's own `valid` already uses. Not
+ # every execution_valid observation is scored: an unresolved/indeterminate
+ # evaluation can be execution_valid=True with passed=None (still awaiting
+ # a verdict), and its cost must not dilute cost_per_resolution any more
+ # than an infrastructure-invalid attempt's would.
+ scored=[v for v in valid if v.passed is not None]
+ successes=[v for v in scored if v.passed]
  # Cost per resolution's numerator is "engineer + development-application
- # cost for all SCORED trials" (spec) - an infrastructure-invalid or
- # cancelled attempt was never scored at all, so its cost must not dilute
- # this metric, even though it is real campaign spend. Missing-accounting
- # (any None) is checked only within that scored population too: a missing
- # cost on an excluded invalid attempt must not make an otherwise-complete
- # scored numerator report unavailable.
+ # cost for all SCORED trials" (spec) - an infrastructure-invalid, cancelled,
+ # or still-unresolved attempt was never a scored outcome, so its cost must
+ # not dilute this metric, even though it is real campaign spend.
+ # Missing-accounting (any None) is checked only within that scored
+ # population too: a missing cost on an excluded attempt must not make an
+ # otherwise-complete scored numerator report unavailable.
  scored_costs=[]
- for v in valid:
+ for v in scored:
   if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: scored_costs=None;break
   scored_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
  cost_resolution=None if not successes or scored_costs is None else sum(scored_costs)/len(successes)
- # Spec: "publish total campaign cost including invalid attempts" - a
- # deliberately separate, broader figure from cost_per_resolution's
- # scored-only numerator, so invalid-attempt spend is visible, not hidden.
+ # Spec: "report verifier and infrastructure expenses separately; publish
+ # total campaign cost including invalid attempts" - total_campaign_cost_usd
+ # is a genuine grand total across every attempt (engineer + dev-application
+ # + verifier cost), not just the two fields cost_per_resolution uses; a
+ # prior version summed only engineer/dev-application cost under this name,
+ # which understated the actual total and mislabeled a partial figure as
+ # the whole. verifier_cost_total_usd remains its own separately reported
+ # breakdown alongside it (there is no infrastructure-cost field to include
+ # yet - TrialObservation has none).
  all_costs=[]
  for v in observations:
-  if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: all_costs=None;break
-  all_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
+  if v.engineer_cost_usd is None or v.dev_application_cost_usd is None or v.verifier_cost_usd is None: all_costs=None;break
+  all_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd)+float(v.verifier_cost_usd))
  total_campaign_cost=None if all_costs is None else sum(all_costs)
- # Spec section on cost accounting requires verifier/infrastructure expense to
- # be reported separately from engineer+dev-application cost, never folded
- # silently into a single number - so it gets its own total here, with the
- # same "any missing observation makes the whole total unavailable" rule.
- # Verifier cost is part of total campaign expenditure, so it is scoped like
- # total_campaign_cost (every attempt), not like cost_per_resolution.
  verifier_costs=[]
  for v in observations:
   if v.verifier_cost_usd is None: verifier_costs=None;break

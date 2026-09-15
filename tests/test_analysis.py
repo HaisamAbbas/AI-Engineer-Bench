@@ -66,14 +66,30 @@ class AnalysisTests(unittest.TestCase):
   # attempt inflated the reported per-resolution cost even though it was
   # never a scored outcome. total_campaign_cost_usd is the separate,
   # deliberately broader figure the spec also requires ("publish total
-  # campaign cost including invalid attempts").
+  # campaign cost including invalid attempts") - a genuine grand total
+  # (engineer + dev-application + verifier), so it needs verifier_cost_usd
+  # on every observation to be available, unlike cost_per_resolution.
   rows=(
-   TrialObservation("a","f","p","e",0,True,True,"1","2"),  # valid success, cost 3
-   TrialObservation("a","f","p","e",1,None,False,"100","100"),  # infra-invalid, cost 200
+   TrialObservation("a","f","p","e",0,True,True,"1","2",verifier_cost_usd="0.5"),  # valid success, cost 3
+   TrialObservation("a","f","p","e",1,None,False,"100","100",verifier_cost_usd="0.5"),  # infra-invalid, cost 200
   )
   result=summarize(rows)
   self.assertEqual(result["cost_per_resolution"],3.0)
-  self.assertEqual(result["total_campaign_cost_usd"],203.0)
+  self.assertEqual(result["total_campaign_cost_usd"],204.0)
+ def test_cost_per_resolution_excludes_unresolved_valid_evaluations(self):
+  # Fifth independent review, confirmed by direct reproduction: an
+  # execution_valid observation with passed=None (an indeterminate/
+  # unresolved evaluation, not yet a scored verdict) was still counted in
+  # cost_per_resolution's numerator, on the theory that "valid" alone was
+  # the scored population - but per_task's own definition of a scored
+  # trial is execution_valid AND passed is not None, and cost_per_resolution
+  # must use that same population, not a looser one.
+  rows=(
+   TrialObservation("a","f","p","e",0,True,True,"1","2"),  # scored success, cost 3
+   TrialObservation("a","f","p","e",1,None,True,"100","100"),  # valid but unresolved, cost 200
+  )
+  result=summarize(rows)
+  self.assertEqual(result["cost_per_resolution"],3.0)
  def test_cost_per_resolution_unaffected_by_missing_cost_on_an_excluded_invalid_attempt(self):
   # Missing-accounting checks apply only to the scored numerator population:
   # an invalid attempt with no cost data at all must not make an otherwise-
