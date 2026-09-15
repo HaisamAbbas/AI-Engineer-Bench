@@ -37,22 +37,40 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
  weights=fixed_task_weights or {}; weighted=None
  if rates:
   weighted=sum(value["rate"]*weights.get(key.split(":")[0],1) for key,value in per_task.items() if value["rate"] is not None)/sum(weights.get(key.split(":")[0],1) for key,value in per_task.items() if value["rate"] is not None)
- successes=[v for v in observations if v.execution_valid and v.passed]
- costs=[]
+ valid=[v for v in observations if v.execution_valid]
+ successes=[v for v in valid if v.passed]
+ # Cost per resolution's numerator is "engineer + development-application
+ # cost for all SCORED trials" (spec) - an infrastructure-invalid or
+ # cancelled attempt was never scored at all, so its cost must not dilute
+ # this metric, even though it is real campaign spend. Missing-accounting
+ # (any None) is checked only within that scored population too: a missing
+ # cost on an excluded invalid attempt must not make an otherwise-complete
+ # scored numerator report unavailable.
+ scored_costs=[]
+ for v in valid:
+  if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: scored_costs=None;break
+  scored_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
+ cost_resolution=None if not successes or scored_costs is None else sum(scored_costs)/len(successes)
+ # Spec: "publish total campaign cost including invalid attempts" - a
+ # deliberately separate, broader figure from cost_per_resolution's
+ # scored-only numerator, so invalid-attempt spend is visible, not hidden.
+ all_costs=[]
  for v in observations:
-  if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: costs=None;break
-  costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
- cost_resolution=None if not successes or costs is None else sum(costs)/len(successes)
+  if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: all_costs=None;break
+  all_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
+ total_campaign_cost=None if all_costs is None else sum(all_costs)
  # Spec section on cost accounting requires verifier/infrastructure expense to
  # be reported separately from engineer+dev-application cost, never folded
  # silently into a single number - so it gets its own total here, with the
  # same "any missing observation makes the whole total unavailable" rule.
+ # Verifier cost is part of total campaign expenditure, so it is scoped like
+ # total_campaign_cost (every attempt), not like cost_per_resolution.
  verifier_costs=[]
  for v in observations:
   if v.verifier_cost_usd is None: verifier_costs=None;break
   verifier_costs.append(float(v.verifier_cost_usd))
  verifier_cost_total=None if verifier_costs is None else sum(verifier_costs)
- valid=[v for v in observations if v.execution_valid]; times=sorted(v.engineer_seconds for v in successes if v.engineer_seconds is not None)
+ times=sorted(v.engineer_seconds for v in successes if v.engineer_seconds is not None)
 
  def _weighted_over(pairs:list[tuple[str,float]])->float|None:
   filtered=[(task,rate) for task,rate in pairs if rate is not None]
@@ -83,7 +101,7 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
     for entrant in entrants
    }
 
- return {"schema_version":"aieb.analysis/v1","per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
+ return {"schema_version":"aieb.analysis/v1","per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"total_campaign_cost_usd":total_campaign_cost,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
 
 def paired_project_difference(observations:tuple[TrialObservation,...], left:str, right:str)->dict[str,object]:
  """Paired task-cell difference, grouped by underlying project (not fake IID runs)."""

@@ -58,6 +58,33 @@ class AnalysisTests(unittest.TestCase):
   self.assertEqual(summarize(rows)["verifier_cost_total_usd"],3.0)
   rows_missing=(TrialObservation("a","f","p","e",0,True,True,"1","2"),)
   self.assertIsNone(summarize(rows_missing)["verifier_cost_total_usd"])
+ def test_cost_per_resolution_excludes_infrastructure_invalid_attempts(self):
+  # Fourth independent review, confirmed by direct reproduction: cost per
+  # resolution's numerator ("engineer + development-application cost for
+  # all SCORED trials", spec) previously summed every observation's cost
+  # regardless of execution_valid, so one expensive infrastructure-invalid
+  # attempt inflated the reported per-resolution cost even though it was
+  # never a scored outcome. total_campaign_cost_usd is the separate,
+  # deliberately broader figure the spec also requires ("publish total
+  # campaign cost including invalid attempts").
+  rows=(
+   TrialObservation("a","f","p","e",0,True,True,"1","2"),  # valid success, cost 3
+   TrialObservation("a","f","p","e",1,None,False,"100","100"),  # infra-invalid, cost 200
+  )
+  result=summarize(rows)
+  self.assertEqual(result["cost_per_resolution"],3.0)
+  self.assertEqual(result["total_campaign_cost_usd"],203.0)
+ def test_cost_per_resolution_unaffected_by_missing_cost_on_an_excluded_invalid_attempt(self):
+  # Missing-accounting checks apply only to the scored numerator population:
+  # an invalid attempt with no cost data at all must not make an otherwise-
+  # complete scored cost_per_resolution report unavailable.
+  rows=(
+   TrialObservation("a","f","p","e",0,True,True,"1","2"),
+   TrialObservation("a","f","p","e",1,None,False,None,None),
+  )
+  result=summarize(rows)
+  self.assertEqual(result["cost_per_resolution"],3.0)
+  self.assertIsNone(result["total_campaign_cost_usd"])
  def test_a_cell_with_enough_raw_attempts_but_not_enough_valid_ones_blocks_rank(self):
   # Second independent review, confirmed by direct reproduction: completeness
   # previously counted raw observations per cell, not valid/resolved ones. A
