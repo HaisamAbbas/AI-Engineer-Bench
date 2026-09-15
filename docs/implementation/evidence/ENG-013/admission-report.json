@@ -1216,11 +1216,12 @@
     "matrix": [
       {
         "checks": {
-          "ambiguous-retry-resolves": true,
+          "ambiguous-retry-resolves": false,
           "api-ready": true,
           "exactly-once-effect": false
         },
         "diagnostics": {
+          "ambiguous-retry-resolves": "write retry contract mismatch",
           "exactly-once-effect": "write retry contract mismatch"
         },
         "fixture_version": "tool02-heldout/v1",
@@ -1253,11 +1254,10 @@
         "checks": {
           "ambiguous-retry-resolves": false,
           "api-ready": true,
-          "exactly-once-effect": false
+          "exactly-once-effect": true
         },
         "diagnostics": {
-          "ambiguous-retry-resolves": "write retry contract mismatch",
-          "exactly-once-effect": "write retry contract mismatch"
+          "ambiguous-retry-resolves": "write retry contract mismatch"
         },
         "fixture_version": "tool02-heldout/v1",
         "pass": false,
