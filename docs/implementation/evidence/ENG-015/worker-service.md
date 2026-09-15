@@ -1,43 +1,66 @@
 # ENG-015 evidence: PostgreSQL-leased execution/verification work
 
-Date: 2026-09-14. Local development/test evidence only; no remote deployment occurred.
+Date: 2026-09-14, revised 2026-09-16 (ENG015-007: engineering and verification
+split into two independently leased phases). Local development/test evidence
+only; no remote deployment occurred.
 
 ## What this ticket implements
 
 - Atomic work acquisition (`aieb_api/worker/repository.py::claim_work_item`): a
   `SELECT ... FOR UPDATE SKIP LOCKED` CTE combined with an `UPDATE ... RETURNING`
   so two contending workers never claim the same ready `work_item`, without
-  blocking on each other.
-- Generation/fencing: every state-changing call (`heartbeat`, `record_outcome`,
-  `finalize`) is a single atomic `UPDATE ... WHERE id=... AND worker_id=... AND
-  generation=... AND state='leased'`, matching the pattern already proven for
-  campaign draft/freeze in ENG-014. A worker whose lease has been reassigned
+  blocking on each other. `claim_work_item` claims across BOTH `engineering`
+  and `verification` queues by default (a real worker pool services both
+  phases, not a phase-dedicated one) - pass `work_type=` to isolate one queue.
+- Generation/fencing: every state-changing call (`heartbeat`, `record_candidate`,
+  `advance_to_verification`, `record_evaluation`, `finalize`) is a single
+  atomic `UPDATE ... WHERE id=... AND worker_id=... AND generation=... AND
+  state='leased'`, matching the pattern already proven for campaign
+  draft/freeze in ENG-014. A worker whose lease has been reassigned
   (reconciled) cannot commit anything — its fenced check simply matches zero
   rows.
 - Heartbeat/expiry: `work_item.lease_expiry` extended periodically by a
-  background thread on its own DB session while the engineering attempt runs
-  on the main thread outside any transaction.
-- Artifact-first finalization: `record_outcome` persists the `candidate` (and
-  `evaluation`, if the trusted scorer produced one) in its own fenced
-  transaction *before* `finalize` marks the work item done — durable evidence
-  a crash between the two steps leaves behind for reconciliation to find.
-- Reconciliation (`reconcile_expired_leases`): for each expired lease, if a
-  `CandidateRow` already exists, completes finalization from that evidence
-  (no re-execution, no duplicate scoring); otherwise marks the old
-  attempt/work_item terminal and creates a replacement attempt/work_item, up
-  to the frozen campaign's `max_replacements` (or a default when the campaign
-  carries no resolved protocol).
+  background thread on its own DB session while the engineering or
+  verification phase runs on the main thread outside any transaction.
+- Two independently leased phases (ENG015-007): an `engineering` work item
+  covers PROVISION→ENGINEER→STOP→COLLECT
+  (`LocalAttemptRunner.run_engineering()`) and ends by persisting the
+  collected candidate (`record_candidate`, artifact-first - before the work
+  item is marked done) and enqueuing a brand new `verification` work item for
+  the SAME attempt (`advance_to_verification`). A `verification` work item
+  covers BUILD→VERIFY (`LocalAttemptRunner.run_verification()`), reconstructing
+  the candidate from the artifact store plus the frozen source - never from
+  the engineering phase's own `engineer/` workspace, which is already gone by
+  then - possibly in a different process, possibly a different worker,
+  possibly long after the engineering phase's own process exited. It persists
+  the evaluation (`record_evaluation`, same artifact-first pattern) before its
+  own `finalize` call.
+- Reconciliation (`reconcile_expired_leases`): recovers an expired lease
+  according to what that phase's own artifact-first evidence shows -
+  `engineering` with a candidate already persisted advances straight to
+  verification (never repeats engineering); `engineering` with no candidate is
+  replaced with a brand-new attempt, up to the frozen campaign's
+  `max_replacements`; `verification` with an evaluation already persisted
+  finalizes from that evidence (no re-verification); `verification` with no
+  evaluation is requeued as a fresh verification work item for the SAME
+  attempt and candidate (a dead verifier never causes engineering to repeat),
+  up to the same `max_replacements` cap.
 - Cancellation (`cancel_campaign`, `is_campaign_cancelling`,
   `maybe_complete_cancellation`): stops new dispatch; a worker that claims
-  work for a cancelling campaign passes a set `cancel_event` into the reused
-  `LocalAttemptRunner.run()`, which now polls that event during the
+  engineering work for a cancelling campaign passes a set `cancel_event` into
+  `LocalAttemptRunner.run_engineering()`, which polls that event during the
   engineering phase (a small, backward-compatible extension — see
   DECISIONS.md ENG015-002) instead of blocking on one uninterruptible
-  `communicate(timeout=...)` call.
-- Orphan teardown (`teardown_orphans`, `reconciler.teardown_orphan_allocations`):
-  removes the writable `engineer`/`build` allocations a SIGKILLed worker never
-  reached its own cleanup phase for; immutable `attempt.json` evidence is left
-  untouched, mirroring `LocalAttemptRunner`'s own cleanup semantics exactly.
+  `communicate(timeout=...)` call. Cancellation is checked only during
+  engineering, not verification - a build+score pass is short and
+  deterministic in this local-fixture scope, so there is no long-running
+  verification step to interrupt yet.
+- Orphan teardown (`reconciler._remove_orphan_allocations`): removes the
+  writable `engineer`/`build` allocations a SIGKILLed worker (at either
+  phase) never reached its own cleanup phase for; immutable `attempt.json`
+  evidence is left untouched, mirroring `LocalAttemptRunner`'s own cleanup
+  semantics exactly. Removing both unconditionally is safe even when only one
+  allocation exists for a given phase.
 
 ## What this ticket reuses, not reimplements
 
@@ -45,7 +68,10 @@ Per the prompt's explicit instruction, this ticket adds no second execution or
 scoring implementation. `aieb_api/worker/runner_bridge.py` is a thin bridge:
 it resolves a leased work item to a task/evaluator, builds the same
 `AttemptConfig` the local CLI builds (`aieb_cli.main._run`/`_editor`), and
-calls the unchanged `aieb_runner.lifecycle.LocalAttemptRunner.run()`. A real
+calls `aieb_runner.lifecycle.LocalAttemptRunner.run_engineering()`/
+`run_verification()` - the same pipeline logic as the CLI's `run()`, split
+into two composable methods rather than duplicated (see DECISIONS.md
+ENG015-007 and `packages/aieb-runner/src/aieb_runner/lifecycle.py`). A real
 installed agent remains blocked on ENG-001's authorization gate; the
 "engineering command" is the same deterministic candidate-variant editor the
 CLI already uses for development verticals.
@@ -56,13 +82,6 @@ CLI already uses for development verticals.
   checks): ENG-017. `repository.enqueue_frozen_campaign` is the internal
   trial/attempt/work_item expansion that endpoint will call; it is not itself
   wired to any HTTP route in this ticket.
-- Verification as a separately leased work-item type: `LocalAttemptRunner.run()`
-  already performs engineer→collect→build→verify as one reused call, so a
-  single `work_item` of type `engineering` covers the whole attempt in this
-  ticket's scope. Splitting engineering and verification into independently
-  leasable phases (as the architecture diagram's separate "execution worker"
-  and "verification worker" suggest) is a real future refactor, not attempted
-  here — see DECISIONS.md ENG015-001.
 - Exported OpenTelemetry spans/metrics: `worker/metrics.py` emits structured
   JSON log events with the IDs spec section 39 names and keeps in-process
   counters; wiring a real OTel exporter is hosted-observability infrastructure
@@ -105,20 +124,33 @@ $env:AIEB_WORKER_ID = "worker-3"; Start-Process .\.venv\Scripts\aieb-worker.exe
 
 ## Test evidence (real PostgreSQL, real subprocess kills)
 
-`tests/test_worker_leasing.py` (8 tests) runs against the same disposable
+`tests/test_worker_leasing.py` (14 tests) runs against the same disposable
 Postgres container as ENG-014's tests and covers every controlled-failure
-scenario the prompt names, not just the happy path:
+scenario the prompt names, not just the happy path - including the five
+ENG015-007 names explicitly for the leasing split:
 
 | Scenario | Test |
 | --- | --- |
 | Two workers contending for work | `test_two_workers_never_claim_the_same_item` |
 | Death before launch | `test_death_before_launch_is_replaced_not_double_counted` |
 | Death during engineering | `test_death_during_engineering_real_subprocess_kill_is_replaced_and_orphans_removed` (a real OS process, killed) |
-| Death after upload, before finalization | `test_death_after_artifact_upload_is_resumed_not_replaced` |
-| Lease expiry, old worker returns | `test_stale_worker_finalize_after_lease_reassignment_is_rejected` |
-| Verifier outage | `test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail` |
-| Duplicate completion | `test_duplicate_finalize_call_is_a_no_op_not_a_double_score` |
-| Cancellation and orphan teardown | `test_cancelled_campaign_attempt_is_not_engineered_and_cleans_up` |
+| Engineering death after candidate persistence | `test_engineering_death_after_candidate_persistence_advances_to_verification` |
+| Verification death after evaluation recorded | `test_verification_death_after_evaluation_recorded_is_resumed_not_requeued` |
+| Verifier death with no evaluation (retry without re-engineering) | `test_verifier_death_with_no_evaluation_retries_verification_without_re_engineering` |
+| Stale verifier returning after lease reassignment | `test_stale_verifier_cannot_record_or_finalize_after_lease_reassignment` |
+| Lease expiry, old (engineering) worker returns | `test_stale_worker_finalize_after_lease_reassignment_is_rejected` |
+| Verifier outage (trusted scorer crash) | `test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail` |
+| Duplicate verification completion | `test_duplicate_finalize_call_is_a_no_op_not_a_double_score` |
+| Cancellation and orphan teardown | `test_cancelled_campaign_attempt_is_not_engineered_and_cleans_up`, `test_cancellation_arriving_mid_run_interrupts_the_attempt` |
+| Fencing under real concurrency | `test_concurrent_reconciler_cannot_race_a_record_candidate_still_in_flight`, `test_reconciler_never_orphans_a_lease_a_live_worker_just_re_extended` |
+
+`tests/test_attempt_lifecycle.py::test_engineering_and_verification_can_run_as_two_independent_calls`
+proves the split's core guarantee directly at the `LocalAttemptRunner` level:
+construct a fresh `AttemptOutcome` carrying only the persisted candidate
+reference (as a different worker/process would after loading it from the
+database) and call `run_verification()` on it independently of the
+`run_engineering()` call that produced it, confirming it produces the same
+verdict as the composed `run()`.
 
 The "death during engineering" test spawns a real Python subprocess that
 claims a work item and starts a deliberately slow (20-second) engineering
@@ -163,11 +195,13 @@ See DECISIONS.md ENG015-006.
 
 ## Handoff
 
-Worker leasing, fencing, heartbeat, reconciliation, and cancellation are
-implemented and tested against a real PostgreSQL instance. Splitting
-engineering and verification into independently leasable work-item types,
-wiring `enqueue_frozen_campaign` to a real `POST /campaigns/{id}/start`
-endpoint with budget reservations, and exporting real OTel metrics remain
-ENG-017/ENG-016 dependencies. Local CLI functionality is unaffected;
-`aieb_runner.lifecycle.LocalAttemptRunner` gained one backward-compatible
-optional parameter (`cancel_event`) and no behavior change when it is `None`.
+Worker leasing, fencing, heartbeat, reconciliation, cancellation, and now
+(ENG015-007) two independently leased phases are implemented and tested
+against a real PostgreSQL instance. Wiring `enqueue_frozen_campaign` to a
+real `POST /campaigns/{id}/start` endpoint with budget reservations, and
+exporting real OTel metrics remain ENG-017/ENG-016 dependencies. Local CLI
+functionality is unaffected; `aieb_runner.lifecycle.LocalAttemptRunner`
+gained one backward-compatible optional parameter (`cancel_event`, ENG015-002)
+and, for ENG015-007, two new public methods (`run_engineering`,
+`run_verification`) - `run()` itself is now a thin wrapper composing them, so
+existing callers (the local CLI) see no behavior change.

@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Prompt 13 (ENG-016, public website) implemented and IN_PROGRESS; post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007, 18 real defects fixed); ENG-015 directed to split leasing into two independently-leased phases (ENG015-007, implementation not yet started); ENG-011 and ENG-015 remain IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented and IN_PROGRESS; post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007, 18 real defects fixed); ENG-015's directed leasing split (ENG015-007) is implemented and back to COMPLETE; ENG-011 remains IN_PROGRESS (planned_cells/category not yet wired to a real caller)
 
 ## Current state
 
@@ -244,26 +244,32 @@ client directly instead (still real hook/component code). See
 `docs/implementation/evidence/ENG-016/website.md` for full detail. Not done: real-browser visual/
 responsive inspection (no visual browser tooling available here).
 
-## ENG-015 leasing split - directed, not yet implemented
+## ENG-015 leasing split - implemented (ENG015-007)
 
-Per direct instruction, ENG015-007 supersedes ENG015-001: verification becomes its own
-independently-leased PostgreSQL work item (own lease generation/heartbeat/fencing/cancellation/
-finalization), with the candidate persisted and verified before a verification work item is
-enqueued, reusing the existing evaluator pipeline. Required before ENG-015 returns to COMPLETE:
-controlled-failure tests for worker death after candidate persistence, verification lease expiry,
-stale-verifier-return, verifier-retry-without-re-engineering, and duplicate-verification-completion,
-each against real Postgres. This is a substantial change to `services/api/src/aieb_api/worker/`
-(`repository.py`'s single `engineering` work-item type splits into at least two;
-`runner_bridge.py`'s `execute_leased_work` splits into two independently-executed phases) -
-implementation has not started yet.
+Per direct instruction, ENG015-007 supersedes ENG015-001 and is now implemented: verification is
+its own independently-leased PostgreSQL work item (own lease generation/heartbeat/fencing/
+finalization), with the candidate persisted before a verification work item is enqueued, reusing
+the existing evaluator pipeline unchanged. `aieb_runner.lifecycle.LocalAttemptRunner.run()` split
+into `run_engineering()`/`run_verification()` (composed by `run()` for the unchanged local-CLI
+path); `candidate.stored_candidate` (new JSONB column, migration `a3f0c9d17b2e`) persists the full
+candidate so verification can reconstruct it from the database alone, in a different process if
+needed; `repository.py` replaced `record_outcome` with `record_candidate`/`advance_to_verification`/
+`record_evaluation`/`load_stored_candidate`; `reconcile_expired_leases` recovers each work-item type
+from its own artifact-first evidence, gaining `advanced`/`requeued` counters. All 5 required
+controlled-failure scenarios (worker death after candidate persistence, verification lease expiry
+with/without a recorded evaluation, stale-verifier fencing, duplicate verification completion) pass
+against real Postgres - see DECISIONS.md ENG015-007 and `docs/implementation/evidence/ENG-015/
+worker-service.md` for full detail. `worker/loop.py` needed no changes at all: `claim_work_item`
+claims across both queues by default, so the existing claim→execute loop already services both
+phases. ENG-015 is back to `COMPLETE` in STATUS.md.
 
 ## Recommended next prompt
 
-Implement the ENG-015 leasing split (ENG015-007) - the largest piece of directed-but-unstarted
-work. Separately, decide whether ENG-011's `planned_cells`/`category` inputs should be wired end
-to end from a real campaign (currently only tests supply them). Prompt 14 (ENG-017/018: admin
-campaigns, budget reservations, publication/correction workflows) is the natural next prompt after
-that, since it both depends on and will exercise the ENG-015 leasing layer, and gives the website's
-Corrections/admin-adjacent pages real write paths to react to. Independent task reviews remain a
+Decide whether ENG-011's `planned_cells`/`category` inputs should be wired end to end from a real
+campaign (currently only tests supply them) - the one remaining IN_PROGRESS item. Prompt 14
+(ENG-017/018: admin campaigns, budget reservations, publication/correction workflows) is the
+natural next prompt, since it both depends on and will exercise ENG-015's now-complete leasing
+layer, and gives the website's Corrections/admin-adjacent pages real write paths to react to.
+Independent task reviews remain a
 precondition before any admitted-only ENG-013 release manifest can be created; ENG-012 remains
 blocked on provider/model authorization, credentials, and spend cap.
