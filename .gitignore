@@ -10,6 +10,7 @@
 /runs/
 node_modules/
 apps/web/dist/
+apps/web/*.tsbuildinfo
 
 # Supplied source attachments are preserved at the workspace root. Canonical
 # unchanged repository copies live in docs/specs/.

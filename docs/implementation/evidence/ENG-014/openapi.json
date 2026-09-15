@@ -94,12 +94,122 @@
             "title": "Per Entrant",
             "type": "object"
           },
+          "per_entrant_cost_per_resolution": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Per Entrant Cost Per Resolution",
+            "type": "object"
+          },
+          "per_entrant_deadline_rate": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Per Entrant Deadline Rate",
+            "type": "object"
+          },
+          "per_entrant_infrastructure_attrition": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Per Entrant Infrastructure Attrition",
+            "type": "object"
+          },
+          "per_entrant_median_engineering_seconds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Per Entrant Median Engineering Seconds",
+            "type": "object"
+          },
+          "per_entrant_resolved_tasks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Per Entrant Resolved Tasks",
+            "type": "object"
+          },
+          "per_entrant_total_tasks": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Per Entrant Total Tasks",
+            "type": "object"
+          },
+          "per_entrant_valid_trials": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Per Entrant Valid Trials",
+            "type": "object"
+          },
+          "per_entrant_verifier_cost_usd": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Per Entrant Verifier Cost Usd",
+            "type": "object"
+          },
           "per_task": {
             "additionalProperties": {
               "$ref": "#/components/schemas/TaskCellStats"
             },
             "title": "Per Task",
             "type": "object"
+          },
+          "required_repetitions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Repetitions"
           },
           "schema_version": {
             "title": "Schema Version",
@@ -522,6 +632,41 @@
         "title": "Cohort",
         "type": "object"
       },
+      "CohortIdentity": {
+        "additionalProperties": false,
+        "description": "The frozen cohort's own identifying fields\n(`campaign.resolved[\"cohort\"]`) - real manifest data, not inferred from\nresult rows, so a release page can show suite/track/dependency-mode/\nprofile identifiers (review finding #2) without recomputing anything.",
+        "properties": {
+          "dependency_mode": {
+            "title": "Dependency Mode",
+            "type": "string"
+          },
+          "hardware_class": {
+            "title": "Hardware Class",
+            "type": "string"
+          },
+          "protocol_id": {
+            "title": "Protocol Id",
+            "type": "string"
+          },
+          "suite_id": {
+            "title": "Suite Id",
+            "type": "string"
+          },
+          "track": {
+            "title": "Track",
+            "type": "string"
+          }
+        },
+        "required": [
+          "track",
+          "suite_id",
+          "protocol_id",
+          "dependency_mode",
+          "hardware_class"
+        ],
+        "title": "CohortIdentity",
+        "type": "object"
+      },
       "ComparisonResponse": {
         "additionalProperties": false,
         "properties": {
@@ -686,7 +831,7 @@
       },
       "EntrantResultEntry": {
         "additionalProperties": false,
-        "description": "One publication an entrant slug appears in - the \"results by release\"\nspec section 5 names for the entrant profile page.",
+        "description": "One publication an entrant slug appears in - the \"results by release\"\nspec section 5 names for the entrant profile page. `entrant_version`\nnames the EXACT entrant revision that publication's frozen campaign\nactually used (`campaign.resolved[\"entrants\"]`), not \"whichever revision\nhappens to be newest right now\" - a historical result must stay pinned\nto the configuration that produced it even after a newer revision of\nthe same slug is registered (review finding #3). `None` only if the\ncampaign's resolved manifest could not be read at all (a real, disclosed\nfailure mode, not silently defaulted to \"current\").",
         "properties": {
           "aggregate_rate": {
             "anyOf": [
@@ -707,6 +852,17 @@
           "created_at": {
             "title": "Created At",
             "type": "string"
+          },
+          "entrant_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entrant Version"
           },
           "publication_id": {
             "format": "uuid",
@@ -917,6 +1073,36 @@
         "title": "FreezeRegistry",
         "type": "object"
       },
+      "FrozenTaskEntry": {
+        "additionalProperties": false,
+        "description": "One task from the campaign's own frozen manifest\n(`campaign.resolved[\"tasks\"]`) - NOT inferred from which tasks happen to\nhave an observation in the published snapshot. A planned task with zero\nobservations (the exact case incomplete-coverage reporting must\npreserve, spec section 28) still appears here, since it comes from the\nmanifest the campaign actually froze, not from what got scored\n(review finding #3).",
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "family_id": {
+            "title": "Family Id",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "version",
+          "family_id",
+          "category"
+        ],
+        "title": "FrozenTaskEntry",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1106,6 +1292,16 @@
             "title": "Campaign Id",
             "type": "string"
           },
+          "cohort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CohortIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cohort_digest": {
             "anyOf": [
               {
@@ -1120,6 +1316,14 @@
           "created_at": {
             "title": "Created At",
             "type": "string"
+          },
+          "frozen_tasks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FrozenTaskEntry"
+            },
+            "title": "Frozen Tasks",
+            "type": "array"
           },
           "id": {
             "format": "uuid",
@@ -1468,7 +1672,7 @@
       },
       "TaskPairedDifference": {
         "additionalProperties": false,
-        "description": "One task's paired outcome difference between exactly two entrants\nwithin the same trial/repetition cell (spec: \"paired task outcomes\").",
+        "description": "A per-task rate difference between two entrants IN THE SAME\npublication, computed from each entrant's own aggregated `per_task` rate\ncell. This is NOT the project/family-resampled, repetition-matched\nstatistic spec section 28 describes (\"resampling projects/families then\nrepetitions according to the declared hierarchical model\") - that\nrequires per-repetition observations grouped by underlying project,\nwhich the persisted publication snapshot does not retain (only\naggregated per-task rate/n). Building that is real future work (the\nexisting `aieb_analysis.paired_project_difference` implements the\ncorrect hierarchical procedure already, but nothing in the hosted\npersistence schema populates the `project_id` it requires yet -\ndisclosed, not silently claimed here). Review finding #1 (2026-09-16).",
         "properties": {
           "difference": {
             "anyOf": [
@@ -1922,7 +2126,7 @@
     },
     "/v1/comparisons": {
       "get": {
-        "description": "Compare 2-4 entrants. Each entrant is looked up in its OWN publication:\n`entrant_publication_ids` (same order/length as `entrant_ids`) names one\nper entrant for a genuine cross-release comparison; an entrant with no\ncorresponding entry falls back to `publication_id` (the common case: all\nentrants come from the same, single publication). Cohort compatibility\nis real, not assumed: entrants are only paired-comparable when their\npublications' campaigns share the same `cohort_digest` - the same\nfrozen task/entrant/repetition plan, not merely \"some publication\nexists.\" Incompatible entrants still get their own eligible aggregate\n(separate panels), just no paired difference - never a fabricated\ncalculated winner across genuinely different cohorts (spec journey 6.1).",
+        "description": "Compare 2-4 entrants. Each entrant is looked up in its OWN publication:\n`entrant_publication_ids` (same order/length as `entrant_ids`) names one\nper entrant for a genuine cross-release comparison; an entrant with no\ncorresponding entry falls back to `publication_id` (the common case: all\nentrants come from the same, single publication).\n\nPaired per-task differences are ONLY ever computed within a single\npublication. Spec journey 6.1 is unconditional: \"A cross-release\ncomparison shows separate panels with a non-comparable label, never a\ncalculated winner\" - not \"unless the cohorts happen to match.\" An\nearlier version of this endpoint treated equal `cohort_digest` values\nacross different publications as sufficient proof of comparable\nobservations; that was wrong on its own terms too, since `Cohort` itself\ndoes not carry the exact task list, entrant revisions, or repetition\nplan - a matching digest does not prove matching observations (review\nfinding #1, 2026-09-16). Entrants from different publications therefore\nalways get separate eligible panels with no paired difference, exactly\nas spec 6.1 requires - never a fabricated calculated winner.",
         "operationId": "get_comparison_v1_comparisons_get",
         "parameters": [
           {

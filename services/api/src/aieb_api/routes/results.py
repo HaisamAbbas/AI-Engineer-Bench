@@ -20,11 +20,13 @@ from ..snapshots import snapshot_digest as compute_snapshot_digest
 from ..pagination import clamp_limit, decode_cursor, page
 from ..schemas import (
     AnalysisSnapshot,
+    CohortIdentity,
     ComparisonResponse,
     CorrectionEntry,
     EntrantComparisonEligible,
     EntrantComparisonIneligible,
     EntrantResultEntry,
+    FrozenTaskEntry,
     Page,
     PublicationResultsResponse,
     PublicationSummary,
@@ -85,12 +87,40 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
         raise not_found()
     campaign = session.get(CampaignRow, row.campaign_id)
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
+    cohort, frozen_tasks = _frozen_manifest_data(campaign)
     return PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
         supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat(),
         cohort_digest=campaign.cohort_digest if campaign else None,
+        cohort=cohort, frozen_tasks=frozen_tasks,
         snapshot=_verified_snapshot(row), notice=notice,
     )
+
+
+def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity | None, list[FrozenTaskEntry]]:
+    """Real data from the campaign's own frozen manifest
+    (`campaign.resolved`), not inferred from which observations happen to
+    exist in a published snapshot (review finding #3). `campaign.resolved`
+    is only populated once a campaign is frozen - a campaign row that
+    somehow has none yields no cohort identity and an empty frozen task
+    list, rather than raising, since a publication should always have one
+    in practice but this must fail safe, not crash the results page."""
+    if campaign is None or not campaign.resolved:
+        return None, []
+    resolved = campaign.resolved
+    cohort_manifest = resolved.get("cohort")
+    cohort = (
+        CohortIdentity(
+            track=cohort_manifest["track"], suite_id=cohort_manifest["suite_id"], protocol_id=cohort_manifest["protocol_id"],
+            dependency_mode=cohort_manifest["dependency_mode"], hardware_class=cohort_manifest["hardware_class"],
+        )
+        if cohort_manifest else None
+    )
+    frozen_tasks = [
+        FrozenTaskEntry(slug=task["id"], version=task["version"], family_id=task["family_id"], category=task["category"])
+        for task in resolved.get("tasks", [])
+    ]
+    return cohort, frozen_tasks
 
 
 @router.get("/corrections", response_model=Page[CorrectionEntry])
@@ -140,9 +170,26 @@ def get_entrant_results(slug: str, session: Session = Depends(get_session)) -> l
                 EntrantResultEntry(
                     publication_id=row.id, campaign_id=row.campaign_id, status=row.status,
                     created_at=row.created_at.isoformat(), aggregate_rate=snapshot.per_entrant[slug],
+                    entrant_version=_entrant_version_in_campaign(session, row.campaign_id, slug),
                 )
             )
     return entries
+
+
+def _entrant_version_in_campaign(session: Session, campaign_id: UUID, slug: str) -> str | None:
+    """The EXACT entrant revision THIS publication's frozen campaign used
+    for the given slug (`campaign.resolved["entrants"]`) - not whichever
+    revision of that slug happens to be newest right now. A historical
+    result must stay pinned to the configuration that actually produced it
+    (review finding #3). Returns None only if the campaign/manifest cannot
+    be read or the slug is not in it - a real, disclosed failure mode."""
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None or not campaign.resolved:
+        return None
+    for entrant in campaign.resolved.get("entrants", []):
+        if entrant.get("id") == slug:
+            return entrant.get("agent_version")
+    return None
 
 
 def _task_ids_for_entrant(snapshot: AnalysisSnapshot, entrant_id: str) -> dict[str, float | None]:
@@ -165,13 +212,20 @@ def get_comparison(
     `entrant_publication_ids` (same order/length as `entrant_ids`) names one
     per entrant for a genuine cross-release comparison; an entrant with no
     corresponding entry falls back to `publication_id` (the common case: all
-    entrants come from the same, single publication). Cohort compatibility
-    is real, not assumed: entrants are only paired-comparable when their
-    publications' campaigns share the same `cohort_digest` - the same
-    frozen task/entrant/repetition plan, not merely "some publication
-    exists." Incompatible entrants still get their own eligible aggregate
-    (separate panels), just no paired difference - never a fabricated
-    calculated winner across genuinely different cohorts (spec journey 6.1).
+    entrants come from the same, single publication).
+
+    Paired per-task differences are ONLY ever computed within a single
+    publication. Spec journey 6.1 is unconditional: "A cross-release
+    comparison shows separate panels with a non-comparable label, never a
+    calculated winner" - not "unless the cohorts happen to match." An
+    earlier version of this endpoint treated equal `cohort_digest` values
+    across different publications as sufficient proof of comparable
+    observations; that was wrong on its own terms too, since `Cohort` itself
+    does not carry the exact task list, entrant revisions, or repetition
+    plan - a matching digest does not prove matching observations (review
+    finding #1, 2026-09-16). Entrants from different publications therefore
+    always get separate eligible panels with no paired difference, exactly
+    as spec 6.1 requires - never a fabricated calculated winner.
     """
     if not (2 <= len(entrant_ids) <= 4):
         raise invalid_request("comparisons require between 2 and 4 entrant_ids")
@@ -190,33 +244,40 @@ def get_comparison(
         else:
             raise invalid_request(f"no publication given for entrant_ids[{index}]")
 
-    publication_cache: dict[UUID, tuple[PublicationRow, AnalysisSnapshot, str | None]] = {}
+    publication_cache: dict[UUID, tuple[PublicationRow, AnalysisSnapshot]] = {}
     for pub_id in set(resolved_publication_ids):
         row = session.get(PublicationRow, pub_id)
         if row is None:
             raise not_found()
-        campaign = session.get(CampaignRow, row.campaign_id)
-        publication_cache[pub_id] = (row, _verified_snapshot(row), campaign.cohort_digest if campaign else None)
+        publication_cache[pub_id] = (row, _verified_snapshot(row))
 
     unique_publication_ids = set(resolved_publication_ids)
     if len(unique_publication_ids) == 1:
         # Every entrant comes from the same publication - the common case -
-        # so they share the same frozen cohort by construction; no
-        # cohort_digest bookkeeping needed to know that.
+        # so they share the same frozen cohort, task list, entrant revisions,
+        # and repetition plan by construction; this is the ONLY case paired
+        # per-task differences are computed for.
         cohort_comparable = True
         non_comparable_reason = None
     else:
-        cohort_digests = {publication_cache[pub_id][2] for pub_id in unique_publication_ids}
-        cohort_comparable = len(cohort_digests) == 1 and None not in cohort_digests
-        non_comparable_reason = (
-            None if cohort_comparable
-            else "entrants come from publications with different (or unresolvable) frozen cohorts; paired statistics are not meaningful across different cohorts"
-        )
+        # A cross-release comparison (entrants from different publications)
+        # is unconditionally non-comparable (spec journey 6.1: "A
+        # cross-release comparison shows separate panels with a
+        # non-comparable label, never a calculated winner"). A matching
+        # `campaign.cohort_digest` across publications was previously treated
+        # as sufficient proof of comparability - it is not: `Cohort` records
+        # the frozen track/suite/protocol/budget/hardware identity, not the
+        # exact resolved task list, entrant revisions, or repetition
+        # schedule, so two publications sharing a cohort_digest could still
+        # differ in exactly the observations paired statistics require to
+        # match (review finding #1, 2026-09-16).
+        cohort_comparable = False
+        non_comparable_reason = "entrants come from different publications (a cross-release comparison); paired statistics are only computed within a single publication"
 
     entrants: dict[str, EntrantComparisonEligible | EntrantComparisonIneligible] = {}
     entrant_task_rates: dict[str, dict[str, float | None]] = {}
     for entrant_id, pub_id in zip(entrant_ids, resolved_publication_ids):
-        _, snapshot, _ = publication_cache[pub_id]
+        _, snapshot = publication_cache[pub_id]
         if entrant_id in snapshot.per_entrant:
             entrants[entrant_id] = EntrantComparisonEligible(eligible=True, aggregate=snapshot.per_entrant[entrant_id])
             entrant_task_rates[entrant_id] = _task_ids_for_entrant(snapshot, entrant_id)

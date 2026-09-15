@@ -106,6 +106,7 @@ class AnalysisSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str
+    required_repetitions: int | None = None
     per_task: dict[str, TaskCellStats]
     per_entrant: dict[str, float | None]
     per_category: dict[str, dict[str, float | None]] | None
@@ -117,6 +118,21 @@ class AnalysisSnapshot(BaseModel):
     successful_engineering_median_seconds: int | None
     deadline_rate: float | None
     infrastructure_attrition: float | None
+    # Per-entrant breakdowns of the suite-wide metrics above (review finding
+    # #2: a results table needs these AS entrant rows, not one suite-wide
+    # number repeated on every row). Optional/default-empty so older
+    # persisted snapshots (written before this field existed) still validate
+    # - _verified_snapshot's digest re-check uses the snapshot exactly as
+    # stored, so a snapshot published before this field existed genuinely
+    # has no such data, not merely an omitted-but-derivable one.
+    per_entrant_valid_trials: dict[str, int] = {}
+    per_entrant_resolved_tasks: dict[str, int] = {}
+    per_entrant_total_tasks: dict[str, int] = {}
+    per_entrant_cost_per_resolution: dict[str, float | None] = {}
+    per_entrant_verifier_cost_usd: dict[str, float | None] = {}
+    per_entrant_median_engineering_seconds: dict[str, int | None] = {}
+    per_entrant_deadline_rate: dict[str, float | None] = {}
+    per_entrant_infrastructure_attrition: dict[str, float | None] = {}
     limitations: list[str]
 
 
@@ -130,6 +146,38 @@ class PublicationSummary(BaseModel):
     created_at: str
 
 
+class FrozenTaskEntry(BaseModel):
+    """One task from the campaign's own frozen manifest
+    (`campaign.resolved["tasks"]`) - NOT inferred from which tasks happen to
+    have an observation in the published snapshot. A planned task with zero
+    observations (the exact case incomplete-coverage reporting must
+    preserve, spec section 28) still appears here, since it comes from the
+    manifest the campaign actually froze, not from what got scored
+    (review finding #3)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    version: str
+    family_id: str
+    category: str
+
+
+class CohortIdentity(BaseModel):
+    """The frozen cohort's own identifying fields
+    (`campaign.resolved["cohort"]`) - real manifest data, not inferred from
+    result rows, so a release page can show suite/track/dependency-mode/
+    profile identifiers (review finding #2) without recomputing anything."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    track: str
+    suite_id: str
+    protocol_id: str
+    dependency_mode: str
+    hardware_class: str
+
+
 class PublicationResultsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -140,6 +188,8 @@ class PublicationResultsResponse(BaseModel):
     supersedes_id: UUID | None
     created_at: str
     cohort_digest: str | None
+    cohort: CohortIdentity | None = None
+    frozen_tasks: list[FrozenTaskEntry] = []
     snapshot: AnalysisSnapshot
     notice: str | None = None
 
@@ -159,8 +209,18 @@ class EntrantComparisonIneligible(BaseModel):
 
 
 class TaskPairedDifference(BaseModel):
-    """One task's paired outcome difference between exactly two entrants
-    within the same trial/repetition cell (spec: "paired task outcomes")."""
+    """A per-task rate difference between two entrants IN THE SAME
+    publication, computed from each entrant's own aggregated `per_task` rate
+    cell. This is NOT the project/family-resampled, repetition-matched
+    statistic spec section 28 describes ("resampling projects/families then
+    repetitions according to the declared hierarchical model") - that
+    requires per-repetition observations grouped by underlying project,
+    which the persisted publication snapshot does not retain (only
+    aggregated per-task rate/n). Building that is real future work (the
+    existing `aieb_analysis.paired_project_difference` implements the
+    correct hierarchical procedure already, but nothing in the hosted
+    persistence schema populates the `project_id` it requires yet -
+    disclosed, not silently claimed here). Review finding #1 (2026-09-16)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -204,7 +264,14 @@ class CorrectionEntry(BaseModel):
 
 class EntrantResultEntry(BaseModel):
     """One publication an entrant slug appears in - the "results by release"
-    spec section 5 names for the entrant profile page."""
+    spec section 5 names for the entrant profile page. `entrant_version`
+    names the EXACT entrant revision that publication's frozen campaign
+    actually used (`campaign.resolved["entrants"]`), not "whichever revision
+    happens to be newest right now" - a historical result must stay pinned
+    to the configuration that produced it even after a newer revision of
+    the same slug is registered (review finding #3). `None` only if the
+    campaign's resolved manifest could not be read at all (a real, disclosed
+    failure mode, not silently defaulted to "current")."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -213,3 +280,4 @@ class EntrantResultEntry(BaseModel):
     status: str
     created_at: str
     aggregate_rate: float | None
+    entrant_version: str | None = None

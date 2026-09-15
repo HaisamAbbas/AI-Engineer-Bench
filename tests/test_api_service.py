@@ -629,6 +629,64 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get(f"/v1/publications/{original_id}/results")
         self.assertIsNone(response.json()["supersedes_id"])
 
+    def test_frozen_task_list_comes_from_the_manifest_and_preserves_zero_observation_tasks(self) -> None:
+        """Review finding #3: a planned task with zero observations must not
+        disappear from the release's frozen task list - the exact case
+        incomplete-coverage reporting must preserve. A prior version
+        inferred the task list from `snapshot.per_task` keys; this asserts
+        it comes from `campaign.resolved["tasks"]` instead, so a task with no
+        scored cell at all still appears."""
+        resolved = {
+            "cohort": {
+                "schema_version": "aieb.cohort/v1", "id": "cohort-a", "track": "agents", "suite_id": "suite-a",
+                "protocol_id": "protocol-a", "budget_profile_id": "budget-a", "dependency_mode": "fixture",
+                "hardware_class": "cpu-fixture-standard-v1", "required_capabilities": ["cpu-fixture-standard-v1"],
+            },
+            "tasks": [
+                {"id": "rag.document-freshness", "version": "0.1.0", "family_id": "knowledge-service-a", "category": "rag"},
+                {"id": "rag.zero-observations", "version": "0.1.0", "family_id": "knowledge-service-b", "category": "rag"},
+            ],
+            "entrants": [{"id": "agent-a", "agent_version": "2.0.0"}],
+        }
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(
+                name="frozen-manifest-test", state="frozen", draft={"a": 1}, cohort_digest="f" * 64, resolved=resolved,
+            )
+            session.add(campaign)
+            session.commit()
+            campaign_id = campaign.id
+        snapshot = self._analysis_snapshot(
+            {"agent-a": 1.0},
+            per_task={"rag.document-freshness:agent-a": {"s": 1, "n": 1, "rate": 1.0, "wilson_95": None, "all_k": True, "pass_power_k": 1.0}},
+        )
+        publication_id = self._seed_publication(snapshot, campaign_id=campaign_id)
+
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        body = response.json()
+        self.assertEqual(body["cohort"], {
+            "track": "agents", "suite_id": "suite-a", "protocol_id": "protocol-a",
+            "dependency_mode": "fixture", "hardware_class": "cpu-fixture-standard-v1",
+        })
+        task_slugs = {task["slug"] for task in body["frozen_tasks"]}
+        self.assertEqual(task_slugs, {"rag.document-freshness", "rag.zero-observations"})
+
+    def test_entrant_results_pin_the_exact_revision_the_publication_actually_used(self) -> None:
+        """Review finding #3: an entrant's "results by release" must name the
+        EXACT entrant revision that publication's frozen campaign used, not
+        whichever revision of the slug happens to be newest right now."""
+        resolved = {"entrants": [{"id": "agent-a", "agent_version": "1.0.0"}]}
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="entrant-pin-test", state="frozen", draft={"a": 1}, resolved=resolved)
+            session.add(campaign)
+            session.commit()
+            campaign_id = campaign.id
+        self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), campaign_id=campaign_id)
+
+        response = self.client.get("/v1/entrants/by-slug/agent-a/results")
+        entries = response.json()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["entrant_version"], "1.0.0")
+
     # ---- idempotency.finalize must not misdiagnose an unrelated conflict ----
 
     def test_finalize_reraises_unrelated_integrity_error(self) -> None:
@@ -707,6 +765,7 @@ class ApiServiceTests(unittest.TestCase):
         result contracts") - so tests must seed the real shape too."""
         base = {
             "schema_version": "aieb.analysis/v1",
+            "required_repetitions": None,
             "per_task": per_task or {},
             "per_entrant": per_entrant,
             "per_category": None,
@@ -718,6 +777,14 @@ class ApiServiceTests(unittest.TestCase):
             "successful_engineering_median_seconds": None,
             "deadline_rate": None,
             "infrastructure_attrition": None,
+            "per_entrant_valid_trials": {},
+            "per_entrant_resolved_tasks": {},
+            "per_entrant_total_tasks": {},
+            "per_entrant_cost_per_resolution": {},
+            "per_entrant_verifier_cost_usd": {},
+            "per_entrant_median_engineering_seconds": {},
+            "per_entrant_deadline_rate": {},
+            "per_entrant_infrastructure_attrition": {},
             "limitations": [],
         }
         base.update(overrides)
@@ -837,6 +904,37 @@ class ApiServiceTests(unittest.TestCase):
         self.assertIsNotNone(body["non_comparable_reason"])
         self.assertIsNone(body["paired_differences"])
         # Each entrant still gets its own eligible aggregate - separate panels, never a fabricated winner.
+        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
+        self.assertEqual(body["entrants"]["agent-b"], {"eligible": True, "aggregate": 0.5})
+
+    def test_cross_release_comparison_is_never_comparable_even_with_a_matching_cohort_digest(self) -> None:
+        """Review finding #1: a prior version of this endpoint treated a
+        matching campaign.cohort_digest across two different publications as
+        proof the entrants were comparable - but Cohort records the frozen
+        track/suite/protocol/budget/hardware identity, not the exact resolved
+        task list, entrant revisions, or repetition plan, so a matching
+        digest does not prove matching observations. Spec journey 6.1 is
+        unconditional anyway: a cross-release comparison always shows
+        separate non-comparable panels, never a calculated winner - not
+        "unless the cohorts happen to match." """
+        with db.session_factory()() as session:
+            campaign_a = api_models.CampaignRow(name="same-cohort-a", state="frozen", draft={"a": 1}, cohort_digest="e" * 64)
+            campaign_b = api_models.CampaignRow(name="same-cohort-b", state="frozen", draft={"a": 1}, cohort_digest="e" * 64)
+            session.add_all([campaign_a, campaign_b])
+            session.commit()
+            campaign_a_id, campaign_b_id = campaign_a.id, campaign_b.id
+        publication_a = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), campaign_id=campaign_a_id)
+        publication_b = self._seed_publication(self._analysis_snapshot({"agent-b": 0.5}), campaign_id=campaign_b_id)
+
+        response = self.client.get(
+            "/v1/comparisons",
+            params={"entrant_ids": ["agent-a", "agent-b"], "entrant_publication_ids": [str(publication_a), str(publication_b)]},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["cohort_comparable"])  # matching cohort_digest is NOT sufficient across publications
+        self.assertIsNotNone(body["non_comparable_reason"])
+        self.assertIsNone(body["paired_differences"])
         self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
         self.assertEqual(body["entrants"]["agent-b"], {"eligible": True, "aggregate": 0.5})
 

@@ -95,6 +95,47 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
  per_entrant={}
  for entrant in entrants:
   per_entrant[entrant]=_weighted_over([(task,per_task[f"{task}:{e}"]["rate"]) for task,e in cells if e==entrant])
+
+ # Per-entrant breakdowns of every suite-wide metric below (cost, time,
+ # deadline rate, infrastructure attrition, valid/resolved task counts) -
+ # a results table needs these AS entrant rows, not only one blended
+ # suite-wide number repeated on every row (review finding #2). Each
+ # mirrors the exact same population/exclusion rule its suite-wide
+ # counterpart above already uses, just filtered to one entrant's own
+ # observations - not a new methodology, the same one applied per-entrant.
+ per_entrant_valid_trials:dict[str,int]={}
+ per_entrant_resolved_tasks:dict[str,int]={}
+ per_entrant_total_tasks:dict[str,int]={}
+ per_entrant_cost_per_resolution:dict[str,float|None]={}
+ per_entrant_verifier_cost_usd:dict[str,float|None]={}
+ per_entrant_median_engineering_seconds:dict[str,int|None]={}
+ per_entrant_deadline_rate:dict[str,float|None]={}
+ per_entrant_infrastructure_attrition:dict[str,float|None]={}
+ for entrant in entrants:
+  entrant_cells=[per_task[f"{task}:{e}"] for task,e in cells if e==entrant]
+  per_entrant_valid_trials[entrant]=sum(cell["n"] for cell in entrant_cells)
+  per_entrant_resolved_tasks[entrant]=sum(1 for cell in entrant_cells if cell["all_k"])
+  per_entrant_total_tasks[entrant]=len(entrant_cells)
+
+  entrant_obs=[v for v in observations if v.entrant_id==entrant]
+  entrant_valid=[v for v in entrant_obs if v.execution_valid]
+  entrant_scored=[v for v in entrant_valid if v.passed is not None]
+  entrant_successes=[v for v in entrant_scored if v.passed]
+  entrant_scored_costs=[]
+  for v in entrant_scored:
+   if v.engineer_cost_usd is None or v.dev_application_cost_usd is None: entrant_scored_costs=None;break
+   entrant_scored_costs.append(float(v.engineer_cost_usd)+float(v.dev_application_cost_usd))
+  per_entrant_cost_per_resolution[entrant]=None if not entrant_successes or entrant_scored_costs is None else sum(entrant_scored_costs)/len(entrant_successes)
+  entrant_verifier_costs=[]
+  for v in entrant_obs:
+   if v.verifier_cost_usd is None: entrant_verifier_costs=None;break
+   entrant_verifier_costs.append(float(v.verifier_cost_usd))
+  per_entrant_verifier_cost_usd[entrant]=None if entrant_verifier_costs is None else sum(entrant_verifier_costs)
+  entrant_times=sorted(v.engineer_seconds for v in entrant_successes if v.engineer_seconds is not None)
+  per_entrant_median_engineering_seconds[entrant]=None if not entrant_times else entrant_times[len(entrant_times)//2]
+  per_entrant_deadline_rate[entrant]=None if not entrant_obs else sum(v.deadline for v in entrant_obs)/len(entrant_obs)
+  per_entrant_infrastructure_attrition[entrant]=None if not entrant_obs else 1-len(entrant_valid)/len(entrant_obs)
+
  task_category={}
  for item in observations:
   if item.category is not None: task_category.setdefault(item.task_id,item.category)
@@ -108,7 +149,7 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
     for entrant in entrants
    }
 
- return {"schema_version":"aieb.analysis/v1","per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"total_campaign_cost_usd":total_campaign_cost,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"limitations":["project/family paired resampling is exploratory with fewer than six projects"]}
+ return {"schema_version":"aieb.analysis/v1","required_repetitions":required_repetitions,"per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"total_campaign_cost_usd":total_campaign_cost,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else times[len(times)//2],"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"per_entrant_valid_trials":per_entrant_valid_trials,"per_entrant_resolved_tasks":per_entrant_resolved_tasks,"per_entrant_total_tasks":per_entrant_total_tasks,"per_entrant_cost_per_resolution":per_entrant_cost_per_resolution,"per_entrant_verifier_cost_usd":per_entrant_verifier_cost_usd,"per_entrant_median_engineering_seconds":per_entrant_median_engineering_seconds,"per_entrant_deadline_rate":per_entrant_deadline_rate,"per_entrant_infrastructure_attrition":per_entrant_infrastructure_attrition,"limitations":["project/family paired resampling is exploratory with fewer than six projects","per-entrant coverage against the frozen plan (valid vs planned trial counts) is not yet available: planned_cells is not wired to a real caller (ENG-011, disclosed separately)","per-entrant aggregate Wilson uncertainty is not computed - only per-task intervals (per_task[...].wilson_95) are available, since pooling per-task confidence intervals into one entrant-level interval is not statistically valid without a declared hierarchical model"]}
 
 def paired_project_difference(observations:tuple[TrialObservation,...], left:str, right:str)->dict[str,object]:
  """Paired task-cell difference, grouped by underlying project (not fake IID runs)."""

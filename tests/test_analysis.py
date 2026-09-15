@@ -48,6 +48,37 @@ class AnalysisTests(unittest.TestCase):
   result=summarize(rows)
   self.assertEqual(result["per_category"]["rag"],{"left":1.0,"right":0.0})
   self.assertEqual(result["per_category"]["tool"],{"left":0.0,"right":1.0})
+ def test_per_entrant_breakdowns_of_cost_time_deadline_and_attrition_are_not_blended(self):
+  # Review finding #2: a results table needs cost, verifier cost, median
+  # engineering time, deadline rate, and infrastructure attrition AS
+  # per-entrant rows, not one suite-wide number repeated on every row.
+  # "left" is a cheap, fast, reliable entrant; "right" is expensive, slow,
+  # deadline-prone, and has an infrastructure-invalid attempt - a blended
+  # suite-wide number would report identical, uninformative figures for
+  # both; the correct output tells them apart.
+  rows=(
+   TrialObservation("a","f","p","left",0,True,True,"1","1",engineer_seconds=10),
+   TrialObservation("b","f","p","left",0,True,True,"1","1",engineer_seconds=20),
+   TrialObservation("a","f","p","right",0,True,True,"50","50",engineer_seconds=1000,deadline=True),
+   TrialObservation("b","f","p","right",0,None,False),  # infrastructure-invalid attempt
+  )
+  result=summarize(rows)
+  self.assertEqual(result["per_entrant_cost_per_resolution"]["left"],2.0)
+  self.assertEqual(result["per_entrant_cost_per_resolution"]["right"],100.0)
+  self.assertEqual(result["per_entrant_median_engineering_seconds"]["left"],20)
+  self.assertEqual(result["per_entrant_deadline_rate"]["left"],0.0)
+  self.assertEqual(result["per_entrant_deadline_rate"]["right"],0.5)
+  self.assertEqual(result["per_entrant_infrastructure_attrition"]["left"],0.0)
+  self.assertEqual(result["per_entrant_infrastructure_attrition"]["right"],0.5)
+  self.assertEqual(result["per_entrant_valid_trials"]["left"],2)
+  self.assertEqual(result["per_entrant_valid_trials"]["right"],1)
+  self.assertEqual(result["per_entrant_total_tasks"]["left"],2)
+  self.assertEqual(result["per_entrant_total_tasks"]["right"],2)
+ def test_required_repetitions_is_echoed_for_labeling_all_k(self):
+  # Review finding #2: the frontend needs the actual k value to label
+  # "all-5" rather than a generic "all-k".
+  self.assertEqual(summarize((),required_repetitions=5)["required_repetitions"],5)
+  self.assertIsNone(summarize(())["required_repetitions"])
  def test_per_category_is_none_when_no_observation_carries_a_category(self):
   result=summarize((TrialObservation("a","f","p","e",0,True,True),))
   self.assertIsNone(result["per_category"])
