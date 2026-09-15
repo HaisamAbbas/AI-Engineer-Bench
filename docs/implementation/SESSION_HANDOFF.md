@@ -1,12 +1,12 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation (AUDIT-001, AUDIT-002) — 7 of 17 findings fixed; 10 lower-priority findings from the same review still pending triage
+Current phase: Post-Prompt-12 audit remediation complete — all 17 findings from an independent review triaged (AUDIT-001/002/003): 11 fixed with a code change, 6 resolved by verification/documentation with none needed
 
 ## Current state
 
 An independent review spanning Prompts 01-12 raised 17 findings across ENG-002/003/006/009/011/
-013/014/015. Seven were verified as real and fixed:
+013/014/015. Eleven were verified as real and fixed:
 
 AUDIT-001 (four findings): (1) `aieb task validate` never actually validated `TaskRevision` -
 five of twelve task.yaml files had genuine schema defects (unquoted digest strings parsed as
@@ -36,17 +36,35 @@ All seven are covered by tests against the real code/database paths (several ver
 actually fail against the pre-fix code, not just pass against the fix), and the full regression
 suite (83 tests across core/CLI/API/worker/analysis/artifacts) still passes.
 
-The remaining 10 findings are deliberately NOT fixed yet - placeholder digests across every
-task.yaml (real but project-wide, needs a real-hash-computation design decision), whether
-"twelve distinct family IDs" is genuine project diversity or renamed near-duplicates, TOOL-02's
-ambiguity-simulation fidelity, the catalog's "validated" label given the above, ENG-012's pilot
-preparation not being a fully resolved campaign, ENG-011's per-entrant/category/cost-accounting
-completeness, snapshot-digest integrity verification on publication reads, and the worker's
-dependency on `tests.maintainer.*`/`suites/dev` as a development-only evaluator registry.
-Publication-endpoint status/auth gating was re-examined during AUDIT-002 and found not currently
-exploitable (only `published`/`withdrawn`/`superseded` exist, all meant to stay public per spec)
-so it is resolved, not merely deferred. Each remaining item needs the same verify-before-fix
-discipline used above before committing to a remediation.
+AUDIT-003 (four more findings, completing the triage): (8) every task.yaml's `repository_digest`/
+`provenance_digest`/`contract_digest`/`service_topology_digest`/`evaluator_digest` was a
+repeated-digit placeholder that never reflected any real content - `scripts/compute_task_digests.py`
+now derives each from the actual repo/provenance.json/contract/environment-doc/evaluator source on
+disk, and `aieb task validate` recomputes and rejects a mismatch instead of only checking the hex
+shape (`official_image`'s digest stays a placeholder - no image has ever been built or pushed, so
+there is nothing real to hash); (9) TOOL-02's fixture always returned success immediately, so its
+ambiguity check never exercised real ambiguity - the fixture now commits the write and drops the
+acknowledgment on the first attempt per identity, and all four backend variants were corrected to
+genuinely retry (or fail) under that real uncertainty; (10) `aieb_analysis.summarize()` emitted only
+one combined suite-wide rate and folded/omitted verifier cost - it now also reports `per_entrant`,
+`per_category`, and a standalone `verifier_cost_total_usd`; (11) nothing recomputed a publication's
+`snapshot_digest` against its stored snapshot before serving it - fixed the same way as AUDIT-002's
+revision immutability, via a `BEFORE UPDATE` trigger plus an application-level recompute-and-compare
+on every read, returning 503 on a mismatch instead of serving corrupted results.
+
+The remaining six findings were verified and closed without a code change, because the concern
+turned out to already be true or already honestly stated: publication-endpoint status/auth gating
+(re-verified during AUDIT-002: not currently exploitable, only public-forever statuses exist yet);
+verification not being an independently leased work-item type (already an accepted ENG015-001
+design decision predating this review); whether "twelve distinct family IDs" is genuine diversity
+(independently confirmed: each task's backend.py tests a genuinely different bug/domain, though
+several are very thin inside a shared generic HTTP harness - documented as-is, not overclaimed);
+the catalog's "validated" label (already correctly scoped by `review_status:
+pending-independent-review`, and now that `aieb task validate` is a real check, an accurate claim);
+ENG-012's pilot preparation (already labeled `prepared-not-authorized`/BLOCKED, never presented as
+resolved); and the worker's dependency on `tests.maintainer.*`/`suites/dev` as its evaluator
+registry (real, but a production registry is a design question for ENG-019's official isolation
+work, not something to invent speculatively now).
 
 ENG-015 was completed in Prompt 12 before this review. `aieb_api/worker/` (repository, runner_bridge, loop, reconciler, metrics)
 adds atomic work acquisition (`SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`),
@@ -139,12 +157,10 @@ $env:AIEB_ENV = "test"
 
 ## Recommended next prompt
 
-Triage the 10 remaining AUDIT-001/002 findings before starting Prompt 13: verify each against the
-code (like the four already fixed), then decide and execute remediation in priority order. The
-placeholder-digest finding in particular touches every task.yaml and any suite-wide fix should
-be planned once, not applied ad hoc per task. After that: Prompt 13 (ENG-016, the public website
-and compare views, now that ENG-011's analysis package and ENG-014's registry/results API exist
-to serve it). Separately, independent task reviews remain a precondition before any
+The full 17-finding independent-review triage is done - no more AUDIT follow-up is pending.
+Prompt 13 (ENG-016, the public website and compare views) is next, now that ENG-011's analysis
+package (including the new per-entrant/per-category outputs) and ENG-014's registry/results API
+exist to serve it. Separately, independent task reviews remain a precondition before any
 admitted-only ENG-013 release manifest can be created; ENG-012 remains blocked on provider/model
 authorization, credentials, and spend cap; ENG-017 (admin campaigns, budget reservations,
 `POST /campaigns/{id}/start`) is the next hosted-API dependency now that ENG-015's leasing layer
