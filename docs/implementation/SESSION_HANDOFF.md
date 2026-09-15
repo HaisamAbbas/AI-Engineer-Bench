@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); two further independent reviews (AUDIT-004, AUDIT-005) found 6 more real defects, all fixed; ENG-011 and ENG-015 are now IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
+Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); three further independent reviews (AUDIT-004/005/006) found 8 more real defects, all fixed; ENG-011 and ENG-015 are IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
 
 ## Current state
 
@@ -195,6 +195,23 @@ The review also argued that AUDIT-004 documenting the ENG-015 disagreement as op
 satisfy Prompt 12's acceptance gate - agreed on that bookkeeping point specifically (not a new
 technical argument): **ENG-011 and ENG-015 are now `IN_PROGRESS` in STATUS.md, not `COMPLETE`**.
 The underlying ENG-015 architecture question is exactly as open as AUDIT-004 left it.
+
+## AUDIT-006 (fourth independent review, again reproduced a failure directly)
+
+Found and fixed one more real cost-accounting bug: `cost_per_resolution`'s numerator summed every
+observation's engineer+dev-application cost regardless of `execution_valid`, while the denominator
+was scored successes only - a single expensive infrastructure-invalid attempt inflated the
+per-resolution figure despite never being a scored outcome. Reproduced directly ($3 valid success
+plus a $200 infrastructure-invalid attempt reported `203.0`, not `3.0`), fixed by scoping the
+numerator (and its missing-accounting check) to `execution_valid` observations, matching the
+denominator; added a new `total_campaign_cost_usd` field (every attempt, valid or invalid) for the
+spec's separate "publish total campaign cost including invalid attempts" requirement, which
+previously had no output at all. Verified to fail against the pre-fix code before restoring the
+fix. Also fixed: the CI workflow's PR path filter didn't include the two generated artifacts
+themselves, so a PR hand-editing one directly (bypassing the generator) would skip the staleness
+check meant to catch exactly that - both paths added to the trigger. The review's other two points
+(ENG-015 leasing, ENG-011's unwired planned_cells/category) are the same already-open items from
+AUDIT-004/005, correctly re-confirmed rather than newly found.
 
 ## Recommended next prompt
 
