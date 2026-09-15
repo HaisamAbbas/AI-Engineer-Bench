@@ -1,7 +1,7 @@
 # Session handoff
 
-Updated: 2026-09-15
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented and back to COMPLETE; ENG-011 remains IN_PROGRESS
+Updated: 2026-09-16
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -284,6 +284,36 @@ against real Postgres - see DECISIONS.md ENG015-007 and `docs/implementation/evi
 worker-service.md` for full detail. `worker/loop.py` needed no changes at all: `claim_work_item`
 claims across both queues by default, so the existing claim→execute loop already services both
 phases. ENG-015 is back to `COMPLETE` in STATUS.md.
+
+## ENG-015 leasing split hardened - four more gaps fixed (ENG015-008)
+
+A further independent review of the ENG015-007 split found four real defects and one topology
+overclaim, all addressed - see DECISIONS.md ENG015-008 for full detail:
+
+1. **Verification cancellation was silently dropped.** `execute_leased_work` only ever forwarded
+   `cancel_event` to the engineering path; `run_verification()` had no cancellation mechanism at
+   all. Fixed: `run_verification()` checks `cancel_event` at the BUILD/VERIFY phase boundary;
+   `execute_leased_verification` now runs the same background cancellation-poll thread engineering
+   already had, and finalizes a cancelled outcome as `terminal_status="cancelled"` without scoring.
+2. **The persisted candidate was trusted without checking its own digests.** Fixed: the
+   deserialized candidate's `manifest.full_tree_hash`/`.digest()` are now recomputed and compared
+   against `CandidateRow.tree_digest`/`manifest_digest` before BUILD runs; a mismatch routes to
+   `infrastructure_invalid` rather than evaluating under a falsified identity.
+3. **A legacy/malformed `stored_candidate` (`{}}`) crashed the worker with a bare `KeyError`.**
+   Fixed: a typed `StoredCandidateUnavailableError` is raised and caught, routing to
+   `infrastructure_invalid` the same way a genuinely-missing candidate row already did.
+4. **`record_candidate`/`record_evaluation` were not idempotent.** A retry after an ambiguous
+   commit hit their own unique constraints and raised `IntegrityError` instead of returning the
+   already-recorded identity. Fixed: both catch that error and return the existing row.
+5. **"A different worker"/"the database alone" overstated cross-host independence** - true only
+   when workers share a filesystem for `AIEB_WORKER_WORK_ROOT` (no distributed object store
+   exists). Narrowed explicitly in docs rather than building one (out of scope); the misleading
+   independence test that reused one in-process store/runner between phases was rewritten to
+   round-trip through real JSON (de)serialization and a second, independent store instance.
+
+`tests/test_worker_leasing.py` grew from 14 to 19 tests; `tests/test_attempt_lifecycle.py`'s
+two-phase independence test was corrected as described above (still 9 tests, all passing). Full
+regression: 120 Python tests (1 skipped), against real Postgres. ENG-015 remains `COMPLETE`.
 
 ## Recommended next prompt
 

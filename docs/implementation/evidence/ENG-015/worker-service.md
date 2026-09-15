@@ -1,8 +1,12 @@
 # ENG-015 evidence: PostgreSQL-leased execution/verification work
 
 Date: 2026-09-14, revised 2026-09-16 (ENG015-007: engineering and verification
-split into two independently leased phases). Local development/test evidence
-only; no remote deployment occurred.
+split into two independently leased phases; ENG015-008: a further review of
+that split found four real gaps - verification cancellation, stored-candidate
+digest verification, legacy-row handling, and idempotent artifact-first
+writes - all fixed, plus one topology claim narrowed to what the
+implementation actually guarantees). Local development/test evidence only; no
+remote deployment occurred.
 
 ## What this ticket implements
 
@@ -47,14 +51,36 @@ only; no remote deployment occurred.
   up to the same `max_replacements` cap.
 - Cancellation (`cancel_campaign`, `is_campaign_cancelling`,
   `maybe_complete_cancellation`): stops new dispatch; a worker that claims
-  engineering work for a cancelling campaign passes a set `cancel_event` into
-  `LocalAttemptRunner.run_engineering()`, which polls that event during the
-  engineering phase (a small, backward-compatible extension — see
-  DECISIONS.md ENG015-002) instead of blocking on one uninterruptible
-  `communicate(timeout=...)` call. Cancellation is checked only during
-  engineering, not verification - a build+score pass is short and
-  deterministic in this local-fixture scope, so there is no long-running
-  verification step to interrupt yet.
+  either an `engineering` or a `verification` work item for a cancelling
+  campaign passes a set `cancel_event` into `LocalAttemptRunner.run_engineering()`
+  or `run_verification()` respectively, which poll that event (a small,
+  backward-compatible extension — see DECISIONS.md ENG015-002) instead of
+  blocking uninterruptibly. `run_engineering()` polls between deadline-poll
+  iterations while the engineering subprocess is running; `run_verification()`
+  checks cooperatively at the BUILD/VERIFY phase boundary (before BUILD, and
+  again before VERIFY) - it cannot interrupt the VERIFY call itself mid-flight,
+  since that call is a synchronous in-process evaluator function, not a
+  subprocess this runner owns and can signal (ENG015-008, review finding #1 -
+  a prior gap where cancellation was checked only during engineering and
+  silently dropped on the verification dispatch path entirely).
+- Stored-candidate integrity (ENG015-008, review finding #3): before a
+  verification phase builds or scores a candidate reconstructed from
+  persisted JSON, it recomputes that candidate's manifest digest and tree
+  hash and compares them against `CandidateRow`'s own authoritative
+  `manifest_digest`/`tree_digest` columns - a mismatch (corruption, a
+  hand-edit, a bug elsewhere) routes to `infrastructure_invalid` rather than
+  evaluating under a falsified identity. A missing or malformed
+  `stored_candidate` (e.g. a legacy row with `{}` from the migration's
+  `server_default`, review finding #4) raises a typed
+  `StoredCandidateUnavailableError`, caught the same way, rather than a bare
+  `KeyError` crashing the worker process.
+- Idempotent artifact-first writes (ENG015-008, review finding #5):
+  `record_candidate`/`record_evaluation` catch the `IntegrityError` their own
+  unique constraints (`uq_candidate_attempt_tree`, `uq_evaluation_plan_digest`)
+  raise on a retried call whose prior commit actually succeeded but whose
+  acknowledgement was lost, and return the already-recorded row's identity
+  instead of raising - a retry lands on the same identity a fresh insert
+  would have.
 - Orphan teardown (`reconciler._remove_orphan_allocations`): removes the
   writable `engineer`/`build` allocations a SIGKILLed worker (at either
   phase) never reached its own cleanup phase for; immutable `attempt.json`
@@ -86,9 +112,21 @@ CLI already uses for development verticals.
   JSON log events with the IDs spec section 39 names and keeps in-process
   counters; wiring a real OTel exporter is hosted-observability infrastructure
   work, not this ticket's scope.
-- Real object storage: candidate bytes still go through the existing local
-  `FilesystemArtifactStore` (ENG-003), not S3. Object storage backend choice
-  is unrelated to leasing/recovery, which is this ticket's job.
+- Real distributed object storage: candidate bytes still go through the
+  existing local `FilesystemArtifactStore` (ENG-003), not S3 or an equivalent
+  network object store. Concretely, this means "a different worker can
+  recover a candidate from the database alone" is true only when every
+  worker's `AIEB_WORKER_WORK_ROOT` points at the same shared/network
+  filesystem (e.g. one NFS/SMB mount all worker hosts reach) - not
+  automatically true for arbitrary independent hosts with no shared storage
+  (ENG015-008, review finding #2; the claim was narrowed rather than a
+  distributed store being built, which is out of scope for this ticket).
+  `test_engineering_and_verification_can_run_as_two_independent_calls` proves
+  the actually-implemented guarantee: it round-trips the candidate through
+  the real JSON (de)serialization PostgreSQL actually stores, and
+  reconstructs it through a second, independently-constructed
+  `FilesystemArtifactStore` pointed at the same root directory - not the same
+  in-process object, which the pre-ENG015-008 version of this test reused.
 
 ## Environment variables (no secrets)
 
@@ -124,10 +162,12 @@ $env:AIEB_WORKER_ID = "worker-3"; Start-Process .\.venv\Scripts\aieb-worker.exe
 
 ## Test evidence (real PostgreSQL, real subprocess kills)
 
-`tests/test_worker_leasing.py` (14 tests) runs against the same disposable
+`tests/test_worker_leasing.py` (19 tests) runs against the same disposable
 Postgres container as ENG-014's tests and covers every controlled-failure
 scenario the prompt names, not just the happy path - including the five
-ENG015-007 names explicitly for the leasing split:
+ENG015-007 names explicitly for the leasing split, plus five more from the
+ENG015-008 review (verification cancellation, digest mismatch, legacy/malformed
+stored_candidate, and duplicate candidate/evaluation recording):
 
 | Scenario | Test |
 | --- | --- |
@@ -143,13 +183,23 @@ ENG015-007 names explicitly for the leasing split:
 | Duplicate verification completion | `test_duplicate_finalize_call_is_a_no_op_not_a_double_score` |
 | Cancellation and orphan teardown | `test_cancelled_campaign_attempt_is_not_engineered_and_cleans_up`, `test_cancellation_arriving_mid_run_interrupts_the_attempt` |
 | Fencing under real concurrency | `test_concurrent_reconciler_cannot_race_a_record_candidate_still_in_flight`, `test_reconciler_never_orphans_a_lease_a_live_worker_just_re_extended` |
+| Verification claimed after cancellation (ENG015-008 #1) | `test_verification_cancellation_after_handoff_is_not_scored` |
+| Stored candidate diverged from its own recorded digests (ENG015-008 #3) | `test_stored_candidate_digest_mismatch_is_infrastructure_invalid_not_evaluated` |
+| Legacy/malformed `stored_candidate` row (ENG015-008 #4) | `test_legacy_empty_stored_candidate_is_infrastructure_invalid_not_a_crash` |
+| Duplicate candidate/evaluation recording under an ambiguous commit (ENG015-008 #5) | `test_duplicate_record_candidate_call_returns_the_same_row_not_an_integrity_error`, `test_duplicate_record_evaluation_call_is_treated_as_already_recorded` |
 
 `tests/test_attempt_lifecycle.py::test_engineering_and_verification_can_run_as_two_independent_calls`
 proves the split's core guarantee directly at the `LocalAttemptRunner` level:
-construct a fresh `AttemptOutcome` carrying only the persisted candidate
-reference (as a different worker/process would after loading it from the
-database) and call `run_verification()` on it independently of the
-`run_engineering()` call that produced it, confirming it produces the same
+it round-trips the collected candidate through the real
+`_serialize_stored_candidate`/`_deserialize_stored_candidate` JSON (exactly
+what `runner_bridge.py` persists to and reads back from PostgreSQL), builds a
+fresh `AttemptOutcome` from the deserialized result, and calls
+`run_verification()` through a SECOND, independently-constructed
+`FilesystemArtifactStore`/`LocalAttemptRunner` pointed at the same root
+directory - not the original in-process objects `run_engineering()` used
+(ENG015-008: the original version of this test reused the same store/runner
+object, which only proved the split works within one process, not the actual
+cross-process/shared-storage claim). It confirms this produces the same
 verdict as the composed `run()`.
 
 The "death during engineering" test spawns a real Python subprocess that
@@ -195,13 +245,18 @@ See DECISIONS.md ENG015-006.
 
 ## Handoff
 
-Worker leasing, fencing, heartbeat, reconciliation, cancellation, and now
-(ENG015-007) two independently leased phases are implemented and tested
-against a real PostgreSQL instance. Wiring `enqueue_frozen_campaign` to a
-real `POST /campaigns/{id}/start` endpoint with budget reservations, and
-exporting real OTel metrics remain ENG-017/ENG-016 dependencies. Local CLI
-functionality is unaffected; `aieb_runner.lifecycle.LocalAttemptRunner`
-gained one backward-compatible optional parameter (`cancel_event`, ENG015-002)
+Worker leasing, fencing, heartbeat, reconciliation, cancellation (now on both
+phases), stored-candidate integrity checking, idempotent artifact-first
+writes, and two independently leased phases (ENG015-007, hardened by
+ENG015-008) are implemented and tested against a real PostgreSQL instance.
+Wiring `enqueue_frozen_campaign` to a real `POST /campaigns/{id}/start`
+endpoint with budget reservations, exporting real OTel metrics, and a real
+distributed object store (candidate bytes currently require a shared/network
+filesystem across workers, not S3 or equivalent) remain ENG-017/ENG-016/
+future-work dependencies, disclosed rather than silently assumed. Local CLI
+functionality is unaffected; `aieb_runner.lifecycle.LocalAttemptRunner` gained
+one backward-compatible optional parameter (`cancel_event`, ENG015-002/
+ENG015-008) on both `run_engineering()` and (as of ENG015-008) `run_verification()`,
 and, for ENG015-007, two new public methods (`run_engineering`,
 `run_verification`) - `run()` itself is now a thin wrapper composing them, so
 existing callers (the local CLI) see no behavior change.
