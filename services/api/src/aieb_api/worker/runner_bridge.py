@@ -19,13 +19,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from aieb_core.models import CandidateManifest, ExecutionValidity, SubmissionPolicy
-from aieb_runner.artifacts import ArtifactReference, BlobRef, FilesystemArtifactStore, StoredCandidate
+from aieb_runner.artifacts import ArtifactReference, BlobRef, StoredCandidate
 from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, EngineeringCommand, LocalAttemptRunner
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from ..models import TaskRevisionRow, TrialRow
 from . import repository
+from .artifact_store import PostgresArtifactStore
 from .repository import CandidateOutcome, EvaluationOutcome, LeasedWork
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -133,29 +135,63 @@ def _serialize_stored_candidate(stored: StoredCandidate) -> dict:
     }
 
 
+class _StoredBlobEnvelope(BaseModel):
+    sha256: str
+    byte_length: int
+
+
+class _StoredReferenceEnvelope(BaseModel):
+    id: uuid.UUID
+    blob: _StoredBlobEnvelope
+    access_scope: str
+    visibility: str
+
+
+class _StoredFileReferenceEnvelope(BaseModel):
+    path: str
+    reference: _StoredReferenceEnvelope
+
+
+class _StoredCandidateEnvelope(BaseModel):
+    """The complete shape _serialize_stored_candidate() writes, validated as
+    a whole rather than accessed field-by-field with plain dict indexing and
+    `uuid.UUID(...)` (review finding #4): a manually-parsed malformed entry -
+    e.g. `"id": []` - previously escaped as a bare, uncaught `AttributeError`
+    from `uuid.UUID()` ('list' object has no attribute 'replace'), not the
+    typed `StoredCandidateUnavailableError` every other malformed-input path
+    already raised. Every field here is typed (including `id: uuid.UUID`),
+    so ANY structural or type mismatch anywhere in the payload - including
+    nested references - surfaces as one well-defined `pydantic.ValidationError`
+    instead of whatever built-in exception a hand-rolled accessor happens to
+    raise for that particular kind of corruption."""
+
+    manifest: dict
+    file_references: list[_StoredFileReferenceEnvelope]
+
+
 def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
     """Reverses _serialize_stored_candidate(). Raises StoredCandidateUnavailableError
-    (never a bare KeyError/ValidationError) for anything that isn't a well-formed
-    serialized StoredCandidate - in particular the '{}' a legacy pre-ENG015-007
-    candidate row carries (review finding #4)."""
-    if not isinstance(data, dict) or "manifest" not in data or "file_references" not in data:
-        raise StoredCandidateUnavailableError("stored_candidate is missing or predates the two-phase split (ENG015-007)")
+    (never a bare KeyError/TypeError/AttributeError) for anything that isn't a
+    well-formed serialized StoredCandidate - in particular the '{}' a legacy
+    pre-ENG015-007 candidate row carries, and any malformed nested field
+    (review finding #4)."""
     try:
-        manifest = CandidateManifest.model_validate(data["manifest"])
-        file_references = tuple(
-            (
-                entry["path"],
-                ArtifactReference(
-                    id=uuid.UUID(entry["reference"]["id"]),
-                    blob=BlobRef(sha256=entry["reference"]["blob"]["sha256"], byte_length=entry["reference"]["blob"]["byte_length"]),
-                    access_scope=entry["reference"]["access_scope"],
-                    visibility=entry["reference"]["visibility"],
-                ),
-            )
-            for entry in data["file_references"]
-        )
-    except (KeyError, TypeError, ValueError) as exc:
+        envelope = _StoredCandidateEnvelope.model_validate(data)
+        manifest = CandidateManifest.model_validate(envelope.manifest)
+    except ValidationError as exc:
         raise StoredCandidateUnavailableError(f"stored_candidate is malformed: {exc}") from exc
+    file_references = tuple(
+        (
+            entry.path,
+            ArtifactReference(
+                id=entry.reference.id,
+                blob=BlobRef(sha256=entry.reference.blob.sha256, byte_length=entry.reference.blob.byte_length),
+                access_scope=entry.reference.access_scope,
+                visibility=entry.reference.visibility,
+            ),
+        )
+        for entry in envelope.file_references
+    )
     return StoredCandidate(manifest=manifest, file_references=file_references)
 
 
@@ -194,7 +230,7 @@ def execute_leased_engineering(
     attempt_work_root = work_root / str(leased.attempt_id)
     attempt_work_root.mkdir(parents=True, exist_ok=True)
     script = attempt_work_root / "deterministic-editor.py"
-    store = FilesystemArtifactStore(attempt_work_root / "artifacts")
+    store = PostgresArtifactStore(session_factory)
     runner = LocalAttemptRunner(store)
 
     if cancel_event is None:
@@ -260,10 +296,24 @@ def execute_leased_engineering(
             validation_status="valid",
             stored_candidate=stored,
         )
-        candidate_id = repository.record_candidate(
-            session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-            attempt_id=leased.attempt_id, candidate=candidate, lease_seconds=lease_seconds,
-        )
+        try:
+            candidate_id = repository.record_candidate(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, candidate=candidate, lease_seconds=lease_seconds,
+            )
+        except repository.CandidateConflictError:
+            # A genuine integrity conflict (review finding #2): a retried
+            # record_candidate call whose payload differs from what is
+            # already persisted under the same (attempt_id, tree_digest)
+            # identity. Fail safe to infrastructure_invalid rather than
+            # crash the worker process over what is, in practice, a rare
+            # anomaly worth investigating, not a routine failure mode.
+            with session_factory() as finalize_session:
+                finalized = repository.finalize(
+                    finalize_session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                    attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+                )
+            return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
         if candidate_id is None:
             return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=None)
         advanced = repository.advance_to_verification(
@@ -351,7 +401,7 @@ def execute_leased_verification(
     task_dir = ROOT / "suites" / "dev" / task_slug
     attempt_work_root = work_root / str(leased.attempt_id)
     attempt_work_root.mkdir(parents=True, exist_ok=True)
-    store = FilesystemArtifactStore(attempt_work_root / "artifacts")
+    store = PostgresArtifactStore(session_factory)
     runner = LocalAttemptRunner(store)
 
     attempt_id = f"attempt-{leased.attempt_id.hex[:8]}-{uuid4().hex[:8]}"
@@ -397,7 +447,7 @@ def execute_leased_verification(
         return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=None)
 
     with session_factory() as session:
-        recorded = True
+        recorded_evaluation: repository.RecordedEvaluation | None = None
         if outcome.evaluation is not None:
             evaluator_id = task_row_evaluator_id(session, task_slug, task_version)
             fixture_id = ensure_fixture_row(session, task_slug)
@@ -407,18 +457,33 @@ def execute_leased_verification(
                 verdict=outcome.verdict.value if outcome.verdict else None,
                 result=outcome.evaluation,
             )
-            recorded = repository.record_evaluation(
+            recorded_evaluation = repository.record_evaluation(
                 session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
                 candidate_id=loaded.candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
             )
-        if not recorded:
-            return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
-        terminal_status = outcome.verdict.value if outcome.verdict else outcome.attribution.value
+            if recorded_evaluation is None:
+                return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
+
+        # Finalize using the AUTHORITATIVE persisted evaluation's verdict
+        # when one was recorded (review finding #2) - never this call's own
+        # in-memory outcome.verdict, which could differ from what an earlier
+        # retry already committed under the same identity. Only fall back to
+        # the local outcome when no evaluation was ever recorded at all (a
+        # crashed/unresolved verdict path - CandidateUnavailableError or a
+        # scorer error - where there is nothing persisted to defer to).
+        if recorded_evaluation is not None:
+            terminal_status = recorded_evaluation.verdict if recorded_evaluation.verdict else outcome.attribution.value
+            done = recorded_evaluation.verdict is not None
+            reported_verdict = recorded_evaluation.verdict
+        else:
+            terminal_status = outcome.verdict.value if outcome.verdict else outcome.attribution.value
+            done = outcome.verdict is not None
+            reported_verdict = outcome.verdict.value if outcome.verdict else None
         finalized = repository.finalize(
             session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-            attempt_id=leased.attempt_id, terminal_status=terminal_status, done=outcome.verdict is not None,
+            attempt_id=leased.attempt_id, terminal_status=terminal_status, done=done,
         )
-    return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
+    return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=reported_verdict)
 
 
 def execute_leased_work(

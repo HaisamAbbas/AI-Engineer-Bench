@@ -19,7 +19,7 @@ from ctypes import wintypes
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import Callable
 from uuid import uuid4
 
@@ -414,6 +414,29 @@ class LocalAttemptRunner:
                     outcome.candidate = None
                     self._finalize(outcome, attempt_root, evidence, (engineer,))
 
+    @staticmethod
+    def _run_cancelable(fn: Callable[[], None], cancel_event: Event | None, poll_seconds: float = 0.2) -> bool:
+        """Run `fn` (assigning into variables it closes over) on a background
+        daemon thread and return True once it finishes, or False as soon as
+        `cancel_event` fires first - whichever happens first. This is how
+        cancellation actually interrupts BUILD/VERIFY while they are running
+        (review finding #1), not merely checked before/after: `fn` itself is
+        not preemptible (it may be doing local file I/O, or calling a
+        trusted, synchronous, in-process evaluator that owns its own
+        subprocess this runner has no handle to) - the thread running it is
+        simply abandoned (daemon=True) on cancellation, and its eventual
+        result, if any, is discarded rather than awaited or acted on. A
+        cancelled attempt is therefore never scored from a stale/late
+        completion, even though the abandoned thread may keep running to its
+        own completion in the background."""
+        thread = Thread(target=fn, daemon=True)
+        thread.start()
+        while thread.is_alive():
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            thread.join(timeout=poll_seconds)
+        return True
+
     def run_verification(
         self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome, cancel_event: Event | None = None,
     ) -> AttemptOutcome:
@@ -423,15 +446,24 @@ class LocalAttemptRunner:
         artifact-store references by an entirely different worker recovering
         after a crash (ENG015-007). Mutates and returns the same outcome.
 
-        `cancel_event` is checked cooperatively at the BUILD/VERIFY phase
-        boundary (review finding #1): a verification item claimed after its
-        campaign was already cancelled, or cancelled while BUILD is still
-        reconstructing the candidate, must not go on to produce and finalize
-        a score. The VERIFY call itself is a synchronous in-process function,
-        not a subprocess this runner owns and can signal - the same
-        limitation `evaluator` calls have always had - so a cancellation
-        arriving strictly during that one call is not interrupted mid-call;
-        only the boundaries before BUILD and before VERIFY are checked.
+        `cancel_event` genuinely interrupts BOTH BUILD and VERIFY while they
+        are running (review finding #1: a prior version only checked the
+        event before/after each phase, so a cancellation arriving strictly
+        during BUILD or VERIFY still let the candidate reconstruct and score
+        before anything noticed). Each phase now runs on a background thread
+        via `_run_cancelable`, polled against `cancel_event`; cancellation
+        during either phase returns a CANCELLED outcome immediately, without
+        waiting for that phase's thread - its eventual result (if it even
+        finishes) is discarded, so nothing gets persisted from it.
+
+        Any `ArtifactError` during BUILD is classified INFRASTRUCTURE_INVALID
+        here, never a candidate contract violation (review finding #3): by
+        this phase, `collect_candidate` has already accepted the candidate as
+        submission-policy-compliant during ENGINEER; any error reconstructing
+        it from the artifact store now (a missing/corrupted blob, a tampered
+        reference, a byte-for-byte mismatch against the frozen manifest) is a
+        storage/reference integrity failure, not something the candidate
+        itself did wrong.
         """
         attempt_root = config.work_root / config.attempt_id
         build = attempt_root / "build"
@@ -444,19 +476,28 @@ class LocalAttemptRunner:
                 return outcome
 
             outcome.add(AttemptPhase.BUILD)
-            try:
-                reconstruct_candidate(
-                    frozen_source=config.frozen_source,
-                    destination=build,
-                    stored=outcome.candidate,
-                    store=self.store,
-                    principal_scope=config.access_scope,
-                )
-            except ArtifactError as exc:
-                outcome.execution_validity = ExecutionValidity.VALID
-                outcome.verdict = Verdict.CONTRACT_VIOLATION
-                outcome.attribution = FailureAttribution.CANDIDATE_BUILD_FAILURE
-                outcome.diagnostics.append(str(exc))
+            build_result: dict[str, object] = {}
+
+            def _do_build() -> None:
+                try:
+                    reconstruct_candidate(
+                        frozen_source=config.frozen_source,
+                        destination=build,
+                        stored=outcome.candidate,
+                        store=self.store,
+                        principal_scope=config.access_scope,
+                    )
+                except ArtifactError as exc:
+                    build_result["error"] = exc
+
+            if not self._run_cancelable(_do_build, cancel_event):
+                outcome.execution_validity = ExecutionValidity.CANCELLED
+                outcome.termination_reason = "cancelled"
+                return outcome
+            if "error" in build_result:
+                outcome.execution_validity = ExecutionValidity.INFRASTRUCTURE_INVALID
+                outcome.attribution = FailureAttribution.HOST_FAILURE
+                outcome.diagnostics.append(f"candidate reconstruction failed (storage/reference integrity): {build_result['error']}")
                 return outcome
 
             if cancel_event is not None and cancel_event.is_set():
@@ -465,18 +506,31 @@ class LocalAttemptRunner:
                 return outcome
 
             outcome.add(AttemptPhase.VERIFY)
-            try:
-                outcome.evaluation = evaluator(build)
-            except CandidateUnavailableError as exc:
+            verify_result: dict[str, object] = {}
+
+            def _do_verify() -> None:
+                try:
+                    verify_result["evaluation"] = evaluator(build)
+                except CandidateUnavailableError as exc:
+                    verify_result["candidate_unavailable"] = exc
+                except Exception as exc:  # trusted scorer failure must never become a verdict
+                    verify_result["scorer_error"] = exc
+
+            if not self._run_cancelable(_do_verify, cancel_event):
+                outcome.execution_validity = ExecutionValidity.CANCELLED
+                outcome.termination_reason = "cancelled"
+                return outcome
+            if "candidate_unavailable" in verify_result:
                 outcome.execution_validity = ExecutionValidity.VALID
                 outcome.verdict = Verdict.FAIL
                 outcome.attribution = FailureAttribution.CANDIDATE_RUNTIME_FAILURE
-                outcome.diagnostics.append(str(exc))
+                outcome.diagnostics.append(str(verify_result["candidate_unavailable"]))
                 return outcome
-            except Exception as exc:  # trusted scorer failure must never become a verdict
+            if "scorer_error" in verify_result:
                 outcome.attribution = FailureAttribution.SCORER_ERROR
-                outcome.diagnostics.append(f"trusted evaluator failed: {exc!r}")
+                outcome.diagnostics.append(f"trusted evaluator failed: {verify_result['scorer_error']!r}")
                 return outcome
+            outcome.evaluation = verify_result["evaluation"]  # type: ignore[assignment]
             if not bool(outcome.evaluation.get("pass")):
                 outcome.execution_validity = ExecutionValidity.VALID
                 outcome.verdict = Verdict.FAIL

@@ -44,6 +44,16 @@ class EnqueueError(ValueError):
     pass
 
 
+class CandidateConflictError(RuntimeError):
+    """A retried record_candidate() call's payload (manifest_digest,
+    validation_status, or stored_candidate) differs from the candidate
+    already persisted under the identical (attempt_id, tree_digest)
+    identity - a real integrity conflict, not a safe idempotent replay of
+    the same write (review finding #2). Raised rather than silently
+    returning the mismatched existing row's id, which would misrepresent
+    what this call's caller believes was actually recorded."""
+
+
 @dataclass(frozen=True)
 class LeasedWork:
     work_item_id: uuid.UUID
@@ -207,14 +217,21 @@ def record_candidate(
     Returns the new candidate row's id, or None if this worker/generation no
     longer holds the lease (fenced out - the caller must not proceed).
 
-    Idempotent under an ambiguous commit outcome (review finding #5): if a
+    Idempotent under an ambiguous commit outcome (review finding #5/#2): if a
     caller retries after a commit that actually succeeded but whose
     acknowledgement was lost (a dropped connection, a killed worker that
     restarts and replays the same call), `uq_candidate_attempt_tree` turns
-    the retry's insert into an IntegrityError rather than a second row - that
-    error is caught here and the already-recorded row's id is returned
-    instead of raising, so a retry lands on the same identity a fresh insert
-    would have, rather than crashing the caller."""
+    the retry's insert into an IntegrityError rather than a second row. The
+    existing row's FULL payload (manifest_digest, validation_status,
+    stored_candidate) is compared against this call's - not just the
+    (attempt_id, tree_digest) identity the unique constraint itself checks -
+    since two different candidates could in principle share a tree_digest
+    collision, or a bug elsewhere could commit inconsistent fields under the
+    same identity. A byte-for-byte match is a safe idempotent replay and
+    returns the existing row's id; any mismatch is a genuine integrity
+    conflict and raises CandidateConflictError rather than silently
+    returning an id whose actual persisted content differs from what this
+    call believed it was recording."""
     if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
         return None
@@ -227,12 +244,20 @@ def record_candidate(
         session.flush()
     except IntegrityError:
         session.rollback()
-        existing_id = session.execute(
-            select(CandidateRow.id).where(CandidateRow.attempt_id == attempt_id, CandidateRow.tree_digest == candidate.tree_digest)
+        existing = session.execute(
+            select(CandidateRow).where(CandidateRow.attempt_id == attempt_id, CandidateRow.tree_digest == candidate.tree_digest)
         ).scalar_one_or_none()
-        if existing_id is None:
+        if existing is None:
             raise
-        return existing_id
+        if (
+            existing.manifest_digest != candidate.manifest_digest
+            or existing.validation_status != candidate.validation_status
+            or existing.stored_candidate != candidate.stored_candidate
+        ):
+            raise CandidateConflictError(
+                f"attempt {attempt_id} tree_digest {candidate.tree_digest} is already recorded with different content"
+            )
+        return existing.id
     session.commit()
     return candidate_row.id
 
@@ -260,44 +285,68 @@ def advance_to_verification(session: Session, *, work_item_id: uuid.UUID, worker
     return True
 
 
+@dataclass(frozen=True)
+class RecordedEvaluation:
+    """The AUTHORITATIVE persisted evaluation after a record_evaluation()
+    call - always reflecting what is actually committed in the database,
+    whether this call wrote it just now (`newly_recorded=True`) or it was
+    already there under the same identity from an earlier call
+    (`newly_recorded=False`). Callers MUST finalize using `verdict`/`result`
+    from here, never from their own locally-computed outcome (review finding
+    #2): a retried verification that recomputes a DIFFERENT verdict for the
+    same (candidate_id, evaluator_id, fixture_id, schedule_digest) identity
+    must not let that later, unpersisted computation override the first one
+    actually written - the first persisted evaluation is the one that
+    counts, by the same artifact-first principle as everything else here."""
+
+    evaluation_id: uuid.UUID
+    verdict: str | None
+    result: dict | None
+    newly_recorded: bool
+
+
 def record_evaluation(
     session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, candidate_id: uuid.UUID,
     evaluation: EvaluationOutcome, lease_seconds: int = DEFAULT_LEASE_SECONDS,
-) -> bool:
+) -> RecordedEvaluation | None:
     """Artifact-first step of the verification phase: persist the evaluation
     verdict BEFORE the verification work item is marked done, mirroring
     record_candidate's role in the engineering phase. If the caller crashes
     between this commit and finalize(), the reconciler finds this row and
     finalizes from it rather than repeating verification.
 
-    Idempotent the same way record_candidate() is (review finding #5): a
-    retry after an ambiguous commit hits `uq_evaluation_plan_digest` instead
-    of inserting a duplicate row; that IntegrityError is caught and treated
-    as success (the evaluation this call wanted recorded already is) rather
-    than raised."""
+    Returns None only if this worker/generation no longer holds the lease
+    (fenced out). Otherwise ALWAYS returns the authoritative persisted
+    RecordedEvaluation - a retry after an ambiguous commit hits
+    `uq_evaluation_plan_digest` instead of inserting a duplicate row; that
+    IntegrityError is caught, and the row already there is returned as the
+    authoritative result (review finding #2) rather than the caller's own
+    (possibly different) retry payload being silently treated as if it had
+    been written."""
     if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
-        return False
-    session.add(
-        EvaluationRow(
-            candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
-            schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
-        )
+        return None
+    row = EvaluationRow(
+        candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
+        schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
     )
+    session.add(row)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
         existing = session.execute(
-            select(EvaluationRow.id).where(
+            select(EvaluationRow).where(
                 EvaluationRow.candidate_id == candidate_id,
                 EvaluationRow.evaluator_id == evaluation.evaluator_id,
                 EvaluationRow.fixture_id == evaluation.fixture_id,
                 EvaluationRow.schedule_digest == evaluation.schedule_digest,
             )
         ).scalar_one_or_none()
-        return existing is not None
-    return True
+        if existing is None:
+            raise
+        return RecordedEvaluation(evaluation_id=existing.id, verdict=existing.verdict, result=existing.result, newly_recorded=False)
+    return RecordedEvaluation(evaluation_id=row.id, verdict=row.verdict, result=row.result, newly_recorded=True)
 
 
 @dataclass(frozen=True)
