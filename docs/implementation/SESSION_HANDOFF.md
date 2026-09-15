@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); a second independent review of that remediation (AUDIT-004) found 5 more real defects, fixed, plus one open architecture disagreement on ENG-015's leasing granularity awaiting a decision
+Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); two further independent reviews (AUDIT-004, AUDIT-005) found 6 more real defects, all fixed; ENG-011 and ENG-015 are now IN_PROGRESS (not COMPLETE), pending a decision on ENG-015's leasing-granularity disagreement and end-to-end wiring of ENG-011's planned_cells/category inputs
 
 ## Current state
 
@@ -177,14 +177,35 @@ directs this work next should decide whether to invest in splitting the leasing 
 substantial, invasive change to an already fully-tested system) or continue accepting the disclosed
 gap - see DECISIONS.md AUDIT-004 for the full argument on both sides.
 
+## AUDIT-005 (third independent review, reproduced a failure rather than only reading code)
+
+Found and fixed one more real correctness bug: `complete_for_rank` counted raw observations per
+cell against `required_repetitions`, not valid/resolved ones - a cell with the right number of
+raw attempts but an infrastructure-invalid one among them (not a scored outcome) reported
+complete with a smaller `n` instead of incomplete. Reproduced directly (a 3-observation cell with
+one `execution_valid=False` reported `complete_for_rank: True`, `n=2`, against
+`required_repetitions=3`), fixed by deriving completeness from `per_task`'s own valid-observation
+count, and verified to fail against the pre-fix code before restoring the fix. Also flagged, and
+fixed: `scripts/generate_typescript_client.py` ran an unpinned `npx openapi-typescript`, so a
+future run could silently produce different output - pinned to `openapi-typescript@7.13.0`, and
+both generator scripts gained a `--check` mode wired into a new CI workflow
+(`.github/workflows/api-artifacts.yml`) so staleness is caught automatically.
+
+The review also argued that AUDIT-004 documenting the ENG-015 disagreement as open didn't itself
+satisfy Prompt 12's acceptance gate - agreed on that bookkeeping point specifically (not a new
+technical argument): **ENG-011 and ENG-015 are now `IN_PROGRESS` in STATUS.md, not `COMPLETE`**.
+The underlying ENG-015 architecture question is exactly as open as AUDIT-004 left it.
+
 ## Recommended next prompt
 
 Get a decision on the ENG-015 leasing-granularity question above before treating ENG-015 as
-settled. Once that's resolved (either way), Prompt 13 (ENG-016, the public website and compare
-views) is next, now that ENG-011's analysis package (including the corrected per-entrant/
-per-category outputs) and ENG-014's registry/results API (plus its new typed TypeScript client)
-exist to serve it. Separately, independent task reviews remain a precondition before any
-admitted-only ENG-013 release manifest can be created; ENG-012 remains blocked on provider/model
+settled, and decide whether ENG-011's `planned_cells`/`category` inputs should now be wired end to
+end from a real campaign (currently only tests supply them). Once those are resolved, Prompt 13
+(ENG-016, the public website and compare views) is next, now that ENG-011's analysis package
+(including the corrected per-entrant/per-category outputs) and ENG-014's registry/results API
+(plus its new typed TypeScript client) exist to serve it. Separately, independent task reviews
+remain a precondition before any admitted-only ENG-013 release manifest can be created; ENG-012
+remains blocked on provider/model
 authorization, credentials, and spend cap; ENG-017 (admin campaigns, budget reservations,
 `POST /campaigns/{id}/start`) is the next hosted-API dependency now that ENG-015's leasing layer
 exists for it to dispatch onto.
