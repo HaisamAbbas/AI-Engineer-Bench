@@ -1,7 +1,12 @@
 name: API artifact staleness
 on:
   pull_request:
-    paths: ["services/api/**", "scripts/generate_openapi.py", "scripts/generate_typescript_client.py"]
+    paths:
+      - "services/api/**"
+      - "scripts/generate_openapi.py"
+      - "scripts/generate_typescript_client.py"
+      - "docs/implementation/evidence/ENG-014/openapi.json"
+      - "docs/implementation/evidence/ENG-014/api-client.d.ts"
   push:
     branches: [main]
 jobs:
