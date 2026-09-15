@@ -16,8 +16,10 @@ from uuid import uuid4
 
 import yaml
 
+from pydantic import ValidationError
+
 from aieb_core.canonical import content_hash
-from aieb_core.models import SubmissionPolicy
+from aieb_core.models import SubmissionPolicy, TaskRevision
 from aieb_runner.artifacts import FilesystemArtifactStore
 from aieb_runner.lifecycle import AttemptConfig, EngineeringCommand, LocalAttemptRunner
 
@@ -85,6 +87,11 @@ def _load_json(path: Path) -> dict[str, object]:
 
 
 def _task_check(task: Path) -> dict[str, object]:
+    """Validate task.yaml against the canonical TaskRevision contract, not a
+    hand-rolled subset of it. Every field TaskRevision defines - category/
+    activity enums, egress_policy, digest formats, submission path safety,
+    unique requirement IDs - is checked here; a task.yaml that would fail
+    TaskRevision.model_validate() must fail `aieb task validate` too."""
     required = ("task.yaml", "instruction.md", "repo", "contracts/application-api.md", "provenance.json")
     missing = [name for name in required if not (task / name).exists()]
     if missing:
@@ -93,10 +100,11 @@ def _task_check(task: Path) -> dict[str, object]:
     if not isinstance(raw, dict):
         raise CliError("task.yaml must be a mapping")
     _safe(raw)
-    image = raw.get("environment", {}).get("official_image") if isinstance(raw.get("environment"), dict) else None
-    if not isinstance(image, str) or "@sha256:" not in image:
-        raise CliError("task official image must use an immutable digest")
-    return {"task_id": raw.get("id"), "task_version": raw.get("version"), "requirements": len(raw.get("requirements", []))}
+    try:
+        revision = TaskRevision.model_validate(raw)
+    except ValidationError as exc:
+        raise CliError(f"task.yaml does not satisfy the TaskRevision contract: {exc}") from exc
+    return {"task_id": revision.id, "task_version": revision.version, "requirements": len(revision.requirements)}
 
 
 def _campaign_state(root: Path, campaign_id: str) -> Path:

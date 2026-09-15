@@ -5,7 +5,7 @@ family_id: workflow-service-e
 category: tool_app
 activity: repair
 source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-tool01-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/tool01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: operation-service-only}
+environment: {official_image: "registry.example/aieb/tool01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
 application: {dependency_mode: fixture, entrypoint: [python, -m, workflow_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-operation-fixture-v1}
 submission: {include: [workflow_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements:

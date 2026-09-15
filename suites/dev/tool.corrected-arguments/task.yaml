@@ -2,7 +2,7 @@ schema_version: aieb.task/v1
 id: tool.corrected-arguments
 version: 0.1.0
 family_id: assistant-service-h
-category: tool
+category: tool_app
 activity: repair
 source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-tool04-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
 environment: {official_image: "registry.example/aieb/tool04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
