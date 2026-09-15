@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation complete — all 17 findings from an independent review triaged (AUDIT-001/002/003): 11 fixed with a code change, 6 resolved by verification/documentation with none needed
+Current phase: Post-Prompt-12 audit remediation — original 17-finding review fully triaged (AUDIT-001/002/003); a second independent review of that remediation (AUDIT-004) found 5 more real defects, fixed, plus one open architecture disagreement on ENG-015's leasing granularity awaiting a decision
 
 ## Current state
 
@@ -155,11 +155,34 @@ $env:AIEB_ENV = "test"
 - Do not automatically commit, push, deploy, or publish unless authorized.
 - When commits are requested, use separate role-specific commits rather than bundling unrelated phases.
 
+## AUDIT-004 (second independent review, of the AUDIT-001/002/003 remediation itself)
+
+A second review checked the remediation work rather than the original code, and found five more
+real defects, all fixed: `resolve_roles` ignored `role_bindings.scope` entirely (a role bound to
+one campaign/suite/test silently satisfied any global check) - fixed via a `GLOBAL_SCOPE`
+sentinel and a `scope` parameter; `per_category` (added in AUDIT-003) blended every entrant's
+rate into one number per category - fixed to `{category: {entrant: rate}}`; `evaluator_digest`
+(added in AUDIT-003) hashed only `evaluator.py`, missing `tests/maintainer/common.py` (11 of 12
+evaluators) and rag01's sibling `fixture.py` - fixed via `hash_evaluator_closure`; the checked-in
+TOOL-02 admission evidence was stale (pre-fix behavior) - regenerated via a new script; and
+Prompt 11's typed TypeScript client artifact, previously deferred to ENG-016, is now generated
+(`docs/implementation/evidence/ENG-014/api-client.d.ts`), superseding ENG014-004.
+
+One finding is a genuine architecture disagreement, deliberately left open rather than resolved
+unilaterally: whether ENG-015 satisfies Prompt 12 without verification being its own independently
+leased/heartbeated/fenced PostgreSQL work item. ENG015-001 (2026-09-14) already weighed this same
+prompt tension (leased execution *and* verification, vs. reusing the local pipeline as one call)
+and chose the latter, disclosing the gap; the new review argues the former should have won. Whoever
+directs this work next should decide whether to invest in splitting the leasing phases (a
+substantial, invasive change to an already fully-tested system) or continue accepting the disclosed
+gap - see DECISIONS.md AUDIT-004 for the full argument on both sides.
+
 ## Recommended next prompt
 
-The full 17-finding independent-review triage is done - no more AUDIT follow-up is pending.
-Prompt 13 (ENG-016, the public website and compare views) is next, now that ENG-011's analysis
-package (including the new per-entrant/per-category outputs) and ENG-014's registry/results API
+Get a decision on the ENG-015 leasing-granularity question above before treating ENG-015 as
+settled. Once that's resolved (either way), Prompt 13 (ENG-016, the public website and compare
+views) is next, now that ENG-011's analysis package (including the corrected per-entrant/
+per-category outputs) and ENG-014's registry/results API (plus its new typed TypeScript client)
 exist to serve it. Separately, independent task reviews remain a precondition before any
 admitted-only ENG-013 release manifest can be created; ENG-012 remains blocked on provider/model
 authorization, credentials, and spend cap; ENG-017 (admin campaigns, budget reservations,
