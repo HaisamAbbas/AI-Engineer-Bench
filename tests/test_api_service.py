@@ -545,6 +545,90 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get("/v1/tasks/does.not.exist/revisions/0.1.0")
         self.assertEqual(response.status_code, 404)
 
+    def test_task_catalog_lists_public_projection_and_filters_by_category(self) -> None:
+        """ENG-016: the public task catalog page needs a real listing endpoint,
+        not the full manifest - a thin, public-safe projection."""
+        self._seed_task()
+        response = self.client.get("/v1/tasks")
+        self.assertEqual(response.status_code, 200)
+        items = response.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["slug"], "rag.document-freshness")
+        self.assertEqual(items[0]["category"], "rag")
+        self.assertEqual(items[0]["activity"], "repair")
+        response = self.client.get("/v1/tasks", params={"category": "tool_app"})
+        self.assertEqual(response.json()["items"], [])
+
+    # ---- corrections (review finding: no read endpoint existed) --------
+
+    def test_corrections_lists_superseding_and_withdrawn_publications_only(self) -> None:
+        from aieb_core.canonical import content_hash
+
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="corrections-test", state="frozen", draft={"a": 1})
+            session.add(campaign)
+            session.flush()
+            user = api_models.User(oidc_subject="reviewer-2", oidc_issuer="test")
+            session.add(user)
+            session.flush()
+            snapshot_a = {"per_entrant": {}}
+            original = api_models.PublicationRow(
+                campaign_id=campaign.id, snapshot_digest=content_hash(snapshot_a), snapshot=snapshot_a,
+                reviewer_id=user.id, status="withdrawn",
+            )
+            session.add(original)
+            session.flush()
+            snapshot_b = {"per_entrant": {"x": 1}}
+            superseding = api_models.PublicationRow(
+                campaign_id=campaign.id, snapshot_digest=content_hash(snapshot_b), snapshot=snapshot_b,
+                reviewer_id=user.id, supersedes_id=original.id,
+            )
+            session.add(superseding)
+            # A normal published (never-corrected) publication must NOT show up here.
+            snapshot_c = {"per_entrant": {}}
+            unrelated = api_models.PublicationRow(
+                campaign_id=campaign.id, snapshot_digest=content_hash(snapshot_c), snapshot=snapshot_c,
+                reviewer_id=user.id,
+            )
+            session.add(unrelated)
+            session.commit()
+            original_id, superseding_id = original.id, superseding.id
+
+        response = self.client.get("/v1/corrections")
+        self.assertEqual(response.status_code, 200)
+        ids = {item["id"] for item in response.json()["items"]}
+        self.assertEqual(ids, {str(original_id), str(superseding_id)})
+
+    def test_publication_results_include_supersedes_id(self) -> None:
+        from aieb_core.canonical import content_hash
+
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="supersedes-test", state="frozen", draft={"a": 1})
+            session.add(campaign)
+            session.flush()
+            user = api_models.User(oidc_subject="reviewer-3", oidc_issuer="test")
+            session.add(user)
+            session.flush()
+            snapshot = {"per_entrant": {}}
+            original = api_models.PublicationRow(
+                campaign_id=campaign.id, snapshot_digest=content_hash(snapshot), snapshot=snapshot,
+                reviewer_id=user.id, status="superseded",
+            )
+            session.add(original)
+            session.flush()
+            superseding = api_models.PublicationRow(
+                campaign_id=campaign.id, snapshot_digest=content_hash(snapshot), snapshot=snapshot,
+                reviewer_id=user.id, supersedes_id=original.id,
+            )
+            session.add(superseding)
+            session.commit()
+            original_id, superseding_id = original.id, superseding.id
+
+        response = self.client.get(f"/v1/publications/{superseding_id}/results")
+        self.assertEqual(response.json()["supersedes_id"], str(original_id))
+        response = self.client.get(f"/v1/publications/{original_id}/results")
+        self.assertIsNone(response.json()["supersedes_id"])
+
     # ---- idempotency.finalize must not misdiagnose an unrelated conflict ----
 
     def test_finalize_reraises_unrelated_integrity_error(self) -> None:

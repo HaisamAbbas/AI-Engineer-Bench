@@ -89,6 +89,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Corrections
+         * @description Append-only corrections: a publication that supersedes an earlier one, or a
+         *     withdrawal - both are visible as a real query over `publication`, not fabricated
+         *     content. There is no free-text "reason" field on `publication` yet, so this cannot
+         *     yet show why a correction happened, only that one did (which publication superseded
+         *     which, and any withdrawal) - a disclosed gap, not an invented reason.
+         */
+        get: operations["list_corrections_v1_corrections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/entrants/{entrant_id}": {
         parameters: {
             query?: never;
@@ -132,6 +156,23 @@ export interface paths {
         };
         /** List Releases */
         get: operations["list_releases_v1_releases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tasks */
+        get: operations["list_tasks_v1_tasks_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -696,6 +737,38 @@ export interface operations {
             };
         };
     };
+    list_corrections_v1_corrections_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_entrant_revision_v1_entrants__entrant_id__get: {
         parameters: {
             query?: never;
@@ -765,6 +838,39 @@ export interface operations {
             query?: {
                 cursor?: string | null;
                 limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tasks_v1_tasks_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number | null;
+                category?: string | null;
             };
             header?: never;
             path?: never;

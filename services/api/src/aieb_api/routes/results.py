@@ -1,4 +1,5 @@
-"""GET /v1/releases, GET /v1/publications/{id}/results, GET /v1/comparisons (public reads).
+"""GET /v1/releases, GET /v1/publications/{id}/results, GET /v1/comparisons,
+GET /v1/corrections (public reads).
 
 Public results come from immutable publication snapshots, never live mutable
 trial tables (spec section 33/36).
@@ -71,11 +72,42 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
         "campaign_id": str(row.campaign_id),
         "snapshot_digest": row.snapshot_digest,
         "status": row.status,
+        "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
         "snapshot": _verified_snapshot(row),
     }
     if row.status == "withdrawn":
         result["notice"] = "this snapshot has been withdrawn; it remains addressable but is not canonical"
     return result
+
+
+@router.get("/corrections", response_model=Page)
+def list_corrections(cursor: str | None = None, limit: int | None = None, session: Session = Depends(get_session)) -> Page:
+    """Append-only corrections: a publication that supersedes an earlier one, or a
+    withdrawal - both are visible as a real query over `publication`, not fabricated
+    content. There is no free-text "reason" field on `publication` yet, so this cannot
+    yet show why a correction happened, only that one did (which publication superseded
+    which, and any withdrawal) - a disclosed gap, not an invented reason."""
+    effective_limit = clamp_limit(limit)
+    decoded = decode_cursor(cursor)
+    query = select(PublicationRow).where(
+        (PublicationRow.supersedes_id.is_not(None)) | (PublicationRow.status == "withdrawn")
+    ).order_by(PublicationRow.created_at, PublicationRow.id).limit(effective_limit + 1)
+    if decoded is not None:
+        created_at, row_id = decoded
+        query = query.where(tuple_(PublicationRow.created_at, PublicationRow.id) > (created_at, row_id))
+    rows = list(session.execute(query).scalars())
+    page_rows, next_cursor = page(rows, effective_limit)
+    items = [
+        {
+            "id": str(row.id),
+            "campaign_id": str(row.campaign_id),
+            "status": row.status,
+            "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
+            "created_at": row.created_at.isoformat(),
+        }
+        for row in page_rows
+    ]
+    return Page(items=items, next_cursor=next_cursor)
 
 
 @router.get("/comparisons")
