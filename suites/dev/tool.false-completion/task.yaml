@@ -4,14 +4,14 @@ version: 0.1.0
 family_id: workflow-service-e
 category: tool_app
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-tool01-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/tool01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, workflow_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-operation-fixture-v1}
+source: {repository_digest: "2ce62e275f42ac568b7c092812c0fc6c070df19011eb401bc18f339d6cda2211", commit: synthetic-tool01-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/tool01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "2bd7f60ee28b46eaa1459627d4d247febee57aa4af35431ffafbb0f8c072f375", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, workflow_service.server], contract_digest: "30dadc8935c1b55f11b22868e1e2e007b846ab3dac2912547a1025d8fc91d29d", model_profile_id: deterministic-operation-fixture-v1}
 submission: {include: [workflow_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements:
  - {id: api-ready, severity: mandatory, description: Service reports readiness.}
  - {id: failed-operation-not-complete, severity: mandatory, description: Ledger-failed operations are reported failed.}
  - {id: genuine-success-completes, severity: mandatory, description: Ledger-successful operations are reported completed.}
  - {id: external-ledger-authoritative, severity: mandatory, description: Every response corresponds to recorded operation outcome.}
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: tool01-dev-v1, official_fixture_ref: maintainer-only:tool01-heldout-v1}
+evaluator: {evaluator_digest: "d99ef04aa6fb98d859c7132e694794f6b45425800580ca9cd21e66262e6b9ad7", development_fixture: tool01-dev-v1, official_fixture_ref: maintainer-only:tool01-heldout-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

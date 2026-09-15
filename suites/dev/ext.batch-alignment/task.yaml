@@ -4,14 +4,14 @@ version: 0.1.0
 family_id: extraction-service-c
 category: extraction
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-ext02-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/ext02@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, extraction_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-extraction-fixture-v1}
+source: {repository_digest: "e5ee5af2b513d6d8d3a92896a3dd1b44d1231d7a653ecbfce191c8f1793b7bb7", commit: synthetic-ext02-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/ext02@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "626718862ee57164ac66056ecedcd3a96a2ef5d609f7f7ec439fa28c2a54629a", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, extraction_service.server], contract_digest: "5f177d3a50b2c6cf6f894b7ff9d19886d2798abdf7d35764b6213117e2bf2214", model_profile_id: deterministic-extraction-fixture-v1}
 submission: {include: [extraction_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements:
  - {id: api-ready, severity: mandatory, description: Service reports readiness.}
  - {id: document-correspondence, severity: mandatory, description: Each result retains its source document ID despite shuffled output.}
  - {id: valid-documents-retained, severity: mandatory, description: Partial failures do not drop valid documents.}
  - {id: repeated-id-last-wins, severity: mandatory, description: Repeated IDs use the final occurrence.}
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: ext02-dev-v1, official_fixture_ref: maintainer-only:ext02-heldout-v1}
+evaluator: {evaluator_digest: "771bccb39999260757600fd8cd98e0dbff44bcac5ddc53f831c41a0eb6989653", development_fixture: ext02-dev-v1, official_fixture_ref: maintainer-only:ext02-heldout-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

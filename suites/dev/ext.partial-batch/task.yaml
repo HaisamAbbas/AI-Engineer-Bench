@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: extraction-service-d
 category: extraction
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-ext04-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/ext04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, batch_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-extraction-fixture-v1}
+source: {repository_digest: "dcc8776aed18c24215c3aa62eb33c308e444a698c35923f66752477a334a547c", commit: synthetic-ext04-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/ext04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "626718862ee57164ac66056ecedcd3a96a2ef5d609f7f7ec439fa28c2a54629a", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, batch_service.server], contract_digest: "fa6bc62034bf87019e5f58ce31dfd48b18ea0483bccea7758ea36482acad93cd", model_profile_id: deterministic-extraction-fixture-v1}
 submission: {include: [batch_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: malformed-item-isolated,severity: mandatory,description: malformed item has a status},{id: valid-results-retained,severity: mandatory,description: all valid outputs retained}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: ext04-dev-v1, official_fixture_ref: maintainer-only:ext04-v1}
+evaluator: {evaluator_digest: "c349d3b29e654b51794560545a890f67f12c7064822214996d307bcf82fef996", development_fixture: ext04-dev-v1, official_fixture_ref: maintainer-only:ext04-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

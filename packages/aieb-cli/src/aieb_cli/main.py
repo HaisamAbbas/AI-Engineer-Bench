@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import importlib
 import json
@@ -86,6 +87,53 @@ def _load_json(path: Path) -> dict[str, object]:
     return value
 
 
+def hash_tree(root: Path) -> str:
+    """Deterministic content hash of every file under root, path-and-bytes
+    keyed so a rename or a content edit both change the result."""
+    entries = []
+    for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
+        entries.append(path.relative_to(root).as_posix().encode() + b"\0" + path.read_bytes())
+    return hashlib.sha256(b"\0".join(entries)).hexdigest()
+
+
+def hash_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _repo_root() -> Path:
+    # packages/aieb-cli/src/aieb_cli/main.py -> repo root, independent of cwd
+    # (evaluator source lives under tests/maintainer/, outside the task dir).
+    return Path(__file__).resolve().parents[4]
+
+
+def _verify_content_digests(task: Path, revision: TaskRevision) -> None:
+    """Review finding #2: repository_digest/provenance_digest/contract_digest/
+    service_topology_digest name real on-disk content this repo actually
+    has (the task's repo/ tree, provenance.json, contracts/application-api.md,
+    environment/README.md) - a task.yaml claiming a stale or hand-edited
+    value for any of them must fail validation, not merely look like a
+    plausible hex string. `environment.official_image`'s digest is excluded:
+    it names a container image this project has never built or pushed, so
+    there is no real content to check it against (see
+    scripts/compute_task_digests.py for the fuller rationale)."""
+    expected = {
+        "repository_digest": (hash_tree(task / "repo"), revision.source.repository_digest),
+        "provenance_digest": (hash_file(task / "provenance.json"), revision.source.provenance_digest),
+        "contract_digest": (hash_file(task / "contracts" / "application-api.md"), revision.application.contract_digest),
+        "service_topology_digest": (hash_file(task / "environment" / "README.md"), revision.environment.service_topology_digest),
+    }
+    runtime = TASK_RUNTIMES.get(revision.id)
+    if runtime is not None:
+        evaluator_path = _repo_root().joinpath(*runtime[1].split(".")).with_suffix(".py")
+        if evaluator_path.exists():
+            expected["evaluator_digest"] = (hash_file(evaluator_path), revision.evaluator.evaluator_digest)
+    mismatches = [field for field, (actual, claimed) in expected.items() if actual != claimed]
+    if mismatches:
+        raise CliError(
+            "task.yaml digests do not match their on-disk content (stale or hand-edited): " + ", ".join(mismatches)
+        )
+
+
 def _task_check(task: Path) -> dict[str, object]:
     """Validate task.yaml against the canonical TaskRevision contract, not a
     hand-rolled subset of it. Every field TaskRevision defines - category/
@@ -104,6 +152,7 @@ def _task_check(task: Path) -> dict[str, object]:
         revision = TaskRevision.model_validate(raw)
     except ValidationError as exc:
         raise CliError(f"task.yaml does not satisfy the TaskRevision contract: {exc}") from exc
+    _verify_content_digests(task, revision)
     return {"task_id": revision.id, "task_version": revision.version, "requirements": len(revision.requirements)}
 
 

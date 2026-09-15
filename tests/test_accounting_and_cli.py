@@ -74,6 +74,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue((ROOT / report["report"]).is_file())
 
+    def test_stale_content_digest_fails_validation(self) -> None:
+        # Review finding #2: repository_digest/provenance_digest/contract_digest/
+        # service_topology_digest/evaluator_digest were repeated-digit
+        # placeholders that never actually reflected the content they named -
+        # a task.yaml claiming a digest that does not match its own repo/,
+        # provenance.json, contract, environment doc, or evaluator source
+        # must fail validation now, not just have the right hex shape.
+        import re
+
+        workspace = ROOT / ".cache" / f"stale-digest-{uuid4().hex[:8]}"
+        shutil.copytree(ROOT / "suites/dev/rag.document-freshness", workspace)
+        self.addCleanup(shutil.rmtree, workspace, True)
+        task_yaml = workspace / "task.yaml"
+        text, count = re.subn(r'(provenance_digest:\s*")[0-9a-f]{64}(")', r"\g<1>" + "0" * 64 + r"\g<2>", task_yaml.read_text(encoding="utf-8"))
+        self.assertEqual(count, 1)
+        task_yaml.write_text(text, encoding="utf-8")
+        code, result = self.invoke("task", "validate", str(workspace.relative_to(ROOT)))
+        self.assertEqual(code, EXIT_INVALID)
+        self.assertIn("digests do not match", result["message"])
+        self.assertIn("provenance_digest", result["message"])
+
     def test_unsolved_lock_and_invalid_resume_are_safe(self) -> None:
         self.campaign.write_text(json.dumps({"schema_version": "aieb.local-campaign/v1", "id": self.campaign_id, "task_dir": "suites/dev/rag.document-freshness", "candidate": "baseline"}), encoding="utf-8")
         self.assertEqual(self.invoke("run", "--campaign", str(self.campaign), "--fail-on-unsolved")[0], EXIT_UNSOLVED)

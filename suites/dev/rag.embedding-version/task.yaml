@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: knowledge-service-d
 category: rag
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-rag04-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/rag04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, embedding_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-embedding-v1}
+source: {repository_digest: "4cf98370d77a0691f3ccd718fecf183269facfcfb60e4182988ac2bc615cfbfe", commit: synthetic-rag04-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/rag04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "f951f4d8f60d9a27d3d32e8697d7a53c394566161888ac138ef17cfaf29363d0", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, embedding_service.server], contract_digest: "d0510e6b9437a58aaab0e4990e637e76ba41540a2f743e9353cc63bb7b49c91f", model_profile_id: deterministic-embedding-v1}
 submission: {include: [embedding_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: current-space-searchable,severity: mandatory,description: compatible query works},{id: cross-version-safe,severity: mandatory,description: incompatible query safe},{id: no-silent-mixing,severity: mandatory,description: no mixed spaces}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: rag04-dev-v1, official_fixture_ref: maintainer-only:rag04-v1}
+evaluator: {evaluator_digest: "1eb67ae24695b87ffe0e50418b5a40a7cd4d7896de81df56c55fd0be8acce695", development_fixture: rag04-dev-v1, official_fixture_ref: maintainer-only:rag04-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

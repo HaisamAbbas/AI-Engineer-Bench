@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: extraction-service-b
 category: extraction
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-ext03-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/ext03@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, unit_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-extraction-fixture-v1}
+source: {repository_digest: "d8a92621f5c32acc290da547c91c869e48ce42f565918a95838b651d3f2561d8", commit: synthetic-ext03-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/ext03@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "626718862ee57164ac66056ecedcd3a96a2ef5d609f7f7ec439fa28c2a54629a", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, unit_service.server], contract_digest: "e1ca9265fa106698679276fd1705b18a67dcd2bdaf306758691309416f01f6de", model_profile_id: deterministic-extraction-fixture-v1}
 submission: {include: [unit_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: declared-conversions,severity: mandatory,description: declared conversion used},{id: decimal-tolerance,severity: mandatory,description: accuracy within tolerance},{id: evidence-preserved,severity: mandatory,description: source fields preserved}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: ext03-dev-v1, official_fixture_ref: maintainer-only:ext03-v1}
+evaluator: {evaluator_digest: "a0d3927e24027b14218491bb426dfd1c8bc8a12ac5e131fda46fbda25a2deb7a", development_fixture: ext03-dev-v1, official_fixture_ref: maintainer-only:ext03-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: knowledge-service-c
 category: rag
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-rag03-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/rag03@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, citation_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-citation-v1}
+source: {repository_digest: "dfdc86dac87707af73fec628b7d6e08ed1d9eae36f78584b1f0336e6f9e92030", commit: synthetic-rag03-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/rag03@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "f951f4d8f60d9a27d3d32e8697d7a53c394566161888ac138ef17cfaf29363d0", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, citation_service.server], contract_digest: "4d68d79cd71ead72f52c2698c35b73fb0d63f618168edaf0ae9ad00e583d56d8", model_profile_id: deterministic-citation-v1}
 submission: {include: [citation_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: current-citation-version,severity: mandatory,description: current version},{id: current-source-span,severity: mandatory,description: current span},{id: relevant-current-content,severity: mandatory,description: current content}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: rag03-dev-v1, official_fixture_ref: maintainer-only:rag03-v1}
+evaluator: {evaluator_digest: "125fa1afaaf21a1976b9bd59673da718b882ce76d13c4d54be7e53f0483c71a6", development_fixture: rag03-dev-v1, official_fixture_ref: maintainer-only:rag03-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

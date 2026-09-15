@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: assistant-service-h
 category: tool_app
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-tool04-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/tool04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, correction_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-tool-fixture-v1}
+source: {repository_digest: "15455d73d04566fe131e3f134c206f18390de352b399e9c10853ca7fbf09e76b", commit: synthetic-tool04-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/tool04@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "626718862ee57164ac66056ecedcd3a96a2ef5d609f7f7ec439fa28c2a54629a", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, correction_service.server], contract_digest: "fd65af2bfde9e236ba8d4598184b827065abf0b4221c66edbfc0ba8d4ba5917e", model_profile_id: deterministic-tool-fixture-v1}
 submission: {include: [correction_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: corrected-target-used,severity: mandatory,description: correction replaces stale target},{id: original-untouched,severity: mandatory,description: original not executed}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: tool04-dev-v1, official_fixture_ref: maintainer-only:tool04-v1}
+evaluator: {evaluator_digest: "ec60a44a43e89040c78729e7aeecb023234c663402f6a96313c817e0559249a1", development_fixture: tool04-dev-v1, official_fixture_ref: maintainer-only:tool04-v1}
 profile_compatibility: [cpu-fixture-standard-v1]

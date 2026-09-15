@@ -4,10 +4,10 @@ version: 0.1.0
 family_id: extraction-service-a
 category: extraction
 activity: repair
-source: {repository_digest: "1111111111111111111111111111111111111111111111111111111111111111", commit: synthetic-ext01-v1, license: Apache-2.0, provenance_digest: "2222222222222222222222222222222222222222222222222222222222222222"}
-environment: {official_image: "registry.example/aieb/ext01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "4444444444444444444444444444444444444444444444444444444444444444", egress_policy: none}
-application: {dependency_mode: fixture, entrypoint: [python, -m, missingness_service.server], contract_digest: "5555555555555555555555555555555555555555555555555555555555555555", model_profile_id: deterministic-extraction-fixture-v1}
+source: {repository_digest: "9a4c3a5e857bde11a0c593e8f602e60614b66c408a2fdf4bf36d330244452361", commit: synthetic-ext01-v1, license: Apache-2.0, provenance_digest: "9297a0dcd320e66020e6192deffab4367a47f2908bf3253b163b5b767b07dd72"}
+environment: {official_image: "registry.example/aieb/ext01@sha256:3333333333333333333333333333333333333333333333333333333333333333", engineer_cpu: 1, engineer_memory_mb: 512, service_topology_digest: "626718862ee57164ac66056ecedcd3a96a2ef5d609f7f7ec439fa28c2a54629a", egress_policy: none}
+application: {dependency_mode: fixture, entrypoint: [python, -m, missingness_service.server], contract_digest: "91fc156bd6fa4d4417f8ab621a0b28878d6ffa82c42db26cd4970c9ce93537b9", model_profile_id: deterministic-extraction-fixture-v1}
 submission: {include: [missingness_service/**], protected: [dev_tests/**], max_artifact_bytes: 52428800}
 requirements: [{id: api-ready,severity: mandatory,description: ready},{id: absent-not-invented,severity: mandatory,description: absent fields remain absent},{id: present-values-preserved,severity: mandatory,description: supplied values remain exact}]
-evaluator: {evaluator_digest: "6666666666666666666666666666666666666666666666666666666666666666", development_fixture: ext01-dev-v1, official_fixture_ref: maintainer-only:ext01-v1}
+evaluator: {evaluator_digest: "f630da3288cedfd6c57c43b02c55ebd7d39bc96491b3c59f7b1094176341f472", development_fixture: ext01-dev-v1, official_fixture_ref: maintainer-only:ext01-v1}
 profile_compatibility: [cpu-fixture-standard-v1]
