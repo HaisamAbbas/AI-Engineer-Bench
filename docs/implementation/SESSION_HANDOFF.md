@@ -1,34 +1,52 @@
 # Session handoff
 
 Updated: 2026-09-15
-Current phase: Post-Prompt-12 audit remediation (AUDIT-001) — critical/security findings fixed; 13 lower-priority findings from the same review still pending triage
+Current phase: Post-Prompt-12 audit remediation (AUDIT-001, AUDIT-002) — 7 of 17 findings fixed; 10 lower-priority findings from the same review still pending triage
 
 ## Current state
 
-An independent review spanning Prompts 01-12 raised 17 findings across ENG-002/009/011/013/
-014/015. Four were verified as real and fixed immediately (see DECISIONS.md AUDIT-001):
-(1) `aieb task validate` never actually validated `TaskRevision` - five of twelve task.yaml
-files had genuine schema defects (unquoted digest strings parsed as integers, invalid
-`category`/`egress_policy` values) that passed CLI validation anyway; the CLI now validates for
-real and all five task.yaml files were corrected; (2) hosted auth trusted a bearer token's
-`aieb_roles` claim directly instead of consulting the persisted `role_bindings` table -
-`resolve_roles` is now the sole authorization source, and a related bug (artifact ownership
-comparing an OIDC subject string against an internal UUID, which could never match) was fixed
-alongside it; (3) worker cancellation was checked only once, at claim time - a cancel arriving
-mid-run now interrupts the attempt via a second background poll thread; (4) `aieb_analysis`'s
-`summarize()` could not detect a wholly-missing planned task/entrant cell, only an
-under-repeated existing one - fixed via an optional `planned_cells` parameter. All four are
-covered by tests against the real code paths, and the full existing regression suite
-(71+ tests across core/CLI/API/worker/analysis) still passes.
+An independent review spanning Prompts 01-12 raised 17 findings across ENG-002/003/006/009/011/
+013/014/015. Seven were verified as real and fixed:
 
-The remaining 13 findings are deliberately NOT fixed yet - placeholder digests across every
-task.yaml (real but project-wide, needs a real-hash-computation design decision), publication
-endpoint status/auth gating, whether "twelve distinct family IDs" is genuine project diversity
-or renamed near-duplicates, TOOL-02's ambiguity-simulation fidelity, persistence-level
-immutability triggers, snapshot-digest integrity verification, a Windows drive-path extraction
-edge case, blanket `RuntimeError` candidate attribution, and the worker's dependency on
-`tests.maintainer.*`/`suites/dev` as a development-only evaluator registry. Each needs the same
-verify-before-fix discipline used for the four above before committing to a remediation.
+AUDIT-001 (four findings): (1) `aieb task validate` never actually validated `TaskRevision` -
+five of twelve task.yaml files had genuine schema defects (unquoted digest strings parsed as
+integers, invalid `category`/`egress_policy` values) that passed CLI validation anyway; the CLI
+now validates for real and all five task.yaml files were corrected; (2) hosted auth trusted a
+bearer token's `aieb_roles` claim directly instead of consulting the persisted `role_bindings`
+table - `resolve_roles` is now the sole authorization source, and a related bug (artifact
+ownership comparing an OIDC subject string against an internal UUID, which could never match)
+was fixed alongside it; (3) worker cancellation was checked only once, at claim time - a cancel
+arriving mid-run now interrupts the attempt via a second background poll thread; (4)
+`aieb_analysis`'s `summarize()` could not detect a wholly-missing planned task/entrant cell, only
+an under-repeated existing one - fixed via an optional `planned_cells` parameter.
+
+AUDIT-002 (three more findings): (5) a Windows drive-qualified path (`C:/outside`) passed every
+existing path-safety check (`_safe_relative`, `CandidateFile.path`, `SubmissionPolicy`
+include/protected) since none of them start with `/` or contain `..`, yet `Path(destination) /
+"C:/outside"` discards `destination` entirely on Windows - fixed at all three call sites, plus
+`safe_extract_tar` now verifies every resolved target stays under its destination root; (6) any
+bare `RuntimeError` from an evaluator was blamed on the candidate - fixed via a dedicated
+`CandidateUnavailableError` the harnesses raise explicitly instead; (7) nothing below the API
+route layer stopped a direct `UPDATE` against frozen task/evaluator/entrant/fixture revisions or
+a frozen campaign's manifest - fixed via Postgres `BEFORE UPDATE` triggers, verified to block a
+raw `psql` UPDATE outside the ORM entirely while still permitting legitimate campaign state
+transitions.
+
+All seven are covered by tests against the real code/database paths (several verified to
+actually fail against the pre-fix code, not just pass against the fix), and the full regression
+suite (83 tests across core/CLI/API/worker/analysis/artifacts) still passes.
+
+The remaining 10 findings are deliberately NOT fixed yet - placeholder digests across every
+task.yaml (real but project-wide, needs a real-hash-computation design decision), whether
+"twelve distinct family IDs" is genuine project diversity or renamed near-duplicates, TOOL-02's
+ambiguity-simulation fidelity, the catalog's "validated" label given the above, ENG-012's pilot
+preparation not being a fully resolved campaign, ENG-011's per-entrant/category/cost-accounting
+completeness, snapshot-digest integrity verification on publication reads, and the worker's
+dependency on `tests.maintainer.*`/`suites/dev` as a development-only evaluator registry.
+Publication-endpoint status/auth gating was re-examined during AUDIT-002 and found not currently
+exploitable (only `published`/`withdrawn`/`superseded` exist, all meant to stay public per spec)
+so it is resolved, not merely deferred. Each remaining item needs the same verify-before-fix
+discipline used above before committing to a remediation.
 
 ENG-015 was completed in Prompt 12 before this review. `aieb_api/worker/` (repository, runner_bridge, loop, reconciler, metrics)
 adds atomic work acquisition (`SELECT ... FOR UPDATE SKIP LOCKED` + `UPDATE ... RETURNING`),
@@ -121,7 +139,7 @@ $env:AIEB_ENV = "test"
 
 ## Recommended next prompt
 
-Triage the 13 remaining AUDIT-001 findings before starting Prompt 13: verify each against the
+Triage the 10 remaining AUDIT-001/002 findings before starting Prompt 13: verify each against the
 code (like the four already fixed), then decide and execute remediation in priority order. The
 placeholder-digest finding in particular touches every task.yaml and any suite-wide fix should
 be planned once, not applied ad hoc per task. After that: Prompt 13 (ENG-016, the public website
