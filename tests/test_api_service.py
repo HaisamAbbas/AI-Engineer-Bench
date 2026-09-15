@@ -588,6 +588,70 @@ class ApiServiceTests(unittest.TestCase):
             session.commit()
             self.assertEqual(result.rowcount, 1)
 
+    # ---- publication snapshot integrity (review finding #14) ---------
+
+    def _seed_publication(self, snapshot: dict, *, snapshot_digest: str | None = None) -> uuid.UUID:
+        from aieb_core.canonical import content_hash
+
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="pub-test", state="frozen", draft={"a": 1})
+            session.add(campaign)
+            session.flush()
+            user = api_models.User(oidc_subject="reviewer-1", oidc_issuer="test")
+            session.add(user)
+            session.flush()
+            publication = api_models.PublicationRow(
+                campaign_id=campaign.id,
+                snapshot_digest=snapshot_digest if snapshot_digest is not None else content_hash(snapshot),
+                snapshot=snapshot,
+                reviewer_id=user.id,
+            )
+            session.add(publication)
+            session.commit()
+            return publication.id
+
+    def test_publication_results_are_served_when_snapshot_matches_its_digest(self) -> None:
+        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}})
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["snapshot"], {"per_entrant": {"agent-a": {"rate": "1.0"}}})
+
+    def test_publication_results_reject_a_snapshot_that_does_not_match_its_recorded_digest(self) -> None:
+        # Review finding #14: nothing recomputed snapshot_digest against the
+        # stored snapshot JSONB before serving it as canonical public results.
+        # Seed a row whose digest was never derived from the snapshot it holds
+        # (simulating corruption or a bug elsewhere that wrote a mismatched pair).
+        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}}, snapshot_digest="0" * 64)
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
+    def test_comparison_endpoint_also_rejects_a_mismatched_snapshot(self) -> None:
+        publication_id = self._seed_publication({"per_entrant": {"agent-a": {"rate": "1.0"}}}, snapshot_digest="0" * 64)
+        response = self.client.get(f"/v1/comparisons?publication_id={publication_id}&entrant_ids=agent-a&entrant_ids=agent-b")
+        self.assertEqual(response.status_code, 503)
+
+    def test_publication_snapshot_row_rejects_direct_update_at_the_database_level(self) -> None:
+        """Mirrors test_task_revision_row_rejects_direct_update_at_the_database_level
+        (finding #13) for the publication table (finding #14): the snapshot
+        and its digest are fixed at insert time by a trigger, independent of
+        whatever the API layer happens to check."""
+        from sqlalchemy.exc import IntegrityError
+
+        publication_id = self._seed_publication({"per_entrant": {}})
+
+        with db.session_factory()() as session:
+            with self.assertRaises(IntegrityError):
+                session.execute(
+                    update(api_models.PublicationRow).where(api_models.PublicationRow.id == publication_id).values(snapshot={"tampered": True})
+                )
+                session.commit()
+
+        with db.session_factory()() as session:
+            result = session.execute(update(api_models.PublicationRow).where(api_models.PublicationRow.id == publication_id).values(status="withdrawn"))
+            session.commit()
+            self.assertEqual(result.rowcount, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

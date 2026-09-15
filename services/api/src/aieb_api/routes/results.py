@@ -12,13 +12,28 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
+from aieb_core.canonical import content_hash
+
 from ..db import get_session
-from ..errors import invalid_request, not_found
+from ..errors import invalid_request, not_found, service_unavailable
 from ..models import PublicationRow
 from ..pagination import clamp_limit, decode_cursor, page
 from ..schemas import Page
 
 router = APIRouter(prefix="/v1", tags=["results"])
+
+
+def _verified_snapshot(row: PublicationRow) -> dict:
+    """A publication trigger blocks a direct UPDATE to snapshot/snapshot_digest
+    (see the publication-snapshot-immutability migration), but that is a
+    second layer, not the only one: recompute the digest from the stored
+    JSONB on every read a snapshot is actually served, so a row that
+    predates the trigger, or was written through some other path, is caught
+    here rather than served as canonical public results with a silent
+    mismatch."""
+    if content_hash(row.snapshot) != row.snapshot_digest:
+        raise service_unavailable(f"publication {row.id} snapshot does not match its recorded digest")
+    return row.snapshot
 
 
 @router.get("/releases", response_model=Page)
@@ -56,7 +71,7 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
         "campaign_id": str(row.campaign_id),
         "snapshot_digest": row.snapshot_digest,
         "status": row.status,
-        "snapshot": row.snapshot,
+        "snapshot": _verified_snapshot(row),
     }
     if row.status == "withdrawn":
         result["notice"] = "this snapshot has been withdrawn; it remains addressable but is not canonical"
@@ -74,7 +89,7 @@ def get_comparison(
     row = session.get(PublicationRow, publication_id)
     if row is None:
         raise not_found()
-    per_entrant = row.snapshot.get("per_entrant", {})
+    per_entrant = _verified_snapshot(row).get("per_entrant", {})
     entrants = {}
     for entrant_id in entrant_ids:
         if entrant_id in per_entrant:
