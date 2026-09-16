@@ -11,7 +11,11 @@ describe("ReleaseDetail", () => {
         data: {
           id: "pub-2", campaign_id: "camp-1", snapshot_digest: "d", status: "superseded", supersedes_id: "pub-1",
           created_at: "2026-01-02T00:00:00Z", cohort_digest: "cohort-a",
-          cohort: { track: "agents", suite_id: "suite-a", protocol_id: "protocol-a", dependency_mode: "fixture", hardware_class: "cpu-fixture-standard-v1" },
+          cohort: {
+            track: "agents", suite_id: "suite-a", protocol_id: "protocol-a", dependency_mode: "fixture",
+            hardware_class: "cpu-fixture-standard-v1", budget_profile_id: "budget-a", required_capabilities: ["cpu-fixture-standard-v1"],
+            application_model_profile: { dependency_mode: "fixture", entrypoint: ["python"], contract_digest: "5".repeat(64), model_profile_id: "deterministic-rag-fixture-v1" },
+          },
           frozen_tasks: [
             { slug: "task-1", version: "0.1.0", family_id: "family-a", category: "rag" },
             { slug: "task-2", version: "0.1.0", family_id: "family-b", category: "rag" },

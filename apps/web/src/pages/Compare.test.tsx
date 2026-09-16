@@ -10,7 +10,7 @@ describe("Compare", () => {
     expect(screen.getByText(/Select 2 to 4 entrants to compare/i)).toBeInTheDocument();
   });
 
-  it("renders paired task differences when cohort-comparable", async () => {
+  it("renders per-task rate deltas when cohort-comparable", async () => {
     mockApi({
       "/v1/publications/{publication_id}/results": {
         data: {
@@ -25,14 +25,14 @@ describe("Compare", () => {
           cohort_comparable: true,
           non_comparable_reason: null,
           entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
-          paired_differences: {
+          task_rate_deltas: {
             "a|b": [{ task_id: "task-1", left_rate: 1.0, right_rate: 0.5, difference: 0.5 }],
           },
         },
       },
     });
     renderWithProviders(<Compare />, { route: "/compare?publication=pub-1&entrants=a,b", path: "/compare" });
-    await waitFor(() => expect(screen.getByText("Paired task outcomes")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Per-task rate deltas")).toBeInTheDocument());
     expect(screen.getByText("task-1")).toBeInTheDocument();
     expect(screen.getByText("+50.0 pp")).toBeInTheDocument();
   });
@@ -59,9 +59,8 @@ describe("Compare", () => {
           },
         },
       },
-      "/v1/entrants/by-slug/{slug}": ({ path }: any) => ({
+      "/v1/publications/{publication_id}/entrants/{slug}": ({ path }: any) => ({
         data: {
-          id: "entrant-uuid",
           manifest: {
             schema_version: "aieb.entrant/v1", id: path.slug, track: "agents", agent_implementation: "demo",
             agent_version: "3.2.1", engineer_model: { provider_class: "demo", requested_model: "demo-model", settings_digest: "a".repeat(64) },
@@ -74,7 +73,7 @@ describe("Compare", () => {
         data: {
           publication_id: "pub-1", cohort_comparable: true, non_comparable_reason: null,
           entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
-          paired_differences: { "a|b": [] },
+          task_rate_deltas: { "a|b": [] },
         },
       },
     });
@@ -101,13 +100,13 @@ describe("Compare", () => {
           cohort_comparable: false,
           non_comparable_reason: "entrants come from publications with different (or unresolvable) frozen cohorts; paired statistics are not meaningful across different cohorts",
           entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
-          paired_differences: null,
+          task_rate_deltas: null,
         },
       },
     });
     renderWithProviders(<Compare />, { route: "/compare?publication=pub-1&entrants=a,b", path: "/compare" });
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/not cohort-comparable/i));
-    expect(screen.queryByText("Paired task outcomes")).not.toBeInTheDocument();
+    expect(screen.queryByText("Per-task rate deltas")).not.toBeInTheDocument();
     // Each entrant still shown separately - never a fabricated winner.
     expect(screen.getByText("a")).toBeInTheDocument();
     expect(screen.getByText("b")).toBeInTheDocument();
