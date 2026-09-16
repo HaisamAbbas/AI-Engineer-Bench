@@ -732,54 +732,6 @@
         "title": "CohortIdentity",
         "type": "object"
       },
-      "ComparisonEntrantPanel": {
-        "additionalProperties": false,
-        "description": "One selected entrant panel in a comparison, identified by BOTH its\nslug AND the publication it was selected from (review finding #4, third\npass): the response was previously a dict keyed by slug alone, so\nselecting the same slug from two different releases (a genuine\ncross-release use case - \"did agent-a improve from release 1 to\nrelease 2?\") silently overwrote one entry, and both panels then rendered\nthe same, wrong aggregate. An ordered list keyed per selection preserves\nboth, so each panel shows its own publication's real result.",
-        "properties": {
-          "aggregate": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Aggregate"
-          },
-          "eligible": {
-            "title": "Eligible",
-            "type": "boolean"
-          },
-          "entrant_id": {
-            "title": "Entrant Id",
-            "type": "string"
-          },
-          "publication_id": {
-            "format": "uuid",
-            "title": "Publication Id",
-            "type": "string"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          }
-        },
-        "required": [
-          "entrant_id",
-          "publication_id",
-          "eligible"
-        ],
-        "title": "ComparisonEntrantPanel",
-        "type": "object"
-      },
       "ComparisonResponse": {
         "additionalProperties": false,
         "properties": {
@@ -789,7 +741,14 @@
           },
           "entrants": {
             "items": {
-              "$ref": "#/components/schemas/ComparisonEntrantPanel"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EligibleEntrantPanel"
+                },
+                {
+                  "$ref": "#/components/schemas/IneligibleEntrantPanel"
+                }
+              ]
             },
             "title": "Entrants",
             "type": "array"
@@ -887,6 +846,44 @@
         ],
         "title": "DependencyMode",
         "type": "string"
+      },
+      "EligibleEntrantPanel": {
+        "additionalProperties": false,
+        "description": "`eligible=True` variant: this entrant slug was present in its\npublication's snapshot, so it carries a real (possibly still-null)\naggregate rate - never a `reason`, which only makes sense for the\nineligible variant.",
+        "properties": {
+          "aggregate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate"
+          },
+          "eligible": {
+            "const": true,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entrant_id",
+          "publication_id",
+          "eligible"
+        ],
+        "title": "EligibleEntrantPanel",
+        "type": "object"
       },
       "EntrantResultEntry": {
         "additionalProperties": false,
@@ -1193,6 +1190,38 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "IneligibleEntrantPanel": {
+        "additionalProperties": false,
+        "description": "`eligible=False` variant: this entrant slug was not present in its\npublication's snapshot, so it carries a `reason` and never a fabricated\naggregate.",
+        "properties": {
+          "eligible": {
+            "const": false,
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entrant_id",
+          "publication_id",
+          "eligible",
+          "reason"
+        ],
+        "title": "IneligibleEntrantPanel",
         "type": "object"
       },
       "ModelProfile": {

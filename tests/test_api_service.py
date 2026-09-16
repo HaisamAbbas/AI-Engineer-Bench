@@ -828,15 +828,45 @@ class ApiServiceTests(unittest.TestCase):
     def test_per_entrant_total_tasks_is_null_not_zero_for_a_legacy_snapshot(self) -> None:
         """Review finding #1 (second pass): a snapshot published before
         per_entrant_total_tasks existed has no such key in its stored JSON
-        at all - this must be reported as null ("unavailable"), never
-        silently coerced to an empty dict/zero, which a frontend fallback
-        like `?? 0` would render as a fabricated "0 total tasks"."""
+        at all - this must be reported as unavailable, never silently
+        coerced to an empty dict/zero, which a frontend fallback like
+        `?? 0` would render as a fabricated "0 total tasks". As of review
+        finding #1 (sixth pass), "unavailable" means the key is genuinely
+        absent from the response (not present-and-null): serializing a
+        filled-in `None` default back out would add a key the legacy
+        snapshot's digest never covered - see
+        test_served_snapshot_still_hashes_to_its_recorded_digest_for_a_legacy_snapshot
+        below."""
         legacy_snapshot = self._analysis_snapshot({"agent-a": 1.0})
         del legacy_snapshot["per_entrant_total_tasks"]
         publication_id = self._seed_publication(legacy_snapshot)
 
         response = self.client.get(f"/v1/publications/{publication_id}/results")
-        self.assertIsNone(response.json()["snapshot"]["per_entrant_total_tasks"])
+        self.assertNotIn("per_entrant_total_tasks", response.json()["snapshot"])
+        self.assertIn("per_entrant_valid_trials", response.json()["snapshot"])
+
+    def test_served_snapshot_still_hashes_to_its_recorded_digest_for_a_legacy_snapshot(self) -> None:
+        """Review finding #1, sixth pass: a snapshot published before the
+        `per_entrant_*` fields existed lacks those keys in its stored JSON.
+        `AnalysisSnapshot.model_validate()` fills them in with their `None`
+        default so the shape validates, but a response that serialized those
+        filled-in defaults back out added keys the stored/digested JSON never
+        had, so the returned `snapshot` no longer hashed to the
+        `snapshot_digest` served beside it - reproduced directly here by
+        recomputing the digest from the HTTP response body, the same check
+        test_served_snapshot_still_hashes_to_its_recorded_digest makes for a
+        current-format snapshot."""
+        from aieb_api.snapshots import snapshot_digest
+
+        legacy_snapshot = self._analysis_snapshot({"agent-a": 1.0})
+        del legacy_snapshot["per_entrant_total_tasks"]
+        del legacy_snapshot["per_entrant_valid_trials"]
+        del legacy_snapshot["per_entrant_resolved_tasks"]
+        publication_id = self._seed_publication(legacy_snapshot)
+
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        body = response.json()
+        self.assertEqual(snapshot_digest(body["snapshot"]), body["snapshot_digest"])
 
     # ---- idempotency.finalize must not misdiagnose an unrelated conflict ----
 
@@ -1133,6 +1163,33 @@ class ApiServiceTests(unittest.TestCase):
             f"/v1/comparisons?publication_id={publication_id}&entrant_ids=agent-a&entrant_ids=agent-a"
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_comparison_entrant_panel_rejects_inconsistent_eligible_reason_combinations(self) -> None:
+        """Review finding #2, sixth pass: a flat model with both `aggregate`
+        and `reason` optional let an eligible=True panel carry a `reason`,
+        or an eligible=False panel carry a fabricated `aggregate` - nothing
+        in the contract ruled those combinations out. The discriminated
+        union (Literal[True]/Literal[False] tags on `EligibleEntrantPanel`/
+        `IneligibleEntrantPanel`) must reject them at validation time."""
+        import uuid as uuid_module
+
+        from pydantic import TypeAdapter
+
+        from aieb_api.schemas import ComparisonEntrantPanel
+
+        adapter = TypeAdapter(ComparisonEntrantPanel)
+        pub_id = str(uuid_module.uuid4())
+
+        # eligible=True is only valid without a `reason` field.
+        adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": True, "aggregate": 0.5})
+        with self.assertRaises(Exception):
+            adapter.validate_python(
+                {"entrant_id": "a", "publication_id": pub_id, "eligible": True, "aggregate": 0.5, "reason": "not eligible"}
+            )
+        # eligible=False requires a `reason` and rejects a fabricated aggregate.
+        adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": False, "reason": "missing"})
+        with self.assertRaises(Exception):
+            adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": False, "aggregate": 0.5})
 
     def test_publication_snapshot_row_rejects_direct_update_at_the_database_level(self) -> None:
         """Mirrors test_task_revision_row_rejects_direct_update_at_the_database_level

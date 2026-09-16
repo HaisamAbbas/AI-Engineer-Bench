@@ -7,7 +7,7 @@ core contracts do not model (pagination envelopes, freeze registry input).
 
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar, Union
 from uuid import UUID
 
 from aieb_core.models import ApplicationProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
@@ -238,23 +238,62 @@ class PublicationResultsResponse(BaseModel):
     notice: str | None = None
 
 
-class ComparisonEntrantPanel(BaseModel):
-    """One selected entrant panel in a comparison, identified by BOTH its
-    slug AND the publication it was selected from (review finding #4, third
-    pass): the response was previously a dict keyed by slug alone, so
-    selecting the same slug from two different releases (a genuine
-    cross-release use case - "did agent-a improve from release 1 to
-    release 2?") silently overwrote one entry, and both panels then rendered
-    the same, wrong aggregate. An ordered list keyed per selection preserves
-    both, so each panel shows its own publication's real result."""
+class EligibleEntrantPanel(BaseModel):
+    """`eligible=True` variant: this entrant slug was present in its
+    publication's snapshot, so it carries a real (possibly still-null)
+    aggregate rate - never a `reason`, which only makes sense for the
+    ineligible variant."""
 
     model_config = ConfigDict(extra="forbid")
 
     entrant_id: str
     publication_id: UUID
-    eligible: bool
+    eligible: Literal[True]
     aggregate: float | None = None
-    reason: str | None = None
+
+
+class IneligibleEntrantPanel(BaseModel):
+    """`eligible=False` variant: this entrant slug was not present in its
+    publication's snapshot, so it carries a `reason` and never a fabricated
+    aggregate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entrant_id: str
+    publication_id: UUID
+    eligible: Literal[False]
+    reason: str
+
+
+# Identified by BOTH slug AND the publication it was selected from (review
+# finding #4, third pass): the response was previously a dict keyed by slug
+# alone, so selecting the same slug from two different releases (a genuine
+# cross-release use case - "did agent-a improve from release 1 to release
+# 2?") silently overwrote one entry, and both panels then rendered the same,
+# wrong aggregate. An ordered list keyed per selection preserves both, so
+# each panel shows its own publication's real result.
+#
+# A tagged union on `eligible` (review finding #2, sixth pass): a single flat
+# model with both `aggregate` and `reason` optional let the endpoint (and any
+# future caller) construct nonsensical combinations (eligible=True with a
+# `reason`, eligible=False with an `aggregate`) that the generated API
+# contract did nothing to rule out - only endpoint code happened to avoid
+# them. The `Literal[True]`/`Literal[False]` tags make each combination the
+# only one Pydantic will accept.
+#
+# Deliberately NOT `Field(discriminator="eligible")`: OpenAPI's
+# `discriminator.mapping` keys must be strings, so a boolean-tagged Pydantic
+# discriminated union serializes as `{"True": "#/.../EligibleEntrantPanel",
+# "False": "#/.../IneligibleEntrantPanel"}` - openapi-typescript then read
+# THAT mapping for the generated `eligible` type instead of the schema's own
+# `const: true`/`const: false`, producing `eligible: "True"` (a STRING
+# literal) in the generated TypeScript even though every real response
+# carries the JSON boolean `true`/`false`. A plain (non-discriminated) union
+# still validates the same two shapes - Pydantic's smart-union mode
+# disambiguates on the boolean `eligible` value just fine - and OpenAPI
+# renders each variant's own correct `const: true`/`const: false`, which
+# openapi-typescript turns into the correct boolean literal type.
+ComparisonEntrantPanel = Union[EligibleEntrantPanel, IneligibleEntrantPanel]
 
 
 class TaskRateDelta(BaseModel):

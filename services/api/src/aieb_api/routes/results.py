@@ -25,9 +25,11 @@ from ..schemas import (
     ComparisonEntrantPanel,
     ComparisonResponse,
     CorrectionEntry,
+    EligibleEntrantPanel,
     EntrantResultEntry,
     FrozenEntrantEntry,
     FrozenTaskEntry,
+    IneligibleEntrantPanel,
     Page,
     PublicationEntrantConfiguration,
     PublicationResultsResponse,
@@ -82,7 +84,12 @@ def list_releases(cursor: str | None = None, limit: int | None = None, session: 
     return Page(items=items, next_cursor=next_cursor)
 
 
-@router.get("/publications/{publication_id}/results", response_model=PublicationResultsResponse)
+@router.get(
+    "/publications/{publication_id}/results",
+    response_model=PublicationResultsResponse,
+   
+    response_model_exclude_unset=True,
+)
 def get_publication_results(publication_id: UUID, session: Session = Depends(get_session)) -> PublicationResultsResponse:
     row = session.get(PublicationRow, publication_id)
     if row is None:
@@ -90,14 +97,7 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
     campaign = session.get(CampaignRow, row.campaign_id)
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
     cohort, frozen_tasks, frozen_entrants = _frozen_manifest_data(campaign)
-    # The snapshot is returned EXACTLY as stored - never mutated at read time
-    # (review finding #1, third pass): it is a digest-verified immutable
-    # publication artifact, and rewriting any field here would produce a
-    # response (and a downloaded bundle) whose `snapshot_digest` no longer
-    # hashes the `snapshot` beside it, breaking provenance. Frozen-plan
-    # coverage (the correct total task count, the full entrant roster) is
-    # served as SEPARATE `frozen_tasks`/`frozen_entrants` fields the frontend
-    # reads, rather than baked back into the snapshot.
+   
     return PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
         supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat(),
@@ -353,12 +353,12 @@ def get_comparison(
     for entrant_id, pub_id in zip(entrant_ids, resolved_publication_ids):
         _, snapshot = publication_cache[pub_id]
         if entrant_id in snapshot.per_entrant:
-            entrants.append(ComparisonEntrantPanel(
+            entrants.append(EligibleEntrantPanel(
                 entrant_id=entrant_id, publication_id=pub_id, eligible=True, aggregate=snapshot.per_entrant[entrant_id],
             ))
             entrant_task_rates[entrant_id] = _task_ids_for_entrant(snapshot, entrant_id)
         else:
-            entrants.append(ComparisonEntrantPanel(
+            entrants.append(IneligibleEntrantPanel(
                 entrant_id=entrant_id, publication_id=pub_id, eligible=False,
                 reason="not present in its publication's snapshot",
             ))

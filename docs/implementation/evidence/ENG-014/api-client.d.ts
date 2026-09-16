@@ -560,38 +560,12 @@ export interface components {
             /** Track */
             track: string;
         };
-        /**
-         * ComparisonEntrantPanel
-         * @description One selected entrant panel in a comparison, identified by BOTH its
-         *     slug AND the publication it was selected from (review finding #4, third
-         *     pass): the response was previously a dict keyed by slug alone, so
-         *     selecting the same slug from two different releases (a genuine
-         *     cross-release use case - "did agent-a improve from release 1 to
-         *     release 2?") silently overwrote one entry, and both panels then rendered
-         *     the same, wrong aggregate. An ordered list keyed per selection preserves
-         *     both, so each panel shows its own publication's real result.
-         */
-        ComparisonEntrantPanel: {
-            /** Aggregate */
-            aggregate?: number | null;
-            /** Eligible */
-            eligible: boolean;
-            /** Entrant Id */
-            entrant_id: string;
-            /**
-             * Publication Id
-             * Format: uuid
-             */
-            publication_id: string;
-            /** Reason */
-            reason?: string | null;
-        };
         /** ComparisonResponse */
         ComparisonResponse: {
             /** Cohort Comparable */
             cohort_comparable: boolean;
             /** Entrants */
-            entrants: components["schemas"]["ComparisonEntrantPanel"][];
+            entrants: (components["schemas"]["EligibleEntrantPanel"] | components["schemas"]["IneligibleEntrantPanel"])[];
             /** Non Comparable Reason */
             non_comparable_reason?: string | null;
             /**
@@ -628,6 +602,29 @@ export interface components {
          * @enum {string}
          */
         DependencyMode: "fixture" | "live";
+        /**
+         * EligibleEntrantPanel
+         * @description `eligible=True` variant: this entrant slug was present in its
+         *     publication's snapshot, so it carries a real (possibly still-null)
+         *     aggregate rate - never a `reason`, which only makes sense for the
+         *     ineligible variant.
+         */
+        EligibleEntrantPanel: {
+            /** Aggregate */
+            aggregate?: number | null;
+            /**
+             * Eligible
+             * @constant
+             */
+            eligible: true;
+            /** Entrant Id */
+            entrant_id: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+        };
         /**
          * EntrantResultEntry
          * @description One publication an entrant slug appears in - the "results by release"
@@ -772,6 +769,28 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IneligibleEntrantPanel
+         * @description `eligible=False` variant: this entrant slug was not present in its
+         *     publication's snapshot, so it carries a `reason` and never a fabricated
+         *     aggregate.
+         */
+        IneligibleEntrantPanel: {
+            /**
+             * Eligible
+             * @constant
+             */
+            eligible: false;
+            /** Entrant Id */
+            entrant_id: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Reason */
+            reason: string;
         };
         /** ModelProfile */
         ModelProfile: {
