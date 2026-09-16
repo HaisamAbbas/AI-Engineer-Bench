@@ -15,9 +15,12 @@ below), then a fifth time after a review found the fourth pass had itself introd
 bugs plus two more gaps (see DECISIONS.md ENG016-013/014, and "Fifth-pass fixes" below), then a
 sixth time after a review found the fifth pass's own snapshot-digest fix was still incomplete for
 one case, plus a comparison-contract regression (see DECISIONS.md ENG016-015, and "Sixth-pass
-fixes" below). ENG-016 remains IN_PROGRESS: real HTTP/browser integration tests and broader
-accessibility coverage are deliberately not attempted here - a real separate effort, disclosed as
-open rather than bundled into this pass - along with the other open acceptance gates listed below.
+fixes" below), then a seventh time after a review found the sixth pass's `exclude_unset` fix was
+STILL incomplete for a present (not absent) stored value, plus a smaller contract gap (see
+DECISIONS.md ENG016-016, and "Seventh-pass fixes" below). ENG-016 remains IN_PROGRESS: real
+HTTP/browser integration tests and broader accessibility coverage are deliberately not attempted
+here - a real separate effort, disclosed as open rather than bundled into this pass - along with
+the other open acceptance gates listed below.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -315,6 +318,36 @@ artifacts for this fix, not merely reasoned about - the plain union avoids it en
 smart-union mode still disambiguates correctly on the boolean value) and produces the correct
 `eligible: true | false` boolean type end to end.
 
+## Seventh-pass fixes (2026-09-16, a review of the sixth pass)
+
+The sixth pass's `exclude_unset` fix was still incomplete for one case, and one smaller contract
+gap remained - both fixed (DECISIONS.md ENG016-016).
+
+**A legacy snapshot's served digest could still break, for a different reason.** `exclude_unset`
+stops a legacy snapshot's genuinely-ABSENT keys from being fabricated back into the response, but
+every key that IS present in the stored JSONB still round-trips through
+`AnalysisSnapshot.model_validate()` and Pydantic's own schema-driven JSON dump - which coerces a
+stored JSON integer (e.g. `suite_rate: 1`, or a `per_entrant` value of `1`) into a served float
+(`1.0`) for any field typed `float | None`. Recomputing the digest from that reserialized body then
+no longer matches `snapshot_digest` - the same failure mode as the fifth pass's read-time mutation
+(ENG016-013), recurring through Pydantic's own (de)serializer rather than application code,
+reproduced directly (`AnalysisSnapshot.model_validate(...).model_dump(exclude_unset=True)` on a
+snapshot with integer rate values produced a different digest). Fixed by no longer letting
+`response_model` serialization touch the `snapshot` field at all: `GET /v1/publications/{id}/results`
+builds its JSON body via `fastapi.encoders.jsonable_encoder` and then substitutes the ORIGINAL
+`row.snapshot` dict for the `snapshot` key, returning a `JSONResponse` directly.
+`_verified_snapshot()` is still called first (digest + shape verification, raising `503` on either
+mismatch), but its return value is now used only for that check, never serialized.
+`response_model=PublicationResultsResponse` stays on the route purely for OpenAPI documentation -
+FastAPI does not run a directly-returned `Response` through `response_model` at all - and
+`response_model_exclude_unset` is no longer needed, since the raw substitution alone already
+guarantees a legacy snapshot's absent keys stay absent.
+
+**`aggregate` was omittable, not required-but-nullable.** `EligibleEntrantPanel.aggregate` defaulted
+to `None`, letting it be dropped from the payload entirely - a weaker contract than intended, since
+the endpoint always computes a real value (possibly itself `None`) for every eligible panel. Fixed
+by dropping the default.
+
 ## Known, disclosed gaps that remain (not fabricated data)
 
 - **Run evidence** (`/runs/:trialId`): the only backing endpoint, `GET /v1/trials/{id}`, is
@@ -373,12 +406,14 @@ boundary instead; still real hook/component/render code):
 - Structural accessibility (`axe-core`: label association, table semantics, landmark structure -
   color-contrast disabled since jsdom cannot evaluate real color).
 
-`services/api`'s own test suite (48 tests in `tests/test_api_service.py`, 3 in
+`services/api`'s own test suite (49 tests in `tests/test_api_service.py`, 3 in
 `tests/test_api_cors.py`) covers: CORS allow/deny, newest-first pagination across multiple pages,
 snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), that the
-SERVED snapshot still hashes to its recorded digest (never mutated on a read, and for a LEGACY
-snapshot missing `per_entrant_*` keys entirely, whose absent keys must stay absent rather than
-serialize back out as fabricated `null`s), that `ComparisonEntrantPanel`'s tagged union rejects an
+SERVED snapshot still hashes to its recorded digest (never mutated on a read; for a LEGACY snapshot
+missing `per_entrant_*` keys entirely, whose absent keys must stay absent rather than serialize back
+out as fabricated `null`s; and for a snapshot with PRESENT integer rate values, which must stay
+integers rather than being coerced to float by response serialization), that
+`ComparisonEntrantPanel`'s tagged union rejects an
 eligible panel carrying a `reason` or an ineligible panel carrying a fabricated `aggregate`, real
 cohort-comparability (same-publication always comparable; cross-publication is now UNCONDITIONALLY
 non-comparable, including when `cohort_digest` happens to match) with real per-task rate-delta

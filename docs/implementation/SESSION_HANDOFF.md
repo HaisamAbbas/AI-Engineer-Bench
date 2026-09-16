@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015); a seventh review found the sixth pass's exclude_unset fix was STILL incomplete - a present stored integer value still got coerced to float by Pydantic's own validate/dump round trip, breaking the digest again through a different mechanism (fixed by serving row.snapshot verbatim via a JSONResponse substitution instead of letting response_model touch that field) plus making aggregate required-but-nullable instead of omittable - all fixed (ENG016-016) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -440,6 +440,44 @@ OpenAPI/TypeScript artifacts were regenerated (`docs/implementation/evidence/ENG
 by the union restructuring. Full ENG-016 verification: 48 `test_api_service.py` (up from 46) + 16
 `test_analysis.py` tests pass against real PostgreSQL, 29 frontend tests, `tsc --noEmit`/`vite build`
 clean against the regenerated types.
+
+## Prompt 13 seventh-pass review - the sixth pass's exclude_unset fix was still incomplete, plus a smaller contract gap
+
+A seventh review found ENG016-015's `exclude_unset` fix still broke the served snapshot's digest for
+a PRESENT (not absent) stored value, plus one smaller contract gap - see DECISIONS.md ENG016-016:
+
+1. **A legacy snapshot's served digest could still break, for a different reason (High).**
+   `exclude_unset` stops a legacy snapshot's genuinely-absent keys from being fabricated back into
+   the response, but every key that IS present still round-trips through
+   `AnalysisSnapshot.model_validate()` and Pydantic's own schema-driven JSON dump - which coerces a
+   stored JSON integer (e.g. `suite_rate: 1`) into a served float (`1.0`) for any `float | None`
+   field. Recomputing the digest from that reserialized body no longer matched `snapshot_digest` -
+   the same failure mode as ENG016-013's read-time mutation, recurring through Pydantic's own
+   (de)serializer rather than application code, reproduced directly with
+   `AnalysisSnapshot.model_validate(...).model_dump(exclude_unset=True)` on a snapshot with integer
+   rate values. Fixed by no longer letting `response_model` serialization touch the `snapshot` field
+   at all: the route now builds its JSON body via `fastapi.encoders.jsonable_encoder` and substitutes
+   the ORIGINAL `row.snapshot` dict for the `snapshot` key, returning a `JSONResponse` directly.
+   `_verified_snapshot()` still runs first for digest/shape verification (raising 503 on either
+   mismatch), but its return value is now used only for that check, never serialized.
+   `response_model=PublicationResultsResponse` stays on the route purely for OpenAPI documentation -
+   FastAPI does not run a directly-returned `Response` through `response_model` at all -
+   and `response_model_exclude_unset` is no longer needed, since the raw substitution alone already
+   guarantees a legacy snapshot's absent keys stay absent.
+   `test_served_snapshot_preserves_integer_values_that_pydantic_would_coerce_to_float` reproduces the
+   coercion directly and confirms both the served values/types and the digest are correct.
+2. **`aggregate` was omittable, not required-but-nullable (Low).** `EligibleEntrantPanel.aggregate`
+   defaulted to `None`, letting it be dropped from the payload entirely - a weaker contract than
+   intended, since the endpoint always computes a real value (possibly itself `None`) for every
+   eligible panel. Fixed by dropping the default.
+
+Also fixed: two whitespace-only lines and a lost explanatory comment in `routes/results.py`,
+introduced by an editing mistake in the ENG016-015 commit and flagged by the review's
+`git diff --check`.
+
+OpenAPI/TypeScript artifacts were regenerated. No frontend source changes were needed. Full ENG-016
+verification: 49 `test_api_service.py` (up from 48) + 16 `test_analysis.py` tests pass against real
+PostgreSQL, 29 frontend tests, `tsc --noEmit`/`vite build` clean against the regenerated types.
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 
