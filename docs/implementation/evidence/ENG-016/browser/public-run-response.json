@@ -1,0 +1,21 @@
+{
+    "trial_id":  "18d4a6e3-aa51-41c5-af8f-82e5a1ceebdb",
+    "publication_id":  "50e78fc6-4d04-416a-b34d-766c39c37ee0",
+    "task_id":  "rag.document-freshness",
+    "task_version":  "0.1.0",
+    "entrant_id":  "browser-agent",
+    "entrant_version":  "1.0.0",
+    "repetition":  0,
+    "attempt":  {
+                    "number":  1,
+                    "phase":  "terminal",
+                    "terminal_status":  "pass"
+                },
+    "verdict":  "pass",
+    "checks":  [
+                   {
+                       "requirement_id":  "api-ready",
+                       "passed":  true
+                   }
+               ]
+}

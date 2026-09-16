@@ -55,7 +55,7 @@ export function EntrantProfile() {
         <EmptyState title="This entrant does not appear in any published release yet." />
       )}
       {results.isSuccess && results.data.length > 0 && (
-        <table>
+        <table tabIndex={0}>
           <caption>Publications this entrant appears in</caption>
           <thead>
             <tr>

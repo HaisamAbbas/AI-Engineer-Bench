@@ -10,6 +10,7 @@ import shutil
 import stat
 import tarfile
 import tempfile
+import difflib
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
@@ -58,9 +59,25 @@ class ArtifactReference:
 
 
 @dataclass(frozen=True)
+class CandidateDiff:
+    """Bounded text diff captured against the exact frozen source at collect time."""
+
+    path: str
+    operation: str
+    unified_diff: str | None
+    binary: bool = False
+    truncated: bool = False
+    baseline_available: bool = True
+
+
+@dataclass(frozen=True)
 class StoredCandidate:
     manifest: CandidateManifest
     file_references: tuple[tuple[str, ArtifactReference], ...]
+    diffs: tuple[CandidateDiff, ...] = ()
+    engineering_stdout: str = ""
+    engineering_stderr: str = ""
+    engineering_logs_truncated: bool = False
 
     def reference_for(self, path: str) -> ArtifactReference:
         for candidate_path, reference in self.file_references:
@@ -257,13 +274,21 @@ def _tree_hash(files: dict[str, tuple[Path, os.stat_result]]) -> str:
     return content_hash(entries)
 
 
-def collect_candidate(*, frozen_source: Path, workspace: Path, submission: SubmissionPolicy, base_revision_digest: str, store: ArtifactStore, access_scope: str, limits: CollectionLimits = CollectionLimits()) -> StoredCandidate:
+def collect_candidate(
+    *, frozen_source: Path, workspace: Path, submission: SubmissionPolicy, base_revision_digest: str,
+    store: ArtifactStore, access_scope: str, limits: CollectionLimits = CollectionLimits(),
+    engineering_stdout: str = "", engineering_stderr: str = "", engineering_logs_truncated: bool = False,
+) -> StoredCandidate:
     """Collect changed allowed regular files without invoking any candidate program."""
     source_files = _walk_regular_files(frozen_source, reject_hardlinks=False)
     workspace_files = _walk_regular_files(workspace)
     changed = sorted(set(source_files) | set(workspace_files))
     candidate_files: list[CandidateFile] = []
     references: list[tuple[str, ArtifactReference]] = []
+    diffs: list[CandidateDiff] = []
+    diff_bytes = 0
+    per_file_diff_limit = 256 * 1024
+    total_diff_limit = 2 * 1024 * 1024
     total_bytes = 0
     for relative in changed:
         before = source_files.get(relative)
@@ -278,22 +303,66 @@ def collect_candidate(*, frozen_source: Path, workspace: Path, submission: Submi
             raise ArtifactValidationError(f"changed path is not allowed by submission policy: {relative}")
         if after is None:
             candidate_files.append(CandidateFile(path=relative, operation="delete"))
+            before_bytes = before[0].read_bytes() if before is not None and before_info[1] <= per_file_diff_limit else None
+            if before_bytes is None:
+                diffs.append(CandidateDiff(relative, "delete", None, truncated=True))
+            else:
+                try:
+                    old_text = before_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    diffs.append(CandidateDiff(relative, "delete", None, binary=True))
+                else:
+                    patch = "".join(difflib.unified_diff(
+                        old_text.splitlines(keepends=True), [], fromfile=f"a/{relative}", tofile=f"b/{relative}",
+                    ))
+                    encoded_size = len(patch.encode("utf-8"))
+                    if diff_bytes + encoded_size > total_diff_limit:
+                        diffs.append(CandidateDiff(relative, "delete", None, truncated=True))
+                    else:
+                        diffs.append(CandidateDiff(relative, "delete", patch))
+                        diff_bytes += encoded_size
             continue
         digest, size, executable = after_info
         total_bytes += size
         if total_bytes > submission.max_artifact_bytes:
             raise ArtifactValidationError("candidate artifact exceeds byte limit")
         operation = "add" if before is None else "modify"
-        blob = store.put_bytes(after[0].read_bytes())
+        after_bytes = after[0].read_bytes()
+        blob = store.put_bytes(after_bytes)
         reference = store.create_reference(blob, access_scope=access_scope)
         candidate_files.append(CandidateFile(path=relative, operation=operation, sha256=digest, byte_length=size, executable=executable))
         references.append((relative, reference))
+        before_bytes = before[0].read_bytes() if before is not None and before_info[1] <= per_file_diff_limit else b""
+        if size > per_file_diff_limit or (before is not None and before_info[1] > per_file_diff_limit):
+            diffs.append(CandidateDiff(relative, operation, None, truncated=True))
+        elif b"\x00" in after_bytes or b"\x00" in before_bytes:
+            diffs.append(CandidateDiff(relative, operation, None, binary=True))
+        else:
+            try:
+                old_text = before_bytes.decode("utf-8")
+                new_text = after_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                diffs.append(CandidateDiff(relative, operation, None, binary=True))
+            else:
+                patch = "".join(difflib.unified_diff(
+                    old_text.splitlines(keepends=True), new_text.splitlines(keepends=True),
+                    fromfile=f"a/{relative}" if before is not None else "/dev/null",
+                    tofile=f"b/{relative}",
+                ))
+                encoded_size = len(patch.encode("utf-8"))
+                if diff_bytes + encoded_size > total_diff_limit:
+                    diffs.append(CandidateDiff(relative, operation, None, truncated=True))
+                else:
+                    diffs.append(CandidateDiff(relative, operation, patch))
+                    diff_bytes += encoded_size
     if len(candidate_files) > limits.max_files:
         raise ArtifactValidationError("candidate artifact exceeds file-count limit")
     full_tree_hash = _tree_hash(workspace_files)
     identity = content_hash({"schema_version": "aieb.candidate/v1", "base_revision_digest": base_revision_digest, "full_tree_hash": full_tree_hash, "files": [item.model_dump(mode="json") for item in candidate_files]})
     manifest = CandidateManifest(schema_version="aieb.candidate/v1", id=uuid5(NAMESPACE_URL, f"aieb:candidate:{identity}"), base_revision_digest=base_revision_digest, full_tree_hash=full_tree_hash, files=tuple(candidate_files))
-    return StoredCandidate(manifest, tuple(references))
+    return StoredCandidate(
+        manifest, tuple(references), tuple(diffs), engineering_stdout, engineering_stderr, engineering_logs_truncated,
+    )
 
 
 def reconstruct_candidate(*, frozen_source: Path, destination: Path, stored: StoredCandidate, store: ArtifactStore, principal_scope: str) -> None:

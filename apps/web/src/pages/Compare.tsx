@@ -243,7 +243,7 @@ function TaskRateDeltas({
             <h3>
               {left} vs {right}
             </h3>
-            <table>
+      <table tabIndex={0}>
               <caption>Per-task rate difference ({left} minus {right})</caption>
               <thead>
                 <tr>

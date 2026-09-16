@@ -69,6 +69,7 @@ class TaskRevisionResponse(BaseModel):
 
     id: UUID
     manifest: TaskRevision
+    ticket_text: str | None = None
 
 
 class EntrantRevisionResponse(BaseModel):
@@ -76,6 +77,88 @@ class EntrantRevisionResponse(BaseModel):
 
     id: UUID
     manifest: EntrantRevision
+
+
+class MethodologyRevisionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    scoring_digest: str
+    created_at: str
+
+
+class MethodologyRevisionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    scoring_digest: str
+    manifest: ProtocolRevision
+    created_at: str
+
+
+class RunAttemptSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    phase: str
+    terminal_status: str | None
+
+
+class PublicRequirementCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requirement_id: str
+    passed: bool | None
+
+
+class PublicRunEvidence(BaseModel):
+    """Published-only run projection; excludes code, raw logs, diagnostics,
+    billing details, fixture data, and private artifact references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: UUID
+    publication_id: UUID
+    task_id: str
+    task_version: str
+    entrant_id: str
+    entrant_version: str
+    repetition: int
+    attempt: RunAttemptSummary | None
+    verdict: Literal["pass", "fail", "contract_violation", "indeterminate"] | None
+    checks: list[PublicRequirementCheck]
+
+
+class RunFileDiff(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    operation: Literal["add", "modify", "delete"]
+    unified_diff: str | None
+    binary: bool = False
+    truncated: bool = False
+    baseline_available: bool = True
+
+
+class PrivateRunEvidence(BaseModel):
+    """Role-gated run evidence. Candidate text and evaluator output are
+    intentionally available only to operator/reviewer/administrator roles."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    campaign_id: UUID
+    task_revision_id: UUID
+    entrant_revision_id: UUID
+    repetition: int
+    latest_attempt: RunAttemptSummary | None
+    verdict: str | None = None
+    checks: dict[str, bool] | None = None
+    diagnostics: dict[str, str] | None = None
+    engineering_stdout: str | None = None
+    engineering_stderr: str | None = None
+    engineering_logs_truncated: bool = False
+    diffs: list[RunFileDiff]
 
 
 class TaskCellStats(BaseModel):

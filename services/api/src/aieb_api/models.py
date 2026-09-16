@@ -20,6 +20,7 @@ from sqlalchemy import (
     LargeBinary,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -88,6 +89,10 @@ class TaskRevisionRow(Base):
     manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     evaluator_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluator_revision.id"), nullable=False)
     manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Public ticket narrative from the task's instruction.md. Kept outside
+    # the canonical task manifest so editorial prose does not alter task
+    # identity or evaluator digests.
+    ticket_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -112,6 +117,18 @@ class EvaluatorRevisionRow(Base):
             name="ck_evaluator_revision_review_status",
         ),
     )
+
+
+class ProtocolRevisionRow(Base):
+    """Immutable, queryable protocol documents used by frozen campaigns."""
+
+    __tablename__ = "protocol_revision"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    scoring_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class FixtureRevisionRow(Base):

@@ -2,8 +2,8 @@
 
 Updated: 2026-09-16
 Current phase: Prompt 13 (ENG-016, public website).
-ENG-015 is COMPLETE: the real PostgreSQL migration/backfill test (`tests.test_api_migrations`) was run against a real disposable database and passes, closing the gate ENG015-012 left open; the full relevant regression (`test_api_service`, `test_worker_leasing`, `test_attempt_lifecycle`, `test_analysis`, `test_api_migrations`, `test_ext_tool_admission` - 111 tests) passes. The Unix process-group branch remains untested in this Windows-only environment (trusted by code symmetry with the Windows Job Object branch, matching this codebase's existing disclosed pattern for other OS-conditional code).
-ENG-016 remains IN_PROGRESS: Prompt 13 still needs real public/redacted run evidence, versioned Methodology data, task ticket text and candidate log/diff rendering, HTTP/browser integration tests, and full-page accessibility, responsive, and visual checks.
+ENG-015 remains IN_PROGRESS: the real PostgreSQL migration/backfill and a 109-test relevant regression suite pass locally; lifecycle tests also pass on Windows. Successful Ubuntu CI is still required to verify the Unix process-group branch.
+ENG-016 is COMPLETE: Prompt 13 now has persisted public run evidence, versioned Methodology data, task-ticket prose, candidate log/diff rendering, live HTTP/browser integration, full-page axe checks, desktop/mobile overflow checks, and reviewed screenshots. The synthetic browser evidence and test results are recorded under `docs/implementation/evidence/ENG-016/`.
 
 ## Current state
 
@@ -661,24 +661,12 @@ The next review found two high-severity VERIFY gaps and two medium data/cleanup 
    it while artifact I/O is stalled and waits for its process tree to stop before cleanup. The
    PostgreSQL artifact store reconstructs a process-local SQLAlchemy engine in the child.
 
-Validation on the current Windows environment: all 15 `tests.test_attempt_lifecycle` tests pass,
-including the descendant PID regression, large and oversized results, and cancellation during a
-blocked BUILD. `tests.test_api_migrations` was then run against a real disposable PostgreSQL instance
-(`AIEB_DATABASE_URL` set) and passes - the migration backfill gate this section originally left open
-is now closed. Full regression against real Postgres: 111 tests across `test_api_service` (49),
-`test_worker_leasing` (29), `test_attempt_lifecycle` (15), `test_analysis` (16), and
-`test_api_migrations` (1) pass; `test_ext_tool_admission` (1) passes unchanged. ENG-015 is back to
-`COMPLETE` in STATUS.md. The Unix process-group branch is still untested here (Windows-only
-environment) - trusted by code symmetry with the passing Windows Job Object branch, the same
-disclosure this codebase already makes for its other OS-conditional code.
+## Latest verification
 
-## Recommended next prompt
+Against a disposable PostgreSQL 16 database, `alembic upgrade head` succeeded and the relevant backend regression command passed all 109 tests, including migration/backfill, worker, lifecycle, artifact, API, and real socket-level HTTP/CORS coverage. On Windows, the lifecycle cases include descendant process termination, results larger than the OS pipe buffer, oversized-result rejection, and BUILD cancellation.
 
-Exercise the Unix process-group branch in a real Linux/macOS CI runner or environment (untestable
-on this Windows-only development machine) as a follow-up, though it is not blocking further work
-given ENG-015 is otherwise fully verified. Prompt 14 (ENG-017/018: admin campaigns, budget
-reservations, publication/correction workflows) is the natural next prompt, since it depends on and
-exercises the now-complete worker leasing layer.
-Independent task reviews remain a
-precondition before any admitted-only ENG-013 release manifest can be created; ENG-012 remains
-blocked on provider/model authorization, credentials, and spend cap.
+The website production build succeeded and Vitest passed 30 tests. Headless Microsoft Edge `153.0.4234.32` checked all 13 routes at 1440x1000 and 390x844: 26 checks, zero axe violations, and no horizontal overflow. All 26 route/viewport screenshots plus sample API responses are checked in at `docs/implementation/evidence/ENG-016/browser/`; Home desktop, task mobile, and redacted run mobile were manually inspected. These responses come from a clearly identified synthetic fixture in the disposable test database, not an official benchmark publication.
+
+## Next steps
+
+Wait for `.github/workflows/eng015-verification.yml` to pass on Ubuntu before marking ENG-015 complete; the CI job exercises the Unix process-group branch and repeats the PostgreSQL regression gates. ENG-016 is complete. ENG-012 remains blocked on provider/model authorization, credentials, and a spend cap; independent task reviews remain a precondition for an admitted-only ENG-013 release manifest.

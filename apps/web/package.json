@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:browser": "node scripts/browser-check.mjs",
     "test:watch": "vitest",
     "generate:api-types": "openapi-typescript ../../docs/implementation/evidence/ENG-014/openapi.json -o src/api/schema.ts",
     "lint:types": "tsc --noEmit"

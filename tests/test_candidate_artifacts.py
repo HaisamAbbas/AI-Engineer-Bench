@@ -58,6 +58,12 @@ class CandidateArtifactsTest(unittest.TestCase):
         (self.workspace / "src" / "résumé.txt").write_text("new\n", encoding="utf-8")
         stored = self.collect()
         self.assertEqual([(item.path, item.operation) for item in stored.manifest.files], [("remove.txt", "delete"), ("src/app.py", "modify"), ("src/résumé.txt", "add")])
+        patches = {item.path: item for item in stored.diffs}
+        self.assertIn("-original", patches["src/app.py"].unified_diff)
+        self.assertIn("+changed", patches["src/app.py"].unified_diff)
+        self.assertIn("-remove me", patches["remove.txt"].unified_diff)
+        added_patch = next(item for item in patches.values() if item.operation == "add")
+        self.assertIn("+new", added_patch.unified_diff)
         replay = self.root / "replay"
         reconstruct_candidate(frozen_source=self.source, destination=replay, stored=stored, store=self.store, principal_scope="attempt-1")
         self.assertEqual((replay / "src" / "app.py").read_text(encoding="utf-8"), "changed\n")

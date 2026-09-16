@@ -12,6 +12,7 @@ describe("TaskDetail", () => {
       "/v1/tasks/{slug}/revisions/{version}": {
         data: {
           id: "task-id",
+          ticket_text: "Updated documents can return stale content. Repair the ingestion path.",
           manifest: {
             id: "rag.document-freshness",
             version: "0.1.0",
@@ -31,6 +32,7 @@ describe("TaskDetail", () => {
     (window as unknown as { __pwned?: boolean }).__pwned = false;
     renderWithProviders(<TaskDetail />, { route: "/tasks/rag.document-freshness/0.1.0", path: "/tasks/:slug/:version" });
     await waitFor(() => expect(screen.getByText(MALICIOUS_DESCRIPTION)).toBeInTheDocument());
+    expect(screen.getByText("Updated documents can return stale content. Repair the ingestion path.")).toBeInTheDocument();
     // If this had been rendered as HTML instead of text, the onerror handler would have fired.
     expect((window as unknown as { __pwned?: boolean }).__pwned).toBe(false);
     expect(document.querySelector("img")).toBeNull();

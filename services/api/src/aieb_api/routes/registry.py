@@ -25,10 +25,17 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..errors import not_found
-from ..models import EntrantRevisionRow, TaskRevisionRow
+from ..models import EntrantRevisionRow, ProtocolRevisionRow, TaskRevisionRow
 from ..pagination import clamp_limit, decode_cursor, page
 from ..revisions import validate_stored_manifest
-from ..schemas import EntrantRevisionResponse, Page, TaskCatalogEntry, TaskRevisionResponse
+from ..schemas import (
+    EntrantRevisionResponse,
+    MethodologyRevisionResponse,
+    MethodologyRevisionSummary,
+    Page,
+    TaskCatalogEntry,
+    TaskRevisionResponse,
+)
 
 router = APIRouter(prefix="/v1", tags=["registry"])
 
@@ -68,7 +75,35 @@ def get_task_revision(slug: str, version: str, session: Session = Depends(get_se
     if row is None:
         raise not_found()
     manifest = validate_stored_manifest(TaskRevision, row.manifest, kind="task", row_id=row.id)
-    return TaskRevisionResponse(id=row.id, manifest=manifest)
+    return TaskRevisionResponse(id=row.id, manifest=manifest, ticket_text=row.ticket_text)
+
+
+@router.get("/methodology", response_model=list[MethodologyRevisionSummary])
+def list_methodology_revisions(session: Session = Depends(get_session)) -> list[MethodologyRevisionSummary]:
+    rows = session.execute(
+        select(ProtocolRevisionRow).order_by(ProtocolRevisionRow.created_at.desc(), ProtocolRevisionRow.version)
+    ).scalars().all()
+    return [
+        MethodologyRevisionSummary(
+            version=row.version, scoring_digest=row.scoring_digest, created_at=row.created_at.isoformat(),
+        )
+        for row in rows
+    ]
+
+
+@router.get("/methodology/{version}", response_model=MethodologyRevisionResponse)
+def get_methodology_revision(version: str, session: Session = Depends(get_session)) -> MethodologyRevisionResponse:
+    row = session.execute(
+        select(ProtocolRevisionRow).where(ProtocolRevisionRow.version == version)
+    ).scalar_one_or_none()
+    if row is None:
+        raise not_found()
+    return MethodologyRevisionResponse(
+        version=row.version,
+        scoring_digest=row.scoring_digest,
+        manifest=row.manifest,
+        created_at=row.created_at.isoformat(),
+    )
 
 
 @router.get("/entrants/by-slug/{slug}", response_model=EntrantRevisionResponse)

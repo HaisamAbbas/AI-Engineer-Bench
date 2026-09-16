@@ -22,7 +22,7 @@ export function ReleasesList() {
       <h1>Releases</h1>
       {items.length === 0 && <EmptyState title="No releases have been published yet." />}
       {items.length > 0 && (
-        <table>
+      <table tabIndex={0}>
           <caption>Published releases (newest first)</caption>
           <thead>
             <tr>

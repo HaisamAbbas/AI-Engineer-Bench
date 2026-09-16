@@ -1225,6 +1225,58 @@
         "title": "IneligibleEntrantPanel",
         "type": "object"
       },
+      "MethodologyRevisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ProtocolRevision"
+          },
+          "scoring_digest": {
+            "title": "Scoring Digest",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "scoring_digest",
+          "manifest",
+          "created_at"
+        ],
+        "title": "MethodologyRevisionResponse",
+        "type": "object"
+      },
+      "MethodologyRevisionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "scoring_digest": {
+            "title": "Scoring Digest",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "scoring_digest",
+          "created_at"
+        ],
+        "title": "MethodologyRevisionSummary",
+        "type": "object"
+      },
       "ModelProfile": {
         "additionalProperties": false,
         "properties": {
@@ -1347,6 +1399,130 @@
         "title": "Page[TaskCatalogEntry]",
         "type": "object"
       },
+      "PrivateRunEvidence": {
+        "additionalProperties": false,
+        "description": "Role-gated run evidence. Candidate text and evaluator output are\nintentionally available only to operator/reviewer/administrator roles.",
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "checks": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checks"
+          },
+          "diagnostics": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diagnostics"
+          },
+          "diffs": {
+            "items": {
+              "$ref": "#/components/schemas/RunFileDiff"
+            },
+            "title": "Diffs",
+            "type": "array"
+          },
+          "engineering_logs_truncated": {
+            "default": false,
+            "title": "Engineering Logs Truncated",
+            "type": "boolean"
+          },
+          "engineering_stderr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engineering Stderr"
+          },
+          "engineering_stdout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engineering Stdout"
+          },
+          "entrant_revision_id": {
+            "format": "uuid",
+            "title": "Entrant Revision Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "latest_attempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunAttemptSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repetition": {
+            "title": "Repetition",
+            "type": "integer"
+          },
+          "task_revision_id": {
+            "format": "uuid",
+            "title": "Task Revision Id",
+            "type": "string"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "task_revision_id",
+          "entrant_revision_id",
+          "repetition",
+          "latest_attempt",
+          "diffs"
+        ],
+        "title": "PrivateRunEvidence",
+        "type": "object"
+      },
       "ProtocolRevision": {
         "additionalProperties": false,
         "properties": {
@@ -1391,6 +1567,116 @@
           "hard_cost_ranking"
         ],
         "title": "ProtocolRevision",
+        "type": "object"
+      },
+      "PublicRequirementCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          },
+          "requirement_id": {
+            "title": "Requirement Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "passed"
+        ],
+        "title": "PublicRequirementCheck",
+        "type": "object"
+      },
+      "PublicRunEvidence": {
+        "additionalProperties": false,
+        "description": "Published-only run projection; excludes code, raw logs, diagnostics,\nbilling details, fixture data, and private artifact references.",
+        "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunAttemptSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRequirementCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "entrant_version": {
+            "title": "Entrant Version",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "repetition": {
+            "title": "Repetition",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "task_version": {
+            "title": "Task Version",
+            "type": "string"
+          },
+          "trial_id": {
+            "format": "uuid",
+            "title": "Trial Id",
+            "type": "string"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pass",
+                  "fail",
+                  "contract_violation",
+                  "indeterminate"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "trial_id",
+          "publication_id",
+          "task_id",
+          "task_version",
+          "entrant_id",
+          "entrant_version",
+          "repetition",
+          "attempt",
+          "verdict",
+          "checks"
+        ],
+        "title": "PublicRunEvidence",
         "type": "object"
       },
       "PublicationEntrantConfiguration": {
@@ -1610,6 +1896,88 @@
           "role"
         ],
         "title": "RoleBudget",
+        "type": "object"
+      },
+      "RunAttemptSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "number": {
+            "title": "Number",
+            "type": "integer"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "terminal_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Status"
+          }
+        },
+        "required": [
+          "number",
+          "phase",
+          "terminal_status"
+        ],
+        "title": "RunAttemptSummary",
+        "type": "object"
+      },
+      "RunFileDiff": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline_available": {
+            "default": true,
+            "title": "Baseline Available",
+            "type": "boolean"
+          },
+          "binary": {
+            "default": false,
+            "title": "Binary",
+            "type": "boolean"
+          },
+          "operation": {
+            "enum": [
+              "add",
+              "modify",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unified_diff": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unified Diff"
+          }
+        },
+        "required": [
+          "path",
+          "operation",
+          "unified_diff"
+        ],
+        "title": "RunFileDiff",
         "type": "object"
       },
       "SourceRef": {
@@ -1959,6 +2327,17 @@
           },
           "manifest": {
             "$ref": "#/components/schemas/TaskRevision"
+          },
+          "ticket_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticket Text"
           }
         },
         "required": [
@@ -2547,6 +2926,117 @@
         ]
       }
     },
+    "/v1/methodology": {
+      "get": {
+        "operationId": "list_methodology_revisions_v1_methodology_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MethodologyRevisionSummary"
+                  },
+                  "title": "Response List Methodology Revisions V1 Methodology Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Methodology Revisions",
+        "tags": [
+          "registry"
+        ]
+      }
+    },
+    "/v1/methodology/{version}": {
+      "get": {
+        "operationId": "get_methodology_revision_v1_methodology__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MethodologyRevisionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Methodology Revision",
+        "tags": [
+          "registry"
+        ]
+      }
+    },
+    "/v1/public/trials/{trial_id}": {
+      "get": {
+        "description": "Public redacted evidence exists only after the trial's campaign has\nbeen published. The projection is a whitelist and never includes source\ntext, raw evaluator diagnostics, fixture data, billing, or artifact IDs.",
+        "operationId": "get_public_trial_v1_public_trials__trial_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trial_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Trial Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicRunEvidence"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Public Trial",
+        "tags": [
+          "authorized"
+        ]
+      }
+    },
     "/v1/publications/{publication_id}/entrants/{slug}": {
       "get": {
         "description": "The EXACT entrant configuration THIS publication's frozen campaign\nused for `slug` - not whichever revision of that slug is newest right\nnow (review finding #2, second pass). Compare previously called\n`GET /entrants/by-slug/{slug}` for every panel, which always resolves\nthe most recent `EntrantRevisionRow` regardless of which publication\nthe panel is actually showing metrics for - a historical or\ncross-release comparison could silently combine one publication's\nmetrics with a DIFFERENT, newer entrant revision's model/capabilities.\nReads directly from `campaign.resolved[\"entrants\"]`, the same frozen\nmanifest `frozen_tasks`/`cohort` already come from - real data, not a\nsecond guess.",
@@ -2860,9 +3350,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Trial V1 Trials  Trial Id  Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/PrivateRunEvidence"
                 }
               }
             },

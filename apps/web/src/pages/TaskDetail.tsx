@@ -14,6 +14,7 @@ export function TaskDetail() {
   if (task.isError) return <ErrorState error={task.error} onRetry={() => task.refetch()} />;
 
   const manifest = task.data.manifest;
+  const ticketText = task.data.ticket_text;
 
   function downloadBundle() {
     const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
@@ -51,8 +52,15 @@ export function TaskDetail() {
         <dd>{manifest.profile_compatibility.join(", ")}</dd>
       </dl>
 
+      <h2>Task ticket</h2>
+      {ticketText ? (
+        <TaskTicket text={ticketText} />
+      ) : (
+        <p role="note">No public ticket narrative is recorded for this task revision.</p>
+      )}
+
       <h2>Public requirements</h2>
-      <table>
+      <table tabIndex={0}>
         <caption>Requirements this task's public contract commits to</caption>
         <thead>
           <tr>
@@ -73,7 +81,7 @@ export function TaskDetail() {
       </table>
 
       <h2>Run command</h2>
-      <pre>
+      <pre tabIndex={0}>
         <code>{manifest.application.entrypoint.join(" ")}</code>
       </pre>
 
@@ -82,4 +90,26 @@ export function TaskDetail() {
       </button>
     </section>
   );
+}
+
+function TaskTicket({ text }: { text: string }) {
+  return (
+    <div className="task-ticket">
+      {text.trim().split(/\n\s*\n/).map((block, index) => {
+        const heading = block.match(/^#{1,3}\s+(.+)$/);
+        if (heading) return <h3 key={index}><InlineTicketText text={heading[1]} /></h3>;
+        const lines = block.split("\n");
+        if (lines.every((line) => /^[-*]\s+/.test(line))) {
+          return <ul key={index}>{lines.map((line, lineIndex) => <li key={lineIndex}><InlineTicketText text={line.replace(/^[-*]\s+/, "")} /></li>)}</ul>;
+        }
+        return <p key={index}><InlineTicketText text={block.replace(/\n/g, " ")} /></p>;
+      })}
+    </div>
+  );
+}
+
+function InlineTicketText({ text }: { text: string }) {
+  return <>{text.split(/(`[^`]+`)/g).map((part, index) => part.startsWith("`") && part.endsWith("`")
+    ? <code key={index}>{part.slice(1, -1)}</code>
+    : part)}</>;
 }

@@ -17,10 +17,7 @@ sixth time after a review found the fifth pass's own snapshot-digest fix was sti
 one case, plus a comparison-contract regression (see DECISIONS.md ENG016-015, and "Sixth-pass
 fixes" below), then a seventh time after a review found the sixth pass's `exclude_unset` fix was
 STILL incomplete for a present (not absent) stored value, plus a smaller contract gap (see
-DECISIONS.md ENG016-016, and "Seventh-pass fixes" below). ENG-016 remains IN_PROGRESS: real
-HTTP/browser integration tests and broader accessibility coverage are deliberately not attempted
-here - a real separate effort, disclosed as open rather than bundled into this pass - along with
-the other open acceptance gates listed below.
+DECISIONS.md ENG016-016, and "Seventh-pass fixes" below). The final acceptance work in the sections below closes the previously open ENG-016 product and verification gates. ENG-016 is COMPLETE. A few analysis limitations remain documented as out of scope for this website ticket.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -348,98 +345,27 @@ to `None`, letting it be dropped from the payload entirely - a weaker contract t
 the endpoint always computes a real value (possibly itself `None`) for every eligible panel. Fixed
 by dropping the default.
 
-## Known, disclosed gaps that remain (not fabricated data)
+## Prompt 13 acceptance work and remaining limits
 
-- **Run evidence** (`/runs/:trialId`): the only backing endpoint, `GET /v1/trials/{id}`, is
-  role-gated with no public-redacted branch - still shows an honest "requires authorization" state.
-  Building a real redaction boundary is its own design task (ENG016-002), not attempted here.
-- **Task ticket text**: `instruction.md`'s narrative (symptom/user impact) is not persisted on
-  `task_revision` and so is not returned by any endpoint; the task detail page shows the full
-  manifest (source/environment/application/submission/requirements), which is real and complete,
-  but not the prose ticket text.
-- **Methodology**: still real static content; no versioned `ProtocolRevision` history exists to
-  query.
-- Candidate logs/diffs: no endpoint returns them yet (same gap as run evidence's thin response), so
-  there is no page rendering that content to test malicious-log escaping against - the existing
-  malicious-content test uses a real API field (a task requirement description) instead.
-- Real-browser visual/responsive inspection: no visual browser tooling was available in this
-  environment.
-- **Genuine repetition-matched paired statistics** (spec section 28: "resampling projects/families
-  then repetitions according to the declared hierarchical model", `aieb_analysis.
-  paired_project_difference`): the hosted persistence schema (`trial`/`attempt`/`candidate`/
-  `evaluation`) never tracks `project_id`, which that function's own signature requires - it has no
-  production caller anywhere in this codebase. The per-task rate difference `GET /v1/comparisons`
-  returns within a single publication is honestly labeled as exactly that, not this stricter
-  statistic - building real per-repetition, project-tracked pairing is a persistence-schema change,
-  not a bug fix, and is future work.
-- **"Planned" trial counts** (as opposed to valid ones) and **a per-entrant aggregate Wilson
-  uncertainty interval** are not in `AnalysisSnapshot` - the former needs `planned_cells` wired to a
-  real caller (the same pre-existing ENG-011 gap), the latter is not statistically sound to compute
-  by pooling per-task confidence intervals without a declared hierarchical model. Both are named in
-  `snapshot.limitations`, not fabricated.
-- **Frontend tests mock at the typed-API-client boundary, not real HTTP.** They exercise real hook/
-  component/render code, but never a real `fetch`, generated-client serialization, CORS, or an
-  actual running backend - and structural accessibility automation (`axe-core`) covers only Home and
-  TaskCatalog, not every page. A real end-to-end journey (seeded API, real browser, every page) is a
-  distinct, larger effort - deliberately not attempted in this pass (third review's finding #5),
-  disclosed as open rather than silently claimed via the existing 27 typed-mock tests.
+The previously open website acceptance gaps are implemented and exercised end to end:
 
-## Testing
+- `GET /v1/public/trials/{id}` returns a whitelist projection only when the trial belongs to a published or superseded campaign. The private endpoint still requires an authorized role and supplies the bounded engineering stdout/stderr, evaluator diagnostics, and stored candidate diffs. API tests verify the public body omits all of those private fields, and the browser fixture deliberately contains private values to catch leakage.
+- A `protocol_revision` table stores immutable, versioned protocol manifests. Public list/detail routes back the Methodology page, which exposes the actual versioned data and download.
+- `task_revision.ticket_text` stores the public task narrative; the migration backfills it from existing development task instructions. Task detail renders the prose safely as text and preserves headings, lists, and inline code.
+- Candidate output is bounded at capture and stored with candidate evidence. The authorized run page renders text logs and unified diffs safely; public run pages render only the redacted projection.
+- A real socket-level Uvicorn test checks HTTP JSON and CORS preflight behavior. A headless Edge run visits all 13 website routes at desktop and mobile sizes, makes real API requests, runs axe against the full page, checks for horizontal overflow, and saves screenshots for every route/viewport pair. Home desktop, Task detail mobile, and Run mobile were manually inspected for visual layout.
 
-`apps/web/src/pages/*.test.tsx`: 29 tests (Vitest + Testing Library), against a typed spy on the API
-client (`src/test/mockApi.ts` - MSW's network interception did not reliably patch `fetch` under this
-environment's jsdom + very-recent-Node combination, so this session mocks at the typed-client
-boundary instead; still real hook/component/render code):
+The browser and captured API responses use one synthetic published-run fixture in a disposable PostgreSQL database. They demonstrate the real HTTP projection and redaction boundary; they are not official benchmark evidence or a production publication. The checked-in browser report lists each route, viewport, API request, page size, and axe result.
 
-- Every page: `Home`, `Results`, `Compare`, `TaskCatalog`, `TaskDetail`, `EntrantProfile`,
-  `ReleasesList`, `ReleaseDetail`, `Corrections`, `RunEvidence` has at least one test.
-- Honest empty/error/withdrawn/superseded/not-found/authorization-required states throughout -
-  UI-01's "no placeholder leaderboard scores."
-- A working error-recovery Retry (`Home`): a failed query followed by a successful refetch.
-- Cohort-comparable vs. non-comparable comparison, including real `paired_differences` rendering and
-  Compare's per-entrant exact configuration (version/model/capabilities) plus cost/time/coverage.
-- Null rates sort last and display "Unknown," never a fabricated zero.
-- Up-to-4 entrant selection with the 5th checkbox disabled.
-- URL-backed category filter and cursor-based "Next page" pagination.
-- Malicious content (embedded `<img onerror>` and raw ANSI escape bytes) renders as literal text and
-  never executes.
-- Structural accessibility (`axe-core`: label association, table semantics, landmark structure -
-  color-contrast disabled since jsdom cannot evaluate real color).
+Analysis limits outside ENG-016 remain explicit: repetition-matched project-level statistics require project and repetition identities in hosted persistence; planned trial counts and a hierarchical per-entrant uncertainty interval also need analysis-contract work. These values are not fabricated by the website.
 
-`services/api`'s own test suite (49 tests in `tests/test_api_service.py`, 3 in
-`tests/test_api_cors.py`) covers: CORS allow/deny, newest-first pagination across multiple pages,
-snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), that the
-SERVED snapshot still hashes to its recorded digest (never mutated on a read; for a LEGACY snapshot
-missing `per_entrant_*` keys entirely, whose absent keys must stay absent rather than serialize back
-out as fabricated `null`s; and for a snapshot with PRESENT integer rate values, which must stay
-integers rather than being coerced to float by response serialization), that
-`ComparisonEntrantPanel`'s tagged union rejects an
-eligible panel carrying a `reason` or an ineligible panel carrying a fabricated `aggregate`, real
-cohort-comparability (same-publication always comparable; cross-publication is now UNCONDITIONALLY
-non-comparable, including when `cohort_digest` happens to match) with real per-task rate-delta
-output, comparing the same slug across two releases keeping both panels distinct (and rejecting the
-same `(slug, publication)` twice), `supersedes_id`/`cohort_digest`/`protocol_scoring_digest`/`cohort`/
-`frozen_tasks`/`frozen_entrants` on publication results, the frozen task count served separately with
-the snapshot unmodified, a zero-observation frozen entrant still appearing in the roster, the
-task-catalog/corrections listings, the frozen task list preserving a zero-observation task, and
-entrant results pinning the exact revision a historical publication actually used. `aieb_analysis`'s
-own `tests/test_analysis.py` (16 tests) covers the new per-entrant cost/time/deadline/attrition
-breakdowns, `required_repetitions`, and the conventional (fractional, even-sample) median.
+## Verification
 
-**On the Python test count**: a prior review correctly noted an environment without
-`AIEB_DATABASE_URL` configured skips (not fails) every PostgreSQL-dependent test class
-(`test_worker_leasing.py`, `test_attempt_lifecycle.py`'s DB-touching cases, `test_api_service.py`,
-`test_api_cors.py`, and others) - stating a single "N tests passing" number without naming that
-precondition is misleading. Against a real disposable Postgres instance
-(`docker run ... postgres:16`, `AIEB_DATABASE_URL` set, `alembic upgrade head` applied): 125 tests
-discovered, 124 passed, 1 skipped (a pre-existing, intentionally-skipped case unrelated to
-`AIEB_DATABASE_URL`). Without `AIEB_DATABASE_URL` set: 125 discovered, 64 passed, 61 skipped - all
-OK, none failed; the skips are the expected, honest behavior for a missing precondition, not a
-hidden test failure.
-
-A real `uvicorn` instance was started against the real test Postgres and hit directly with `curl`
-(including a real CORS preflight with an `Origin` header, and the new `/v1/entrants/by-slug/*`
-routes) to confirm the generated TypeScript types match actual runtime response shapes.
+- Real PostgreSQL migration chain: `alembic upgrade head` and the migration/backfill regression passed.
+- Backend regressions: 109 tests passed across `test_api_migrations`, `test_api_service`, `test_api_http_integration`, `test_attempt_lifecycle`, `test_candidate_artifacts`, and `test_worker_leasing`, with `AIEB_DATABASE_URL` pointing to disposable PostgreSQL 16.
+- Frontend: `npm run build` succeeded; `npm test` passed 30 tests across 12 files.
+- Real browser: Microsoft Edge `153.0.4234.32`, 13 routes x 2 viewports (1440x1000 and 390x844), 26 checks, zero axe violations, and zero horizontal overflow. Every app route made a real API request except the intentionally static `/docs` and not-found route.
+- Visual evidence and captured public responses: [`browser/`](browser/), including [`browser-check.json`](browser/browser-check.json), [`public-run-response.json`](browser/public-run-response.json), [`methodology-response.json`](browser/methodology-response.json), and all 26 route/viewport screenshots. Home desktop, Task detail mobile, and redacted Run mobile were manually inspected.
 
 ## Commands
 

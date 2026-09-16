@@ -97,16 +97,23 @@ class MigrationCompatibilityTests(unittest.TestCase):
             """), {"id": evaluator_id, "digest": "e" * 64})
             connection.execute(text("""
                 INSERT INTO task_revision (id, slug, version, family_id, category, source_digest, manifest_digest, evaluator_id, manifest)
-                VALUES (:id, 'migration.test', 'v1', 'migration.test', 'rag', :source, :manifest_digest, :evaluator, '{}'::jsonb)
+                VALUES (:id, 'rag.document-freshness', '0.1.0', 'knowledge-service-a', 'rag', :source, :manifest_digest, :evaluator, '{}'::jsonb)
             """), {"id": task_id, "source": "s" * 64, "manifest_digest": "m" * 64, "evaluator": evaluator_id})
             connection.execute(text("""
                 INSERT INTO entrant_revision (id, slug, version, track, config_digest, capabilities, manifest)
                 VALUES (:id, 'migration.entrant', 'v1', 'models', :digest, '{}'::jsonb, '{}'::jsonb)
             """), {"id": entrant_id, "digest": "c" * 64})
             connection.execute(text("""
-                INSERT INTO campaign (id, name, state, draft, revision)
-                VALUES (:id, 'migration test', 'draft', '{}'::jsonb, 0)
-            """), {"id": campaign_id})
+                INSERT INTO campaign (id, name, state, draft, resolved, revision)
+                VALUES (:id, 'migration test', 'draft', '{}'::jsonb, CAST(:resolved AS jsonb), 0)
+            """), {
+                "id": campaign_id,
+                "resolved": json.dumps({"protocol": {
+                    "schema_version": "aieb.protocol/v1", "id": "migration-protocol-v1",
+                    "scoring_digest": "p" * 64, "max_replacements": 1,
+                    "required_trace_coverage": True, "hard_cost_ranking": False,
+                }}),
+            })
             connection.execute(text("""
                 INSERT INTO trial (id, campaign_id, task_revision_id, entrant_revision_id, repetition, cell_digest)
                 VALUES (:id, :campaign, :task, :entrant, 0, :digest)
@@ -172,12 +179,21 @@ class MigrationCompatibilityTests(unittest.TestCase):
                 "wrong_digest": rows["blob_wrong_digest"], "wrong_length": rows["blob_wrong_length"],
                 "ambiguous": rows["blob_ambiguous"], "unclaimed": rows["blob_unclaimed"],
             }).all()
+            ticket = connection.execute(text("""
+                SELECT ticket_text FROM task_revision WHERE slug = 'rag.document-freshness' AND version = '0.1.0'
+            """)).scalar_one()
+            protocol = connection.execute(text("""
+                SELECT version, scoring_digest, manifest->>'id' FROM protocol_revision
+                WHERE version = 'migration-protocol-v1'
+            """)).one()
         engine.dispose()
         reference_owners = dict(references)
         self.assertEqual(reference_owners[rows["reference_claimed"]], rows["candidate"])
         for key in ("wrong_scope", "wrong_digest", "wrong_length", "ambiguous", "unclaimed"):
             self.assertIsNone(reference_owners[rows[f"reference_{key}"]], key)
         blob_rows = {row.sha256: row for row in blobs}
+        self.assertIn("Updated documents can return old passages", ticket)
+        self.assertEqual(protocol, ("migration-protocol-v1", "p" * 64, "migration-protocol-v1"))
         self.assertEqual(blob_rows[rows["blob_claimed"]].retention_class, "evidence")
         self.assertIsNone(blob_rows[rows["blob_claimed"]].staged_until)
         for key in ("wrong_scope", "wrong_digest", "wrong_length", "ambiguous", "unclaimed"):

@@ -20,7 +20,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from aieb_core.models import CandidateManifest, ExecutionValidity, SubmissionPolicy
-from aieb_runner.artifacts import ArtifactReference, BlobRef, StoredCandidate
+from aieb_runner.artifacts import ArtifactReference, BlobRef, CandidateDiff, StoredCandidate
 from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, CancelledError, EngineeringCommand, LocalAttemptRunner
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
@@ -133,6 +133,20 @@ def _serialize_stored_candidate(stored: StoredCandidate) -> dict:
             }
             for path, reference in stored.file_references
         ],
+        "diffs": [
+            {
+                "path": entry.path,
+                "operation": entry.operation,
+                "unified_diff": entry.unified_diff,
+                "binary": entry.binary,
+                "truncated": entry.truncated,
+                "baseline_available": entry.baseline_available,
+            }
+            for entry in stored.diffs
+        ],
+        "engineering_stdout": stored.engineering_stdout,
+        "engineering_stderr": stored.engineering_stderr,
+        "engineering_logs_truncated": stored.engineering_logs_truncated,
     }
 
 
@@ -181,6 +195,17 @@ class _StoredFileReferenceEnvelope(BaseModel):
     reference: _StoredReferenceEnvelope
 
 
+class _StoredDiffEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1)
+    operation: Literal["add", "modify", "delete"]
+    unified_diff: str | None
+    binary: bool
+    truncated: bool
+    baseline_available: bool
+
+
 class _StoredCandidateEnvelope(BaseModel):
     """The complete shape _serialize_stored_candidate() writes, validated as
     a whole rather than accessed field-by-field with plain dict indexing and
@@ -202,6 +227,12 @@ class _StoredCandidateEnvelope(BaseModel):
     # references list and the pipeline records/verdicts it), so requiring at
     # least one reference would regress that path to infrastructure_invalid.
     file_references: list[_StoredFileReferenceEnvelope]
+    # Optional on read for candidates persisted before this display-only field
+    # existed; new writers always include it.
+    diffs: list[_StoredDiffEnvelope] = Field(default_factory=list)
+    engineering_stdout: str = ""
+    engineering_stderr: str = ""
+    engineering_logs_truncated: bool = False
 
 
 def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
@@ -235,7 +266,15 @@ def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
         )
         for entry in envelope.file_references
     )
-    return StoredCandidate(manifest=manifest, file_references=file_references)
+    diffs = tuple(CandidateDiff(**entry.model_dump()) for entry in envelope.diffs)
+    return StoredCandidate(
+        manifest=manifest,
+        file_references=file_references,
+        diffs=diffs,
+        engineering_stdout=envelope.engineering_stdout,
+        engineering_stderr=envelope.engineering_stderr,
+        engineering_logs_truncated=envelope.engineering_logs_truncated,
+    )
 
 
 def execute_leased_engineering(

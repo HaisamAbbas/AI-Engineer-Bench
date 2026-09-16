@@ -327,7 +327,7 @@ function ResultsTable({
       <button type="button" onClick={downloadJson}>
         Download JSON
       </button>
-      <table>
+      <table tabIndex={0}>
         <caption>Results by entrant revision</caption>
         <thead>
           <tr>

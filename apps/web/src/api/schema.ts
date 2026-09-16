@@ -212,6 +212,62 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/methodology": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Methodology Revisions */
+        get: operations["list_methodology_revisions_v1_methodology_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/methodology/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Methodology Revision */
+        get: operations["get_methodology_revision_v1_methodology__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/public/trials/{trial_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Public Trial
+         * @description Public redacted evidence exists only after the trial's campaign has
+         *     been published. The projection is a whitelist and never includes source
+         *     text, raw evaluator diagnostics, fixture data, billing, or artifact IDs.
+         */
+        get: operations["get_public_trial_v1_public_trials__trial_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/publications/{publication_id}/entrants/{slug}": {
         parameters: {
             query?: never;
@@ -792,6 +848,25 @@ export interface components {
             /** Reason */
             reason: string;
         };
+        /** MethodologyRevisionResponse */
+        MethodologyRevisionResponse: {
+            /** Created At */
+            created_at: string;
+            manifest: components["schemas"]["ProtocolRevision"];
+            /** Scoring Digest */
+            scoring_digest: string;
+            /** Version */
+            version: string;
+        };
+        /** MethodologyRevisionSummary */
+        MethodologyRevisionSummary: {
+            /** Created At */
+            created_at: string;
+            /** Scoring Digest */
+            scoring_digest: string;
+            /** Version */
+            version: string;
+        };
         /** ModelProfile */
         ModelProfile: {
             /** Provider Class */
@@ -824,6 +899,57 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
         };
+        /**
+         * PrivateRunEvidence
+         * @description Role-gated run evidence. Candidate text and evaluator output are
+         *     intentionally available only to operator/reviewer/administrator roles.
+         */
+        PrivateRunEvidence: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Checks */
+            checks?: {
+                [key: string]: boolean;
+            } | null;
+            /** Diagnostics */
+            diagnostics?: {
+                [key: string]: string;
+            } | null;
+            /** Diffs */
+            diffs: components["schemas"]["RunFileDiff"][];
+            /**
+             * Engineering Logs Truncated
+             * @default false
+             */
+            engineering_logs_truncated: boolean;
+            /** Engineering Stderr */
+            engineering_stderr?: string | null;
+            /** Engineering Stdout */
+            engineering_stdout?: string | null;
+            /**
+             * Entrant Revision Id
+             * Format: uuid
+             */
+            entrant_revision_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            latest_attempt: components["schemas"]["RunAttemptSummary"] | null;
+            /** Repetition */
+            repetition: number;
+            /**
+             * Task Revision Id
+             * Format: uuid
+             */
+            task_revision_id: string;
+            /** Verdict */
+            verdict?: string | null;
+        };
         /** ProtocolRevision */
         ProtocolRevision: {
             /** Hard Cost Ranking */
@@ -841,6 +967,45 @@ export interface components {
             schema_version: "aieb.protocol/v1";
             /** Scoring Digest */
             scoring_digest: string;
+        };
+        /** PublicRequirementCheck */
+        PublicRequirementCheck: {
+            /** Passed */
+            passed: boolean | null;
+            /** Requirement Id */
+            requirement_id: string;
+        };
+        /**
+         * PublicRunEvidence
+         * @description Published-only run projection; excludes code, raw logs, diagnostics,
+         *     billing details, fixture data, and private artifact references.
+         */
+        PublicRunEvidence: {
+            attempt: components["schemas"]["RunAttemptSummary"] | null;
+            /** Checks */
+            checks: components["schemas"]["PublicRequirementCheck"][];
+            /** Entrant Id */
+            entrant_id: string;
+            /** Entrant Version */
+            entrant_version: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Repetition */
+            repetition: number;
+            /** Task Id */
+            task_id: string;
+            /** Task Version */
+            task_version: string;
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
+            /** Verdict */
+            verdict: ("pass" | "fail" | "contract_violation" | "indeterminate") | null;
         };
         /**
          * PublicationEntrantConfiguration
@@ -930,6 +1095,42 @@ export interface components {
             /** Limit Usd */
             limit_usd?: string | null;
             role: components["schemas"]["BudgetRole"];
+        };
+        /** RunAttemptSummary */
+        RunAttemptSummary: {
+            /** Number */
+            number: number;
+            /** Phase */
+            phase: string;
+            /** Terminal Status */
+            terminal_status: string | null;
+        };
+        /** RunFileDiff */
+        RunFileDiff: {
+            /**
+             * Baseline Available
+             * @default true
+             */
+            baseline_available: boolean;
+            /**
+             * Binary
+             * @default false
+             */
+            binary: boolean;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "add" | "modify" | "delete";
+            /** Path */
+            path: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Unified Diff */
+            unified_diff: string | null;
         };
         /** SourceRef */
         SourceRef: {
@@ -1061,6 +1262,8 @@ export interface components {
              */
             id: string;
             manifest: components["schemas"]["TaskRevision"];
+            /** Ticket Text */
+            ticket_text?: string | null;
         };
         /**
          * Track
@@ -1389,6 +1592,88 @@ export interface operations {
             };
         };
     };
+    list_methodology_revisions_v1_methodology_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MethodologyRevisionSummary"][];
+                };
+            };
+        };
+    };
+    get_methodology_revision_v1_methodology__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MethodologyRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_public_trial_v1_public_trials__trial_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trial_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicRunEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_publication_entrant_configuration_v1_publications__publication_id__entrants__slug__get: {
         parameters: {
             query?: never;
@@ -1566,9 +1851,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["PrivateRunEvidence"];
                 };
             };
             /** @description Validation Error */

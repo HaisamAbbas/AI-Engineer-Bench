@@ -39,7 +39,7 @@ export function RunLocally() {
           {commands.map((item) => (
             <li key={item.command}>
               <p>{item.label}</p>
-              <pre>
+      <pre tabIndex={0}>
                 <code>{item.command}</code>
               </pre>
               <button type="button" onClick={() => copy(item.command)}>

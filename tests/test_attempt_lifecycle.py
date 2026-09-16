@@ -175,6 +175,23 @@ class AttemptLifecycleTests(unittest.TestCase):
             + extra
         )
 
+    def test_engineering_output_larger_than_pipe_buffer_is_drained_and_bounded(self) -> None:
+        script = self.script(
+            "large-output.py",
+            "import sys\n"
+            "sys.stdout.write('o' * (2 * 1024 * 1024))\n"
+            "sys.stderr.write('e' * (2 * 1024 * 1024))\n",
+        )
+        outcome = self.runner.run_engineering(self.config("large-output", script, deadline=10))
+        self.assertIsNotNone(outcome.candidate)
+        self.assertEqual(len(outcome.engineering_stdout.encode("utf-8")), 64 * 1024)
+        self.assertEqual(len(outcome.engineering_stderr.encode("utf-8")), 64 * 1024)
+        self.assertTrue(outcome.engineering_logs_truncated)
+        self.assertEqual(outcome.candidate.engineering_stdout, outcome.engineering_stdout)
+        restored = _deserialize_stored_candidate(_serialize_stored_candidate(outcome.candidate))
+        self.assertEqual(restored.engineering_stderr, outcome.engineering_stderr)
+        self.assertTrue(restored.engineering_logs_truncated)
+
     def test_engineering_and_verification_can_run_as_two_independent_calls(self) -> None:
         """ENG015-007: verification must be resumable from a fresh AttemptOutcome
         carrying only the artifact-store-backed candidate reference - not the

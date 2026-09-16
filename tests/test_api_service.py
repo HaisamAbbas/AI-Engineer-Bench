@@ -109,6 +109,7 @@ class ApiServiceTests(unittest.TestCase):
                 slug=slug, version="0.1.0", family_id="knowledge-service-a", category="rag",
                 source_digest="1" * 64, manifest_digest="d" * 64,
                 evaluator_id=self._seed_evaluator(session), manifest=manifest,
+                ticket_text="Repair stale document ingestion. Updated documents must replace old searchable text.",
             ))
             session.commit()
 
@@ -242,6 +243,11 @@ class ApiServiceTests(unittest.TestCase):
         first = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers | {"Idempotency-Key": "freeze-1"})
         self.assertEqual(first.status_code, 200)
         self.assertEqual(first.json()["state"], "frozen")
+        with db.session_factory()() as session:
+            protocol = session.execute(
+                select(api_models.ProtocolRevisionRow).where(api_models.ProtocolRevisionRow.version == "protocol-a")
+            ).scalar_one()
+            self.assertEqual(protocol.scoring_digest, "9" * 64)
         second = self.client.post(f"/v1/campaigns/{campaign_id}/freeze", json=registry, headers=headers | {"Idempotency-Key": "freeze-2"})
         self.assertEqual(second.status_code, 409)
 
@@ -493,6 +499,85 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get(f"/v1/trials/{trial_id}", headers=_auth_header(("reviewer",)))
         self.assertEqual(response.status_code, 404)  # role passes; trial itself does not exist
 
+    def test_public_run_evidence_is_published_only_and_redacts_candidate_material(self) -> None:
+        from aieb_core.models import CandidateManifest
+        from aieb_runner.artifacts import CandidateDiff, StoredCandidate
+        from aieb_api.worker.runner_bridge import _serialize_stored_candidate
+
+        self._seed_task()
+        self._seed_entrant()
+        with db.session_factory()() as session:
+            task = session.execute(select(api_models.TaskRevisionRow).where(api_models.TaskRevisionRow.slug == "rag.document-freshness")).scalar_one()
+            entrant = session.execute(select(api_models.EntrantRevisionRow).where(api_models.EntrantRevisionRow.slug == "agent-a")).scalar_one()
+            campaign = api_models.CampaignRow(name="published run", state="completed", draft={"x": 1})
+            session.add(campaign)
+            session.flush()
+            trial = api_models.TrialRow(
+                campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id,
+                repetition=0, cell_digest="c" * 64,
+            )
+            session.add(trial)
+            session.flush()
+            attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="terminal", terminal_status="pass")
+            session.add(attempt)
+            session.flush()
+            manifest = CandidateManifest(
+                schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64,
+                full_tree_hash="2" * 64, files=(),
+            )
+            stored = StoredCandidate(
+                manifest, (), (CandidateDiff("src/app.py", "modify", "--- a/src/app.py\n+++ b/src/app.py\n"),),
+                engineering_stdout="private candidate log", engineering_stderr="private stderr",
+            )
+            candidate = api_models.CandidateRow(
+                attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(),
+                validation_status="valid", stored_candidate=_serialize_stored_candidate(stored),
+            )
+            session.add(candidate)
+            session.flush()
+            fixture = api_models.FixtureRevisionRow(digest="f" * 64, visibility="public", family_id=task.family_id)
+            session.add(fixture)
+            session.flush()
+            session.add(api_models.EvaluationRow(
+                candidate_id=candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id,
+                schedule_digest=manifest.digest(), verdict="pass",
+                result={"checks": {"api-ready": True, "secret-fixture-check": True}, "diagnostics": {"private": "do not publish"}},
+            ))
+            campaign_id, trial_id = campaign.id, trial.id
+            session.commit()
+        publication_id = self._seed_publication(self._analysis_snapshot({}), campaign_id=campaign_id)
+
+        public = self.client.get(f"/v1/public/trials/{trial_id}")
+        self.assertEqual(public.status_code, 200)
+        public_body = public.json()
+        self.assertEqual(public_body["publication_id"], str(publication_id))
+        self.assertEqual(public_body["verdict"], "pass")
+        self.assertEqual(public_body["checks"], [{"requirement_id": "api-ready", "passed": True}])
+        for private_key in ("diffs", "diagnostics", "engineering_stdout", "engineering_stderr", "artifact_ref_id"):
+            self.assertNotIn(private_key, public_body)
+
+        private = self.client.get(f"/v1/trials/{trial_id}", headers=_auth_header(("reviewer",)))
+        self.assertEqual(private.status_code, 200)
+        private_body = private.json()
+        self.assertEqual(private_body["engineering_stdout"], "private candidate log")
+        self.assertEqual(private_body["diagnostics"], {"private": "do not publish"})
+        self.assertEqual(private_body["diffs"][0]["path"], "src/app.py")
+
+        # A real trial without any publication is not a public existence oracle.
+        with db.session_factory()() as session:
+            private_campaign = api_models.CampaignRow(name="unpublished", state="completed", draft={"x": 2})
+            session.add(private_campaign)
+            session.flush()
+            private_trial = api_models.TrialRow(
+                campaign_id=private_campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id,
+                repetition=0, cell_digest="d" * 64,
+            )
+            session.add(private_trial)
+            session.commit()
+            private_trial_id = private_trial.id
+        hidden = self.client.get(f"/v1/public/trials/{private_trial_id}")
+        self.assertEqual(hidden.status_code, 404)
+
     # ---- auth fails closed / role enforcement --------------------------
 
     def test_unauthenticated_request_to_operator_route_is_401(self) -> None:
@@ -540,6 +625,26 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get("/v1/tasks/rag.document-freshness/revisions/0.1.0")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["manifest"]["id"], "rag.document-freshness")
+        self.assertIn("Repair stale document ingestion", response.json()["ticket_text"])
+
+    def test_methodology_revisions_are_public_and_versioned(self) -> None:
+        manifest = {
+            "schema_version": "aieb.protocol/v1", "id": "protocol-test-v1",
+            "scoring_digest": "a" * 64, "max_replacements": 1,
+            "required_trace_coverage": True, "hard_cost_ranking": False,
+        }
+        with db.session_factory()() as session:
+            session.add(api_models.ProtocolRevisionRow(
+                version=manifest["id"], scoring_digest=manifest["scoring_digest"], manifest=manifest,
+            ))
+            session.commit()
+        listing = self.client.get("/v1/methodology")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()[0]["version"], "protocol-test-v1")
+        detail = self.client.get("/v1/methodology/protocol-test-v1")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json()["manifest"], manifest)
+        self.assertEqual(self.client.get("/v1/methodology/unknown").status_code, 404)
 
     def test_get_unknown_task_revision_is_404(self) -> None:
         response = self.client.get("/v1/tasks/does.not.exist/revisions/0.1.0")

@@ -13,13 +13,14 @@ from aieb_core.models import CampaignDraft, EntrantRevision, TaskRevision
 from aieb_core.planner import PlanningError, Registry, freeze_campaign
 from fastapi import APIRouter, Depends, Header
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from ..auth import Identity, require_role
 from ..db import get_session
 from ..errors import conflict, invalid_request, not_found, stale_revision
 from ..idempotency import check_or_reserve, finalize
-from ..models import CampaignRow, EntrantRevisionRow, TaskRevisionRow
+from ..models import CampaignRow, EntrantRevisionRow, ProtocolRevisionRow, TaskRevisionRow
 from ..revisions import validate_stored_manifest
 from ..schemas import CampaignCreateRequest, CampaignPatchRequest, CampaignSummary, FreezeRegistry
 
@@ -136,6 +137,25 @@ def freeze(
         resolved = freeze_campaign(draft, registry)
     except PlanningError as exc:
         raise invalid_request(f"campaign cannot be frozen: {exc}") from exc
+
+    # Methodology versions are persisted on first use and thereafter
+    # immutable. Reusing a version identifier for different rules would make
+    # the public version URL ambiguous, so reject it before freezing.
+    protocol_manifest = registry_body.protocol.model_dump(mode="json")
+    session.execute(
+        pg_insert(ProtocolRevisionRow)
+        .values(
+            version=registry_body.protocol.id,
+            scoring_digest=registry_body.protocol.scoring_digest,
+            manifest=protocol_manifest,
+        )
+        .on_conflict_do_nothing(index_elements=[ProtocolRevisionRow.version])
+    )
+    protocol_row = session.execute(
+        select(ProtocolRevisionRow).where(ProtocolRevisionRow.version == registry_body.protocol.id)
+    ).scalar_one()
+    if protocol_row.manifest != protocol_manifest or protocol_row.scoring_digest != registry_body.protocol.scoring_digest:
+        raise conflict("protocol version already exists with different methodology data")
 
     # Atomic conditional UPDATE: state AND revision are both guarded in the same statement
     # that writes the frozen manifest, so this cannot lose a concurrent PATCH (see above) and

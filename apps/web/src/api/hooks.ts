@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { api, unwrap } from "./client";
+import type { components } from "./schema";
+import { ApiRequestError } from "./client";
+
+export type PublicRun = components["schemas"]["PublicRunEvidence"];
+export type PrivateRun = components["schemas"]["PrivateRunEvidence"];
+export type RunEvidenceResult = { visibility: "public"; data: PublicRun } | { visibility: "private"; data: PrivateRun };
 
 // TanStack Query keys include publication/cohort/filter values (spec 35), so
 // two different cohorts/filters never collide in the cache. Read-only
@@ -98,9 +104,35 @@ export function useEntrantResults(slug: string | undefined) {
 export function useTrial(trialId: string | undefined) {
   return useQuery({
     queryKey: ["trial", trialId],
-    queryFn: () => unwrap(api.GET("/v1/trials/{trial_id}", { params: { path: { trial_id: trialId! } } })),
+    queryFn: async (): Promise<RunEvidenceResult> => {
+      try {
+        const data = await unwrap(api.GET("/v1/trials/{trial_id}", { params: { path: { trial_id: trialId! } } }));
+        return { visibility: "private", data };
+      } catch (error) {
+        if (!(error instanceof ApiRequestError) || (error.status !== 401 && error.status !== 403)) throw error;
+        const data = await unwrap(api.GET("/v1/public/trials/{trial_id}", { params: { path: { trial_id: trialId! } } }));
+        return { visibility: "public", data };
+      }
+    },
     enabled: trialId !== undefined,
     retry: false, // an unauthorized/missing trial should surface immediately, not retry-loop
+  });
+}
+
+export function useMethodologyRevisions() {
+  return useQuery({
+    queryKey: ["methodology-revisions"],
+    queryFn: () => unwrap(api.GET("/v1/methodology")),
+    staleTime: Infinity,
+  });
+}
+
+export function useMethodologyRevision(version: string | undefined) {
+  return useQuery({
+    queryKey: ["methodology-revision", version],
+    queryFn: () => unwrap(api.GET("/v1/methodology/{version}", { params: { path: { version: version! } } })),
+    enabled: version !== undefined,
+    staleTime: Infinity,
   });
 }
 

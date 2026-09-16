@@ -57,7 +57,7 @@ export function TaskCatalog() {
       {items.length === 0 && <EmptyState title="No tasks are catalogued yet." />}
       {items.length > 0 && filtered.length === 0 && <EmptyState title="No tasks match this search." />}
       {filtered.length > 0 && (
-        <table>
+      <table tabIndex={0}>
           <caption>Public task catalog</caption>
           <thead>
             <tr>

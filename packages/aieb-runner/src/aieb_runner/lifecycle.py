@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from multiprocessing.connection import wait as wait_for_process
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from typing import Callable
 
 from aieb_core.models import ExecutionValidity, SubmissionPolicy, Verdict
@@ -152,6 +152,9 @@ class AttemptOutcome:
     evaluation: dict[str, object] | None = None
     cleanup_clean: bool = False
     diagnostics: list[str] = field(default_factory=list)
+    engineering_stdout: str = ""
+    engineering_stderr: str = ""
+    engineering_logs_truncated: bool = False
     evidence_path: Path | None = None
 
     def add(self, phase: AttemptPhase) -> None:
@@ -164,6 +167,7 @@ Evaluator = Callable[..., dict[str, object]]
 # before its complete process tree is forcibly stopped.
 EVALUATOR_CANCEL_GRACE_SECONDS = 5.0
 VERIFY_RESULT_MAX_BYTES = 8 * 1024 * 1024
+ENGINEERING_LOG_MAX_BYTES = 64 * 1024
 
 
 def _result_payload(kind: str, value: object) -> bytes:
@@ -488,33 +492,55 @@ class LocalAttemptRunner:
                 if stream is not None and not stream.closed:
                     stream.close()
 
-        if process.poll() is not None:
-            LocalAttemptRunner._close_windows_job(process)
-            close_streams()
-            return True
         try:
             if os.name == "nt":
                 # Closing the job kills descendants even when a child has escaped
-                # the command interpreter's ordinary process tree.
+                # the command interpreter's ordinary process tree. A root that
+                # already exited may still have left a long-lived child behind.
                 LocalAttemptRunner._close_windows_job(process)
-                completed = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                process.wait(timeout=5)
+                if process.poll() is None:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    process.wait(timeout=5)
                 # Job close may already have killed the root before taskkill
                 # observes it; process termination, not taskkill's lookup code,
                 # is the authoritative condition here.
                 stopped = process.poll() is not None
                 close_streams()
                 return stopped
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            process.wait(timeout=5)
+            process_group = process.pid  # _start uses start_new_session=True
+            try:
+                os.killpg(process_group, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            # The editor can exit while a candidate server remains in its
+            # session. Always signal the group, even when poll() reaped the
+            # original process first.
+            time.sleep(0.05)
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
             close_streams()
-            return True
+            for _ in range(20):
+                try:
+                    os.killpg(process_group, 0)
+                except ProcessLookupError:
+                    return True
+                except PermissionError:
+                    return False
+                time.sleep(0.05)
+            return False
         except (OSError, subprocess.SubprocessError):
             try:
                 process.kill()
@@ -528,7 +554,10 @@ class LocalAttemptRunner:
 
     @staticmethod
     def _start(command: EngineeringCommand, workspace: Path) -> subprocess.Popen[str]:
-        options: dict[str, object] = {"cwd": workspace, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}
+        options: dict[str, object] = {
+            "cwd": workspace, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+            "text": True, "encoding": "utf-8", "errors": "replace",
+        }
         if os.name == "nt":
             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
@@ -543,6 +572,33 @@ class LocalAttemptRunner:
         return process
 
     @staticmethod
+    def _drain_output(stream, result: list[tuple[str, bool]]) -> None:
+        """Drain a pipe continuously while retaining only a bounded prefix."""
+        chunks: list[str] = []
+        retained = 0
+        truncated = False
+        try:
+            while True:
+                chunk = stream.read(4096)
+                if not chunk:
+                    break
+                if truncated:
+                    continue
+                encoded = chunk.encode("utf-8", errors="replace")
+                remaining = ENGINEERING_LOG_MAX_BYTES - retained
+                if len(encoded) > remaining:
+                    if remaining > 0:
+                        chunks.append(encoded[:remaining].decode("utf-8", errors="ignore"))
+                    truncated = True
+                else:
+                    chunks.append(chunk)
+                    retained += len(encoded)
+        except (OSError, ValueError):
+            # Tree teardown closes the pipes if a descendant kept them open.
+            pass
+        result.append(("".join(chunks), truncated))
+
+    @staticmethod
     def _write_evidence(outcome: AttemptOutcome, path: Path) -> None:
         candidate = outcome.candidate
         value: dict[str, object] = {
@@ -555,6 +611,9 @@ class LocalAttemptRunner:
             "retryable": outcome.retryable,
             "cleanup_clean": outcome.cleanup_clean,
             "diagnostics": outcome.diagnostics,
+            "engineering_stdout": outcome.engineering_stdout,
+            "engineering_stderr": outcome.engineering_stderr,
+            "engineering_logs_truncated": outcome.engineering_logs_truncated,
             "candidate_manifest": candidate.manifest.model_dump(mode="json") if candidate else None,
             "evaluation": outcome.evaluation,
         }
@@ -633,6 +692,12 @@ class LocalAttemptRunner:
                 outcome.attribution = FailureAttribution.HOST_FAILURE
                 outcome.diagnostics.append(f"unable to launch engineering process: {exc}")
                 return outcome
+            stdout_capture: list[tuple[str, bool]] = []
+            stderr_capture: list[tuple[str, bool]] = []
+            stdout_reader = Thread(target=self._drain_output, args=(process.stdout, stdout_capture), daemon=True)
+            stderr_reader = Thread(target=self._drain_output, args=(process.stderr, stderr_capture), daemon=True)
+            stdout_reader.start()
+            stderr_reader.start()
             try:
                 # A bounded poll loop (rather than one blocking communicate(timeout=...))
                 # lets an external cancellation event interrupt engineering before the
@@ -649,7 +714,6 @@ class LocalAttemptRunner:
                 if cancelled:
                     outcome.termination_reason = "cancelled"
                 else:
-                    process.communicate(timeout=max(poll_interval, 1))
                     if process.returncode not in (0, None):
                         outcome.attribution = FailureAttribution.CANDIDATE_BUILD_FAILURE
                         outcome.diagnostics.append(f"engineering command exited {process.returncode}")
@@ -659,7 +723,16 @@ class LocalAttemptRunner:
                 outcome.attribution = FailureAttribution.RESOURCE_LIMIT
             finally:
                 outcome.add(AttemptPhase.STOP)
-                if not self._stop_tree(process):
+                stopped = self._stop_tree(process)
+                stdout_reader.join(timeout=5)
+                stderr_reader.join(timeout=5)
+                if stdout_capture:
+                    outcome.engineering_stdout = stdout_capture[0][0]
+                    outcome.engineering_logs_truncated |= stdout_capture[0][1]
+                if stderr_capture:
+                    outcome.engineering_stderr = stderr_capture[0][0]
+                    outcome.engineering_logs_truncated |= stderr_capture[0][1]
+                if not stopped:
                     outcome.attribution = FailureAttribution.TEARDOWN_FAILURE
                     outcome.diagnostics.append("owned engineering process tree could not be confirmed stopped")
                     return outcome
@@ -678,6 +751,9 @@ class LocalAttemptRunner:
                     store=self.store,
                     access_scope=config.access_scope,
                     limits=config.collection_limits,
+                    engineering_stdout=outcome.engineering_stdout,
+                    engineering_stderr=outcome.engineering_stderr,
+                    engineering_logs_truncated=outcome.engineering_logs_truncated,
                 )
             except ArtifactError as exc:
                 outcome.execution_validity = ExecutionValidity.VALID

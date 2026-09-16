@@ -28,7 +28,7 @@ export function Corrections() {
       {items.length === 0 ? (
         <EmptyState title="No corrections have been made." />
       ) : (
-        <table>
+        <table tabIndex={0}>
           <caption>Append-only correction history (newest first). Reasons are not yet recorded - see release changelogs for what changed.</caption>
           <thead>
             <tr>
