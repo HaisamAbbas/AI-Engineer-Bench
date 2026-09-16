@@ -11,9 +11,11 @@ a third independent review found findings #2, #3, and #7 from that second pass w
 fixed (see DECISIONS.md ENG016-007 through ENG016-009, and "Third-pass fixes" below), then revised
 a fourth time after a review of THAT pass found findings #2/#3/#4/#6 (that review's own numbering)
 still partially overstated (see DECISIONS.md ENG016-010 through ENG016-012, and "Fourth-pass fixes"
-below). ENG-016 remains IN_PROGRESS: real HTTP/browser integration tests and broader accessibility
-coverage are deliberately not attempted here - a real separate effort, disclosed as open rather than
-bundled into this pass - along with the other open acceptance gates listed below.
+below), then a fifth time after a review found the fourth pass had itself introduced two integrity
+bugs plus two more gaps (see DECISIONS.md ENG016-013/014, and "Fifth-pass fixes" below). ENG-016
+remains IN_PROGRESS: real HTTP/browser integration tests and broader accessibility coverage are
+deliberately not attempted here - a real separate effort, disclosed as open rather than bundled
+into this pass - along with the other open acceptance gates listed below.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -239,6 +241,44 @@ Methodology, task ticket text, candidate log/diff rendering, full-page accessibi
 checks) lists real, already-disclosed gaps rather than a new claim to fix - see "Known, disclosed
 gaps" below, unchanged in kind by this pass.
 
+## Fifth-pass fixes (2026-09-16, a review of the fourth pass)
+
+The fourth pass's own fixes introduced two High integrity bugs and left two Medium gaps - all fixed
+(DECISIONS.md ENG016-013/014).
+
+**The served snapshot no longer matched its digest.** The fourth pass corrected the coverage
+denominator by rewriting `snapshot.per_entrant_total_tasks` at read time, then returned that mutated
+snapshot beside the original `snapshot_digest` - so the response, and the downloaded bundle,
+contained a digest that no longer hashed its own snapshot, breaking the immutable-publication
+guarantee. Fixed: the snapshot is returned EXACTLY as stored, never touched on a read; the correct
+frozen-plan total is served via the separate `frozen_tasks` list instead, and the frontend uses
+`frozen_tasks.length` as the denominator. A test now recomputes the served snapshot's digest and
+asserts it still equals `snapshot_digest`, so read-time mutation cannot silently return.
+
+**The evaluation window was fabricated.** `evaluation_started_at`/`evaluation_completed_at` were
+derived from `min`/`max(attempt.created_at)`, but `AttemptRow` records only row CREATION time (at
+enqueue), never evaluation start or finish - so "completed" was just the latest attempt-row insert,
+and a campaign with one long attempt reported a zero-duration window. Removed both fields entirely
+rather than serving an accurate-sounding but invented value; a genuine window must wait for real
+durable lifecycle timestamps. The real, frozen-manifest `protocol_scoring_digest` stays.
+
+**A frozen entrant with zero observations still vanished from the table.** Rows were built from
+`snapshot.per_entrant` alone. Fixed: the response now carries a `frozen_entrants` roster (from
+`campaign.resolved["entrants"]`), and the results table builds rows from the union of that roster
+and the observed entrants - an entrant that was scheduled but never ran shows a genuine 0 valid
+trials and an "Unknown" aggregate, never a fabricated 0%. The null-vs-zero distinction is explicit:
+a coverage count is `null` (unavailable) only for a legacy snapshot missing the whole field, and a
+genuine `0` when the field is present but the entrant unobserved; a rate/cost/time metric is `null`
+in both cases.
+
+**Comparing the same slug across two releases corrupted the panels.** `ComparisonResponse.entrants`
+was a dict keyed by entrant slug, so selecting `agent-a` from two different publications (the
+natural "did it improve between releases?" comparison) overwrote one entry and rendered the same
+aggregate in both panels. Fixed: `entrants` is now an ordered list of `ComparisonEntrantPanel`, one
+per selection, each carrying its own `publication_id`; both the configuration and the metrics in a
+panel are keyed to that publication, and selecting the exact same `(slug, publication)` twice
+(comparing something to itself) is rejected with 400.
+
 ## Known, disclosed gaps that remain (not fabricated data)
 
 - **Run evidence** (`/runs/:trialId`): the only backing endpoint, `GET /v1/trials/{id}`, is
@@ -277,7 +317,7 @@ gaps" below, unchanged in kind by this pass.
 
 ## Testing
 
-`apps/web/src/pages/*.test.tsx`: 27 tests (Vitest + Testing Library), against a typed spy on the API
+`apps/web/src/pages/*.test.tsx`: 29 tests (Vitest + Testing Library), against a typed spy on the API
 client (`src/test/mockApi.ts` - MSW's network interception did not reliably patch `fetch` under this
 environment's jsdom + very-recent-Node combination, so this session mocks at the typed-client
 boundary instead; still real hook/component/render code):
@@ -297,16 +337,20 @@ boundary instead; still real hook/component/render code):
 - Structural accessibility (`axe-core`: label association, table semantics, landmark structure -
   color-contrast disabled since jsdom cannot evaluate real color).
 
-`services/api`'s own test suite (39 tests in `tests/test_api_service.py`, 3 in
+`services/api`'s own test suite (46 tests in `tests/test_api_service.py`, 3 in
 `tests/test_api_cors.py`) covers: CORS allow/deny, newest-first pagination across multiple pages,
-snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), real
+snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), that the
+SERVED snapshot still hashes to its recorded digest (never mutated on a read), real
 cohort-comparability (same-publication always comparable; cross-publication is now UNCONDITIONALLY
-non-comparable, including when `cohort_digest` happens to match) with real paired-difference output,
-`supersedes_id`/`cohort_digest`/`created_at`/`cohort`/`frozen_tasks` on publication results, the
+non-comparable, including when `cohort_digest` happens to match) with real per-task rate-delta
+output, comparing the same slug across two releases keeping both panels distinct (and rejecting the
+same `(slug, publication)` twice), `supersedes_id`/`cohort_digest`/`protocol_scoring_digest`/`cohort`/
+`frozen_tasks`/`frozen_entrants` on publication results, the frozen task count served separately with
+the snapshot unmodified, a zero-observation frozen entrant still appearing in the roster, the
 task-catalog/corrections listings, the frozen task list preserving a zero-observation task, and
 entrant results pinning the exact revision a historical publication actually used. `aieb_analysis`'s
-own `tests/test_analysis.py` (15 tests) covers the new per-entrant cost/time/deadline/attrition
-breakdowns and `required_repetitions`.
+own `tests/test_analysis.py` (16 tests) covers the new per-entrant cost/time/deadline/attrition
+breakdowns, `required_repetitions`, and the conventional (fractional, even-sample) median.
 
 **On the Python test count**: a prior review correctly noted an environment without
 `AIEB_DATABASE_URL` configured skips (not fails) every PostgreSQL-dependent test class

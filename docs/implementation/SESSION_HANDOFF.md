@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -354,6 +354,50 @@ Environment note: Docker Desktop was found not running partway through this sess
 (`docker start aieb-test-postgres`) rather than working around it, and the full suite was re-run
 clean afterward; two stale test runs from the outage window failed with connection timeouts and
 were correctly discarded as artifacts of that outage, not real regressions.
+
+## Prompt 13 fifth-pass review - the fourth pass introduced two integrity bugs plus two more gaps
+
+A fifth review found the fourth pass's own fixes for findings #1/#3 introduced integrity bugs, and
+that #2/#4 were still incomplete - see DECISIONS.md ENG016-013/014:
+
+1. **The API served a snapshot that no longer matched its digest (High).** The fourth pass's
+   frozen-task-coverage fix mutated `snapshot.per_entrant_total_tasks` at read time via
+   `_apply_frozen_task_coverage`, then returned that mutated snapshot beside the ORIGINAL
+   `snapshot_digest` - so the response and download bundle carried a digest that no longer hashed
+   its own snapshot, breaking immutable provenance. Fixed: the snapshot is returned exactly as
+   stored (never mutated); the correct frozen-plan total is served via the separate `frozen_tasks`
+   list and read client-side as `len(frozen_tasks)`. `test_served_snapshot_still_hashes_to_its_recorded_digest`
+   now guards this invariant.
+2. **The "evaluation completed" timestamp was fabricated (High).** `_evaluation_date_range` derived
+   the window from `min`/`max(AttemptRow.created_at)`, but that column only records row CREATION
+   (enqueue), not evaluation finish - a single long attempt reported a zero-duration window. Removed
+   both fields entirely rather than serving accurate-sounding fabricated data; a real window needs
+   durable lifecycle timestamps that do not exist yet. `protocol_scoring_digest` (real frozen-manifest
+   data) stays.
+3. **A frozen entrant with zero observations still vanished from the table (Medium).** Rows came from
+   `snapshot.per_entrant` only. Fixed: `frozen_entrants` (from `campaign.resolved["entrants"]`) is
+   served, and `Results.tsx` builds rows from the union with observed entrants - an unobserved frozen
+   entrant shows a genuine 0 valid trials and "Unknown" aggregate (never a fabricated 0%). Count-vs-
+   metric null semantics are explicit: a count is `null` only for a legacy snapshot (whole field
+   absent) and a genuine `0` when the map is present but the slug unobserved; a rate/cost/time metric
+   is `null` in both cases.
+4. **Same-slug-across-releases comparison corrupted panels (Medium).** `ComparisonResponse.entrants`
+   was a dict keyed by slug, so comparing agent-a@release-1 vs agent-a@release-2 overwrote one entry
+   and both panels showed the same aggregate. Fixed: `entrants` is an ordered list of
+   `ComparisonEntrantPanel`, one per selection, each carrying its own `publication_id`; the exact
+   same `(slug, publication)` twice is rejected with 400. `Compare.tsx` renders from the list and
+   removes by position.
+
+Full ENG-016 verification: 46 `test_api_service.py` + 16 `test_analysis.py` tests pass against real
+PostgreSQL, 29 frontend tests, `tsc --noEmit`/`vite build` clean.
+
+Heads-up for the next session: `packages/aieb-runner/src/aieb_runner/lifecycle.py` has UNCOMMITTED
+local changes that are NOT part of this ENG-016 work - a separate, coherent rework of the ENG-015
+cancellation mechanism (the `Evaluator` type now takes a cooperative cancel `Event`, plus a new
+`CancelledError` and an `EVALUATOR_CANCEL_GRACE_SECONDS` grace period). It was left untouched and
+excluded from the ENG-016 commits. It changes the evaluator signature, so it likely needs matching
+updates to every evaluator (`tests/maintainer/*/evaluator.py`) and to `runner_bridge`'s call sites
+before the worker/lifecycle tests will pass; whoever owns that change should finish and verify it.
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 
