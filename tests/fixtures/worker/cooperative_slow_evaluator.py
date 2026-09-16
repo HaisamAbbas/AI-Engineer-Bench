@@ -15,6 +15,7 @@ from aieb_runner.lifecycle import CancelledError
 
 
 def evaluate(candidate_path: Path, stop=None) -> dict[str, object]:
+    (candidate_path.parent / "evaluator-started.txt").write_text("started", encoding="utf-8")
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if stop is not None and stop.is_set():

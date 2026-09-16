@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import ctypes
+import json
+import os
 import shutil
+import subprocess
 import sys
 import time
 import unittest
 from pathlib import Path
+from ctypes import wintypes
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -47,6 +52,87 @@ def _raise_bare_runtime_error(candidate_path: Path, stop=None) -> dict[str, obje
 
 def _raise_outage(candidate_path: Path, stop=None) -> dict[str, object]:
     raise ValueError("outage")
+
+
+def _large_result_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
+    return {"pass": True, "payload": "x" * (2 * 1024 * 1024)}
+
+
+def _oversized_result_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
+    return {"pass": True, "payload": "x" * (9 * 1024 * 1024)}
+
+
+def _tree_spawning_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
+    """Spawn a server-like descendant and then ignore VERIFY cancellation."""
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    pid_file = candidate_path.parent / "verify-process-pids.json"
+    pid_file.write_text(json.dumps({"evaluator": os.getpid(), "child": child.pid}), encoding="utf-8")
+    while True:
+        time.sleep(1)
+
+
+def _pid_is_running(pid: int) -> bool:
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = wintypes.DWORD()
+        try:
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            kernel32.CloseHandle(handle)
+    stat_path = Path("/proc") / str(pid) / "stat"
+    if stat_path.exists():
+        try:
+            if stat_path.read_text(encoding="utf-8").split()[2] == "Z":
+                return False
+        except (OSError, IndexError):
+            pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _cancel_after_marker(marker: Path, cancel_event, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.02)
+    if marker.exists():
+        cancel_event.set()
+
+
+class _BlockingReadStore:
+    """Pickleable store wrapper that stalls inside BUILD's artifact read."""
+
+    def __init__(self, inner: FilesystemArtifactStore, marker: Path) -> None:
+        self.inner = inner
+        self.marker = marker
+
+    def put_bytes(self, data: bytes):
+        return self.inner.put_bytes(data)
+
+    def create_reference(self, blob, *, access_scope: str, visibility: str = "restricted"):
+        return self.inner.create_reference(blob, access_scope=access_scope, visibility=visibility)
+
+    def read(self, reference, *, principal_scope: str) -> bytes:
+        self.marker.write_text(str(os.getpid()), encoding="utf-8")
+        time.sleep(60)
+        return self.inner.read(reference, principal_scope=principal_scope)
+
+    def verify(self, blob) -> None:
+        self.inner.verify(blob)
 
 
 class AttemptLifecycleTests(unittest.TestCase):
@@ -146,7 +232,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         outcome = self.runner.run(
             self.config("valid", self.script("valid.py", self.reference_editor())), evaluate
         )
-        self.assertEqual(outcome.execution_validity, ExecutionValidity.VALID)
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.VALID, outcome.diagnostics)
         self.assertEqual(outcome.verdict, Verdict.PASS)
         self.assertTrue(outcome.cleanup_clean)
         self.assertEqual([file.path for file in outcome.candidate.manifest.files], ["knowledge_service/backend.py"])
@@ -215,7 +301,8 @@ class AttemptLifecycleTests(unittest.TestCase):
         collected = self._collected_outcome("cooperative-cancel")
         self.assertIsNotNone(collected.candidate)
         cancel_event = Event()
-        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+        started_marker = self.root / "attempts" / "cooperative-cancel" / "evaluator-started.txt"
+        Thread(target=_cancel_after_marker, args=(started_marker, cancel_event), daemon=True).start()
 
         outcome = self.runner.run_verification(
             self.config("cooperative-cancel", self.script("cooperative-cancel.py", self.reference_editor()), deadline=20),
@@ -229,7 +316,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertFalse((attempt_root / "build").exists())
         # The evaluator exited via CancelledError before finishing its own
         # 30-second loop - it never reached the line writing this marker.
-        self.assertFalse((self.root / "attempts" / "cooperative-cancel" / "build" / "evaluator-ran-to-completion.txt").exists())
+        self.assertFalse((self.root / "attempts" / "cooperative-cancel" / "evaluator-ran-to-completion.txt").exists())
 
     def test_uncooperative_evaluator_result_is_discarded_even_if_it_finishes_within_grace(self) -> None:
         """Review finding #1's exact reproduction: an evaluator that IGNORES
@@ -251,7 +338,8 @@ class AttemptLifecycleTests(unittest.TestCase):
         collected = self._collected_outcome("uncooperative-within-grace")
         self.assertIsNotNone(collected.candidate)
         cancel_event = Event()
-        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+        started_marker = self.root / "attempts" / "uncooperative-within-grace" / "evaluator-started.txt"
+        Thread(target=_cancel_after_marker, args=(started_marker, cancel_event), daemon=True).start()
 
         outcome = self.runner.run_verification(
             self.config("uncooperative-within-grace", self.script("uncooperative-within-grace.py", self.reference_editor()), deadline=20),
@@ -287,7 +375,8 @@ class AttemptLifecycleTests(unittest.TestCase):
         collected = self._collected_outcome("uncooperative-terminated")
         self.assertIsNotNone(collected.candidate)
         cancel_event = Event()
-        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+        started_marker = self.root / "attempts" / "uncooperative-terminated" / "evaluator-started.txt"
+        Thread(target=_cancel_after_marker, args=(started_marker, cancel_event), daemon=True).start()
 
         original_grace = lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS
         lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS = 0.2  # test seam: shorter than the fixture's 1.5s sleep
@@ -316,6 +405,94 @@ class AttemptLifecycleTests(unittest.TestCase):
         # for a killed process the way there was for an abandoned thread.
         self.assertTrue(outcome.cleanup_clean)
         self.assertFalse((attempt_root / "build").exists())
+
+    def test_verify_cancellation_kills_evaluator_and_descendant_processes(self) -> None:
+        """VERIFY cancellation owns the evaluator's complete process tree."""
+        from threading import Event, Thread
+
+        from aieb_runner import lifecycle as lifecycle_module
+
+        name = "verify-process-tree"
+        collected = self._collected_outcome(name)
+        cancel_event = Event()
+        attempt_root = self.root / "attempts" / name
+        pid_file = attempt_root / "verify-process-pids.json"
+
+        def cancel_after_child_started() -> None:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not pid_file.exists():
+                time.sleep(0.05)
+            cancel_event.set()
+
+        original_grace = lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS
+        lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS = 0.2
+        Thread(target=cancel_after_child_started, daemon=True).start()
+        try:
+            outcome = self.runner.run_verification(
+                self.config(name, self.script(f"{name}.py", self.reference_editor())),
+                _tree_spawning_evaluator, collected, cancel_event=cancel_event,
+            )
+        finally:
+            lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS = original_grace
+
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertTrue(pid_file.is_file())
+        pids = json.loads(pid_file.read_text(encoding="utf-8"))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and any(_pid_is_running(pid) for pid in pids.values()):
+            time.sleep(0.05)
+        self.assertFalse(_pid_is_running(pids["evaluator"]), f"evaluator PID {pids['evaluator']} survived cancellation")
+        self.assertFalse(_pid_is_running(pids["child"]), f"descendant PID {pids['child']} survived cancellation")
+
+    def test_verify_drains_results_larger_than_pipe_buffer_and_caps_oversized_results(self) -> None:
+        """The parent reads while VERIFY runs, and result bytes have a hard cap."""
+        large_name = "verify-large-result"
+        collected = self._collected_outcome(large_name)
+        large = self.runner.run_verification(
+            self.config(large_name, self.script(f"{large_name}.py", self.reference_editor())),
+            _large_result_evaluator, collected,
+        )
+        self.assertEqual(large.verdict, Verdict.PASS)
+        self.assertEqual(len(large.evaluation["payload"]), 2 * 1024 * 1024)
+
+        oversized_name = "verify-oversized-result"
+        collected = self._collected_outcome(oversized_name)
+        oversized = self.runner.run_verification(
+            self.config(oversized_name, self.script(f"{oversized_name}.py", self.reference_editor())),
+            _oversized_result_evaluator, collected,
+        )
+        self.assertEqual(oversized.attribution, FailureAttribution.SCORER_ERROR)
+        self.assertTrue(any("exceeds" in diagnostic for diagnostic in oversized.diagnostics))
+        self.assertTrue(oversized.cleanup_clean)
+
+    def test_cancellation_during_stalled_build_kills_reconstruction_process(self) -> None:
+        """Cancellation can stop BUILD while its artifact read is blocked."""
+        from threading import Event, Thread
+
+        name = "cancel-during-build"
+        collected = self._collected_outcome(name)
+        cancel_event = Event()
+        marker = self.root / "build-read-started.txt"
+        self.runner.store = _BlockingReadStore(self.store, marker)
+
+        def cancel_after_read_starts() -> None:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not marker.exists():
+                time.sleep(0.02)
+            cancel_event.set()
+
+        Thread(target=cancel_after_read_starts, daemon=True).start()
+        started = time.monotonic()
+        outcome = self.runner.run_verification(
+            self.config(name, self.script(f"{name}.py", self.reference_editor())),
+            evaluate, collected, cancel_event=cancel_event,
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertTrue(marker.is_file())
+        self.assertLess(elapsed, 5)
+        self.assertTrue(outcome.cleanup_clean)
+        self.assertFalse((self.root / "attempts" / name / "build").exists())
 
     def test_partial_and_no_artifact_are_explicit_replay_outcomes(self) -> None:
         partial = self.runner.run(

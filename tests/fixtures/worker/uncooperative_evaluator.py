@@ -15,6 +15,7 @@ def evaluate(candidate_path: Path, stop=None) -> dict[str, object]:
     # Ignores `stop` entirely for the grace window and beyond; records that it
     # was still running AFTER cancellation so the test can observe the
     # abandoned thread actually outliving it.
+    (candidate_path.parent / "evaluator-started.txt").write_text("started", encoding="utf-8")
     time.sleep(1.5)
     (candidate_path.parent / "abandoned-evaluator-finished.txt").write_text("late", encoding="utf-8")
     return {"pass": True}

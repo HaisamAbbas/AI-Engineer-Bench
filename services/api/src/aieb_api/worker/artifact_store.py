@@ -80,6 +80,32 @@ class PostgresArtifactStore:
 
     def __init__(self, session_factory: sessionmaker) -> None:
         self._session_factory = session_factory
+        self._owned_engine = None
+
+    def __getstate__(self) -> dict[str, str]:
+        """Reopen the database connection pool inside the isolated BUILD child.
+
+        SQLAlchemy engines and sessionmakers are process-local. Passing only
+        the URL avoids inheriting a live connection pool across spawn while
+        keeping the generic runner independent of this implementation.
+        """
+        bind = self._session_factory.kw.get("bind")
+        url = getattr(bind, "url", None)
+        if url is None:
+            raise TypeError("PostgresArtifactStore requires a bound engine for isolated BUILD")
+        return {"database_url": url.render_as_string(hide_password=False)}
+
+    def __setstate__(self, state: dict[str, str]) -> None:
+        from sqlalchemy import create_engine
+
+        engine = create_engine(state["database_url"], pool_pre_ping=True)
+        self._owned_engine = engine
+        self._session_factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+    def close(self) -> None:
+        if self._owned_engine is not None:
+            self._owned_engine.dispose()
+            self._owned_engine = None
 
     def put_bytes(self, data: bytes, *, retention_class: str = "staging", staged_until: datetime | None = None) -> BlobRef:
         if len(data) > MAX_WORKER_ARTIFACT_BYTES:

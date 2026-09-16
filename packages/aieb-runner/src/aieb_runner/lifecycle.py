@@ -8,22 +8,24 @@ tree has stopped, then reconstructed into a new build allocation.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import multiprocessing as mp
 import os
-import queue as queue_module
+import select
 import shutil
+import socket
 import signal
+import struct
 import subprocess
-import ctypes
 import time
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from enum import StrEnum
+from multiprocessing.connection import wait as wait_for_process
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event
 from typing import Callable
-from uuid import uuid4
 
 from aieb_core.models import ExecutionValidity, SubmissionPolicy, Verdict
 
@@ -158,61 +160,173 @@ class AttemptOutcome:
 
 Evaluator = Callable[..., dict[str, object]]
 
-# Seconds _run_cancelable waits after cancellation for an evaluator that
-# honours the cooperative stop event before its thread is abandoned.
+# Seconds VERIFY waits for an evaluator to honour cooperative cancellation
+# before its complete process tree is forcibly stopped.
 EVALUATOR_CANCEL_GRACE_SECONDS = 5.0
+VERIFY_RESULT_MAX_BYTES = 8 * 1024 * 1024
 
 
-@dataclass(frozen=True)
-class PhaseRun:
-    """Outcome of one BUILD phase run under cancellation polling.
-
-    `completed` means the phase worker finished and its result may be used.
-    `abandoned` means cancellation fired, the worker was given
-    EVALUATOR_CANCEL_GRACE_SECONDS to honour the cooperative stop event, and
-    did NOT - its daemon thread is still running and may still be reading the
-    phase's allocation. The caller must then not delete that allocation (see
-    run_verification's finally block) and must discard whatever the abandoned
-    thread eventually writes.
-
-    `cancelled` means cancellation was OBSERVED while this phase's worker was
-    still running - independent of `completed`/`abandoned` (review finding
-    #1, seventh pass/ENG015 review): a worker that ignores the cooperative
-    stop event but happens to finish naturally DURING the grace window
-    previously came back as `completed=True, abandoned=False` with no signal
-    that cancellation had ever fired, so its late result was silently scored
-    anyway. `cancelled` is set the instant cancellation is observed, before
-    we even know whether the worker will honour it or race past the grace
-    period - callers must treat ANY `cancelled=True` result as discardable,
-    never conditioned on `completed`."""
-
-    completed: bool
-    abandoned: bool = False
-    cancelled: bool = False
+def _result_payload(kind: str, value: object) -> bytes:
+    """Encode a bounded, non-executable JSON envelope for the result channel."""
+    try:
+        encoder = json.JSONEncoder(
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        payload = bytearray()
+        for chunk in encoder.iterencode({"kind": kind, "value": value}):
+            encoded = chunk.encode("utf-8")
+            if len(payload) + len(encoded) > VERIFY_RESULT_MAX_BYTES:
+                raise OverflowError(f"evaluator result exceeds {VERIFY_RESULT_MAX_BYTES} serialized bytes")
+            payload.extend(encoded)
+        return bytes(payload)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        payload = json.dumps(
+            {"kind": "scorer_error", "value": f"evaluator result could not be serialized: {exc!r}"[:4096]},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return payload
 
 
-def _verify_subprocess_entrypoint(evaluate: Evaluator, build: Path, stop: "mp.synchronize.Event", result_queue: "mp.Queue") -> None:
+def _create_result_channel() -> tuple[object, object]:
+    """Create a private result channel suitable for multiprocessing spawn.
+
+    Unix uses a socket pair. Windows uses an anonymous pipe and explicitly
+    duplicates only its write handle into the child process; unlike a named
+    pipe or filesystem result path, candidate descendants do not inherit it.
+    """
+    if os.name != "nt":
+        receiver, sender = socket.socketpair()
+        receiver.setblocking(False)
+        return receiver, sender
+
+    import _winapi
+    import msvcrt
+    from multiprocessing.reduction import DupHandle
+
+    read_handle, write_handle = _winapi.CreatePipe(None, 0)
+    try:
+        child_endpoint = DupHandle(write_handle, _winapi.DUPLICATE_SAME_ACCESS)
+    finally:
+        _winapi.CloseHandle(write_handle)
+    read_fd = msvcrt.open_osfhandle(read_handle, os.O_RDONLY | os.O_BINARY)
+    return os.fdopen(read_fd, "rb", buffering=0), child_endpoint
+
+
+def _open_child_result_writer(endpoint: object) -> socket.socket | object:
+    if isinstance(endpoint, socket.socket):
+        return endpoint
+    if os.name == "nt":
+        import msvcrt
+
+        handle = endpoint.detach()  # multiprocessing.reduction.DupHandle
+        writer_fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        return os.fdopen(writer_fd, "wb", buffering=0)
+    raise TypeError("unsupported result channel endpoint")
+
+
+def _send_worker_result(result_writer: socket.socket | object, kind: str, value: object) -> None:
+    """Send one length-prefixed JSON result over the private capability channel."""
+    payload = _result_payload(kind, value)
+    frame = struct.pack("!I", len(payload)) + payload
+    if isinstance(result_writer, socket.socket):
+        result_writer.sendall(frame)
+        return
+    offset = 0
+    while offset < len(frame):
+        offset += os.write(result_writer.fileno(), frame[offset:])
+
+
+def _decode_worker_result(payload: bytes) -> tuple[str, object]:
+    """Parse the deliberately small JSON result schema; never execute data."""
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"invalid JSON constant: {value}")
+
+    decoded = json.loads(payload.decode("utf-8"), parse_constant=reject_constant)
+    if not isinstance(decoded, dict) or set(decoded) != {"kind", "value"}:
+        raise ValueError("worker result has an invalid envelope")
+    kind = decoded["kind"]
+    if kind not in {"ok", "cancelled", "candidate_unavailable", "scorer_error", "build_error"}:
+        raise ValueError("worker result has an invalid kind")
+    value = decoded["value"]
+    if kind == "ok" and not isinstance(value, dict):
+        raise ValueError("evaluator result must be a JSON object")
+    if kind != "ok" and value is not None and not isinstance(value, str):
+        raise ValueError("worker error result must be a string or null")
+    return kind, value
+
+
+def _verify_subprocess_entrypoint(
+    evaluate: Evaluator, build: Path, stop: "mp.synchronize.Event", result_endpoint: object,
+    startup_event: "mp.synchronize.Event",
+) -> None:
     """Runs the trusted evaluator in an OWNED, forcibly-killable child
     process (review finding #2: "an uncooperative evaluator remains neither
     terminated nor safely contained" - a Python thread can never be
     preempted, so an evaluator that ignores the cooperative `stop` signal
     could only ever be abandoned, never actually stopped, while it went on
     running arbitrary code - subprocess/network/spend effects included -
-    indefinitely). A subprocess CAN be forcibly terminated
-    (Process.terminate()/kill()) regardless of whether it cooperates, which
-    is what `LocalAttemptRunner._run_verify_isolated` does after the grace
-    period. Must be a module-level function (not a closure) so it is
-    picklable for `multiprocessing`'s spawn start method; reports its
-    outcome back through `result_queue` since nothing is shared with the
-    parent across the process boundary."""
+    indefinitely). A subprocess can be forcibly terminated regardless of
+    whether it cooperates. It establishes a Unix process group before
+    evaluator code runs; Windows waits until its parent assigns it to a Job
+    Object. Must be module-level so it is picklable for multiprocessing's
+    spawn start method."""
+    if os.name != "nt":
+        os.setsid()
+        startup_event.set()
+    elif not startup_event.wait(timeout=30):
+        return
+    result_writer = _open_child_result_writer(result_endpoint)
     try:
-        result_queue.put(("ok", _invoke_evaluator(evaluate, build, stop)))
+        _send_worker_result(result_writer, "ok", _invoke_evaluator(evaluate, build, stop))
     except CancelledError:
-        result_queue.put(("cancelled", None))
+        _send_worker_result(result_writer, "cancelled", None)
     except CandidateUnavailableError as exc:
-        result_queue.put(("candidate_unavailable", str(exc)))
+        _send_worker_result(result_writer, "candidate_unavailable", str(exc))
     except Exception as exc:  # noqa: BLE001 - a trusted evaluator's own bug, never a candidate verdict
-        result_queue.put(("scorer_error", repr(exc)))
+        _send_worker_result(result_writer, "scorer_error", repr(exc)[:4096])
+    finally:
+        result_writer.close()
+
+
+def _build_subprocess_entrypoint(
+    frozen_source: Path,
+    destination: Path,
+    stored: StoredCandidate,
+    store: ArtifactStore,
+    principal_scope: str,
+    result_endpoint: object,
+    startup_event: "mp.synchronize.Event",
+) -> None:
+    """Reconstruct in a killable process so BUILD I/O cannot block cancel."""
+    if os.name != "nt":
+        os.setsid()
+        startup_event.set()
+    elif not startup_event.wait(timeout=30):
+        return
+    result_writer = _open_child_result_writer(result_endpoint)
+    try:
+        reconstruct_candidate(
+            frozen_source=frozen_source,
+            destination=destination,
+            stored=stored,
+            store=store,
+            principal_scope=principal_scope,
+        )
+        _send_worker_result(result_writer, "ok", {})
+    except ArtifactError as exc:
+        _send_worker_result(result_writer, "build_error", str(exc)[:4096])
+    except Exception as exc:  # noqa: BLE001 - storage and host failures are infrastructure failures
+        _send_worker_result(result_writer, "build_error", f"{type(exc).__name__}: {exc}"[:4096])
+    finally:
+        close_store = getattr(store, "close", None)
+        if callable(close_store):
+            try:
+                close_store()
+            except Exception:
+                pass
+        result_writer.close()
 
 
 @dataclass(frozen=True)
@@ -222,15 +336,20 @@ class VerifyRun:
     `cancelled=True` covers BOTH a cooperative stop (the evaluator itself
     raised CancelledError) and a forced kill after the grace period (an
     uncooperative evaluator that had to be terminated) - either way nothing
-    it produced is ever scored. Unlike the thread-based `PhaseRun`, there is
-    no "abandoned, leave in place" state: once terminated (or killed) and
-    joined, the child process is verifiably dead, so cleanup is always safe
-    (review finding #2's core fix - real containment, not merely discarding
-    a still-running thread's eventual result)."""
+    it produced is ever scored. Once the owned process group or Job Object is
+    stopped, the evaluator and its descendants cannot keep using the build
+    allocation, so cleanup is safe."""
 
     cancelled: bool
     kind: str  # "ok" | "candidate_unavailable" | "scorer_error" | "crashed"
     evaluation: dict[str, object] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class BuildRun:
+    cancelled: bool
+    kind: str  # "ok" | "build_error" | "crashed"
     error: str | None = None
 
 
@@ -287,6 +406,14 @@ class LocalAttemptRunner:
             ]
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
@@ -295,7 +422,15 @@ class LocalAttemptRunner:
         if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
             kernel32.CloseHandle(job)
             raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
-        if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process._handle)):
+        process_handle = getattr(process, "_handle", None)
+        if process_handle is None:
+            # multiprocessing.Process wraps its native Windows handle in
+            # the platform-specific Popen object.
+            process_handle = getattr(getattr(process, "_popen", None), "_handle", None)
+        if process_handle is None:
+            kernel32.CloseHandle(job)
+            raise OSError("owned process has no assignable Windows process handle")
+        if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process_handle)):
             kernel32.CloseHandle(job)
             raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
         process._aieb_job_handle = job  # type: ignore[attr-defined]
@@ -304,8 +439,46 @@ class LocalAttemptRunner:
     def _close_windows_job(process: subprocess.Popen[str]) -> None:
         job = getattr(process, "_aieb_job_handle", None)
         if job:
-            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle(wintypes.HANDLE(job))
             process._aieb_job_handle = None  # type: ignore[attr-defined]
+
+    @staticmethod
+    def _stop_isolated_process_tree(process: object) -> None:
+        """Stop an isolated BUILD/VERIFY worker and all its descendants."""
+        if os.name == "nt":
+            # Closing this KILL_ON_JOB_CLOSE handle terminates the whole job,
+            # including children that outlived the evaluator process itself.
+            LocalAttemptRunner._close_windows_job(process)  # type: ignore[arg-type]
+            if process.is_alive():  # type: ignore[attr-defined]
+                process.join(timeout=5)  # type: ignore[attr-defined]
+            if process.is_alive():  # type: ignore[attr-defined]
+                process.kill()  # type: ignore[attr-defined]
+                process.join(timeout=5)  # type: ignore[attr-defined]
+            return
+
+        process_group = process.pid  # type: ignore[attr-defined]
+        try:
+            os.killpg(process_group, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        # Give cooperative subprocesses a short opportunity to exit, then
+        # escalate against the group even if its original parent has exited.
+        # Keep the root process unreaped until both group signals have been
+        # sent; reaping it first could release its PID/PGID for reuse.
+        time.sleep(0.5)
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.join(timeout=5)  # type: ignore[attr-defined]
+        if process.is_alive():  # type: ignore[attr-defined]
+            process.join(timeout=5)  # type: ignore[attr-defined]
+        if process.is_alive():  # type: ignore[attr-defined]
+            process.kill()  # type: ignore[attr-defined]
+            process.join(timeout=5)  # type: ignore[attr-defined]
 
     @staticmethod
     def _stop_tree(process: subprocess.Popen[str]) -> bool:
@@ -533,107 +706,225 @@ class LocalAttemptRunner:
                     self._finalize(outcome, attempt_root, evidence, (engineer,))
 
     @staticmethod
-    def _run_cancelable(fn: Callable[[Event], None], cancel_event: Event | None, poll_seconds: float = 0.2) -> PhaseRun:
-        """Run `fn` (assigning into variables it closes over) on a background
-        thread and return a `PhaseRun`: `completed=True` once it finishes, or
-        `completed=False, abandoned=False/True` as soon as `cancel_event`
-        fires first - whichever happens first.
+    def _poll_worker_result(result_receiver: object, received: bytearray) -> tuple[str, object] | str | None:
+        """Drain available result bytes without waiting for the child to exit."""
+        if isinstance(result_receiver, socket.socket):
+            try:
+                readable, _, _ = select.select([result_receiver], [], [], 0.1)
+                chunk = result_receiver.recv(64 * 1024) if readable else None
+            except OSError as exc:
+                return f"result channel failed: {exc}"
+        else:
+            import msvcrt
 
-        Cancellation contract: `fn` receives a dedicated stop Event and is
-        REQUIRED to check it periodically between any two units of work and
-        return promptly (as `CancelledError`) once it is set. That is the
-        genuinely cooperative way to stop an in-process evaluator the runner
-        owns no subprocess handle for (review finding #1: a Python thread
-        cannot be preempted, so a `fn` that ignores the stop event can never
-        be forcibly terminated in-process - the alternative is an abandoned
-        daemon thread, which this version only tolerates under a bounded
-        grace and never tears down work under). An evaluator that needs hard
-        external termination must run its work in a subprocess the caller
-        owns and kills instead (exactly what run_engineering does).
-
-        On cancellation the worker gets EVALUATOR_CANCEL_GRACE_SECONDS to
-        honour the stop event: if it does, the thread is joined cleanly
-        (`abandoned=False`); if it does not, the thread is left as a daemon
-        (`abandoned=True`) and the CALLER must leave any allocation that
-        thread may still be reading in place for host-side reconciliation.
-
-        Either way a cancelled attempt is never scored from a late
-        completion: the result the worker writes after cancellation is
-        discarded by the caller (run_verification stops reading phase
-        results as soon as `completed` is False)."""
-        thread = Thread(target=fn, args=(cancel_event if cancel_event is not None else Event(),), daemon=True)
-        thread.start()
-        while thread.is_alive():
-            if cancel_event is not None and cancel_event.is_set():
-                thread.join(timeout=EVALUATOR_CANCEL_GRACE_SECONDS)
-                # cancelled=True unconditionally (review finding #1): a
-                # worker that ignores `stop` but happens to finish naturally
-                # within the grace window still counted as `completed=True`
-                # here previously, with nothing recording that cancellation
-                # had fired - its late, unrequested result was then silently
-                # scored by the caller. Whether the thread went on to finish
-                # (`completed`) or had to be abandoned (`abandoned`) is now a
-                # SEPARATE fact from whether it must be discarded.
-                return PhaseRun(completed=not thread.is_alive(), abandoned=thread.is_alive(), cancelled=True)
-            thread.join(timeout=poll_seconds)
-        return PhaseRun(completed=True, abandoned=False, cancelled=False)
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.PeekNamedPipe.argtypes = (
+                wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID,
+                ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+            )
+            kernel32.PeekNamedPipe.restype = wintypes.BOOL
+            available = wintypes.DWORD()
+            handle = msvcrt.get_osfhandle(result_receiver.fileno())
+            if not kernel32.PeekNamedPipe(
+                wintypes.HANDLE(handle), None, 0, None, ctypes.byref(available), None,
+            ):
+                error_code = ctypes.get_last_error()
+                if error_code == 109:  # ERROR_BROKEN_PIPE
+                    return "worker closed the result channel without a complete result"
+                return f"result channel failed: Windows error {error_code}"
+            if available.value:
+                try:
+                    chunk = os.read(result_receiver.fileno(), min(available.value, 64 * 1024))
+                except OSError as exc:
+                    return f"result channel failed: {exc}"
+            else:
+                chunk = None
+        if chunk == b"":
+            return "worker closed the result channel without a complete result"
+        if chunk:
+            received.extend(chunk)
+        if len(received) < 4:
+            return None
+        frame_size = struct.unpack("!I", received[:4])[0]
+        if frame_size > VERIFY_RESULT_MAX_BYTES:
+            return f"worker result exceeds {VERIFY_RESULT_MAX_BYTES} serialized bytes"
+        if len(received) < 4 + frame_size:
+            return None
+        payload = bytes(received[4 : 4 + frame_size])
+        try:
+            return _decode_worker_result(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, RecursionError) as exc:
+            return f"invalid worker result: {exc}"
 
     @staticmethod
     def _run_verify_isolated(evaluate: Evaluator, build: Path, cancel_event: Event | None) -> VerifyRun:
-        """Run the trusted evaluator in an OWNED, forcibly-killable child
-        process (review finding #2): unlike `_run_cancelable`'s in-process
-        daemon thread (which can never be preempted and can only ever be
-        "abandoned"), a subprocess that ignores the cooperative stop signal
-        past EVALUATOR_CANCEL_GRACE_SECONDS is genuinely terminated here -
-        `terminate()`, escalating to `kill()` if it somehow survives - and
-        then joined, so by the time this returns the process is verifiably
-        dead. There is therefore no "leave it running, hope it stops"
-        state for VERIFY any more: cancellation always results in a
-        confirmed-dead process, and the caller (run_verification) can always
-        safely tear down the build allocation afterward - the abandoned-
-        thread teardown race this method exists to close only ever applied
-        because a thread could not be killed; a process can.
-        """
+        """Run VERIFY in an owned process tree and receive bounded JSON over
+        a private capability channel. Only the child endpoint is passed to
+        the evaluator process; no candidate-visible path can replace its
+        result."""
         ctx = mp.get_context("spawn")
-        result_queue: mp.Queue = ctx.Queue()
         stop_event = ctx.Event()
-        process = ctx.Process(target=_verify_subprocess_entrypoint, args=(evaluate, build, stop_event, result_queue), daemon=True)
-        process.start()
+        startup_event = ctx.Event()
+        result_receiver, result_endpoint = _create_result_channel()
+        process = ctx.Process(
+            target=_verify_subprocess_entrypoint,
+            args=(evaluate, build, stop_event, result_endpoint, startup_event),
+            daemon=True,
+        )
+        started = False
+        tree_stopped = False
+        received = bytearray()
         try:
-            while process.is_alive():
+            process.start()
+            started = True
+            if isinstance(result_endpoint, socket.socket):
+                result_endpoint.close()
+            if os.name == "nt":
+                # The entrypoint waits here before invoking evaluator code,
+                # closing the race between Process.start() and Job assignment.
+                try:
+                    LocalAttemptRunner._attach_windows_kill_job(process)  # type: ignore[arg-type]
+                except OSError as exc:
+                    process.terminate()
+                    process.join(timeout=5)
+                    return VerifyRun(cancelled=False, kind="crashed", error=f"could not contain VERIFY process tree: {exc}")
+                startup_event.set()
+            elif not startup_event.wait(timeout=5):
+                return VerifyRun(cancelled=False, kind="crashed", error="VERIFY child failed to establish its process group")
+
+            while True:
                 if cancel_event is not None and cancel_event.is_set():
                     stop_event.set()  # cooperative signal - an evaluator honouring it exits promptly
                     process.join(timeout=EVALUATOR_CANCEL_GRACE_SECONDS)
-                    if process.is_alive():
-                        process.terminate()
-                        process.join(timeout=5)
-                    if process.is_alive():
-                        process.kill()
-                        process.join(timeout=5)
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
                     return VerifyRun(cancelled=True, kind="cancelled")
-                process.join(timeout=0.2)
-            if cancel_event is not None and cancel_event.is_set():
-                # The process exited naturally right around when cancellation
-                # fired, before the loop above observed it - still discard
-                # unconditionally (review finding #1): a race that lets a
-                # cancelled attempt's result through is exactly the defect
-                # being fixed here, regardless of which side of the check it
-                # would have landed on.
-                return VerifyRun(cancelled=True, kind="cancelled")
-            try:
-                kind, payload = result_queue.get(timeout=5)
-            except queue_module.Empty:
-                return VerifyRun(cancelled=False, kind="crashed", error=f"evaluator subprocess exited (code {process.exitcode}) without reporting a result")
-            if kind == "ok":
-                return VerifyRun(cancelled=False, kind="ok", evaluation=payload)
-            if kind == "cancelled":
-                return VerifyRun(cancelled=True, kind="cancelled")
-            return VerifyRun(cancelled=False, kind=kind, error=payload)
+
+                result = LocalAttemptRunner._poll_worker_result(result_receiver, received)
+                if isinstance(result, str):
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    return VerifyRun(cancelled=False, kind="crashed", error=result)
+                if result is not None:
+                    kind, value = result
+                    # Evaluators may have launched a candidate server and
+                    # returned without stopping it. Tear down the group/job
+                    # before the build allocation is cleaned up.
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    if cancel_event is not None and cancel_event.is_set():
+                        return VerifyRun(cancelled=True, kind="cancelled")
+                    if kind == "ok":
+                        return VerifyRun(cancelled=False, kind="ok", evaluation=value)
+                    if kind == "cancelled":
+                        return VerifyRun(cancelled=True, kind="cancelled")
+                    return VerifyRun(cancelled=False, kind=kind, error=value)
+
+                if wait_for_process([process.sentinel], timeout=0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        LocalAttemptRunner._stop_isolated_process_tree(process)
+                        tree_stopped = True
+                        return VerifyRun(cancelled=True, kind="cancelled")
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    return VerifyRun(
+                        cancelled=False, kind="crashed",
+                        error=f"evaluator subprocess exited (code {process.exitcode}) without reporting a result",
+                    )
+                time.sleep(0.1)
         finally:
-            if process.is_alive():
-                process.terminate()
-                process.join(timeout=5)
-            result_queue.close()
+            if started and not tree_stopped:
+                LocalAttemptRunner._stop_isolated_process_tree(process)
+            result_receiver.close()
+            if isinstance(result_endpoint, socket.socket):
+                result_endpoint.close()
+            elif not started:
+                try:
+                    import _winapi
+                    _winapi.CloseHandle(result_endpoint._handle)
+                except (AttributeError, OSError):
+                    pass
+
+    @staticmethod
+    def _run_build_isolated(
+        frozen_source: Path,
+        destination: Path,
+        stored: StoredCandidate,
+        store: ArtifactStore,
+        principal_scope: str,
+        cancel_event: Event | None,
+    ) -> BuildRun:
+        """Run candidate reconstruction in a killable process boundary."""
+        ctx = mp.get_context("spawn")
+        startup_event = ctx.Event()
+        result_receiver, result_endpoint = _create_result_channel()
+        process = ctx.Process(
+            target=_build_subprocess_entrypoint,
+            args=(frozen_source, destination, stored, store, principal_scope, result_endpoint, startup_event),
+            daemon=True,
+        )
+        started = False
+        tree_stopped = False
+        received = bytearray()
+        try:
+            process.start()
+            started = True
+            if isinstance(result_endpoint, socket.socket):
+                result_endpoint.close()
+            if os.name == "nt":
+                try:
+                    LocalAttemptRunner._attach_windows_kill_job(process)  # type: ignore[arg-type]
+                except OSError as exc:
+                    process.terminate()
+                    process.join(timeout=5)
+                    return BuildRun(cancelled=False, kind="crashed", error=f"could not contain BUILD process tree: {exc}")
+                startup_event.set()
+            elif not startup_event.wait(timeout=5):
+                return BuildRun(cancelled=False, kind="crashed", error="BUILD child failed to establish its process group")
+
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    return BuildRun(cancelled=True, kind="cancelled")
+                result = LocalAttemptRunner._poll_worker_result(result_receiver, received)
+                if isinstance(result, str):
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    return BuildRun(cancelled=False, kind="crashed", error=result)
+                if result is not None:
+                    kind, value = result
+                    LocalAttemptRunner._stop_isolated_process_tree(process)
+                    tree_stopped = True
+                    if cancel_event is not None and cancel_event.is_set():
+                        return BuildRun(cancelled=True, kind="cancelled")
+                    if kind == "ok":
+                        return BuildRun(cancelled=False, kind="ok")
+                    return BuildRun(cancelled=False, kind="build_error", error=str(value))
+                if wait_for_process([process.sentinel], timeout=0):
+                    if cancel_event is not None and cancel_event.is_set():
+                        LocalAttemptRunner._stop_isolated_process_tree(process)
+                        tree_stopped = True
+                        return BuildRun(cancelled=True, kind="cancelled")
+                    return BuildRun(
+                        cancelled=False,
+                        kind="crashed",
+                        error=f"BUILD subprocess exited (code {process.exitcode}) without reporting a result",
+                    )
+        except Exception as exc:  # process startup/pickling failures are host failures
+            return BuildRun(cancelled=False, kind="crashed", error=f"could not start BUILD subprocess: {exc}")
+        finally:
+            if started and not tree_stopped:
+                LocalAttemptRunner._stop_isolated_process_tree(process)
+            result_receiver.close()
+            if isinstance(result_endpoint, socket.socket):
+                result_endpoint.close()
+            elif not started:
+                try:
+                    import _winapi
+                    _winapi.CloseHandle(result_endpoint._handle)
+                except (AttributeError, OSError):
+                    pass
 
     def run_verification(
         self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome, cancel_event: Event | None = None,
@@ -644,37 +935,22 @@ class LocalAttemptRunner:
         artifact-store references by an entirely different worker recovering
         after a crash (ENG015-007). Mutates and returns the same outcome.
 
-        Cancellation (review findings #1/#2): `cancel_event` interrupts BOTH
-        BUILD and VERIFY while they are running, not merely before/after
-        each phase.
-
-        BUILD runs `reconstruct_candidate` (trusted, internal code) via
-        `_run_cancelable` on an in-process thread: an evaluator is not
-        involved here, only this runner's own reconstruction logic, which
-        currently does not itself check the cooperative stop signal - so a
-        cancellation during BUILD always waits out EVALUATOR_CANCEL_GRACE_SECONDS
-        and, since a thread can never be preempted, the thread is then
-        abandoned (`phase_abandoned`) and its allocation is deliberately left
-        on disk rather than deleted while it may still be reading/writing -
-        see the `finally` block below.
+        BUILD runs in an owned process group/Windows Job Object, so cancellation
+        can terminate reconstruction even while filesystem or PostgreSQL I/O
+        is stalled. The parent waits for its process tree to stop before
+        removing the build allocation.
 
         VERIFY runs the ARBITRARY, less-trusted per-task evaluator via
         `_run_verify_isolated`, in an OWNED, forcibly-killable subprocess
-        (review finding #2 - "an uncooperative evaluator remains neither
-        terminated nor safely contained": a daemon thread can only ever be
-        abandoned, never actually stopped, so it could keep running
-        arbitrary subprocess/network/spend side effects indefinitely). An
-        evaluator that honours the cooperative stop signal exits promptly
-        (as `CancelledError`); one that ignores it is genuinely terminated
-        (`terminate()`, escalating to `kill()`) once
-        EVALUATOR_CANCEL_GRACE_SECONDS elapses. Either way the subprocess is
-        confirmed dead before `_run_verify_isolated` returns, so VERIFY never
-        sets `phase_abandoned` - real containment, not merely discarding a
-        still-running worker's eventual result.
+        (review finding #2): the evaluator runs in an owned process group on
+        Unix and a Windows Job Object on Windows. An evaluator that honours
+        the cooperative stop signal exits promptly (as `CancelledError`);
+        one that ignores it has the whole process tree terminated after
+        EVALUATOR_CANCEL_GRACE_SECONDS. VERIFY does not return until the
+        evaluator and its descendants are stopped.
 
-        In both cases, cancellation observed at all means nothing from that
-        phase is ever scored or persisted - see `PhaseRun.cancelled` and
-        `VerifyRun.cancelled`.
+        Cancellation observed during VERIFY means nothing from that phase is
+        ever scored or persisted.
 
         Any `ArtifactError` during BUILD is classified INFRASTRUCTURE_INVALID
         here, never a candidate contract violation (review finding #3): by
@@ -689,7 +965,6 @@ class LocalAttemptRunner:
         build = attempt_root / "build"
         evidence = attempt_root / "attempt.json"
         attempt_root.mkdir(parents=True, exist_ok=True)
-        phase_abandoned = False
         try:
             if cancel_event is not None and cancel_event.is_set():
                 outcome.execution_validity = ExecutionValidity.CANCELLED
@@ -697,41 +972,24 @@ class LocalAttemptRunner:
                 return outcome
 
             outcome.add(AttemptPhase.BUILD)
-            build_result: dict[str, object] = {}
-
-            def _do_build(stop: Event) -> None:
-                try:
-                    reconstruct_candidate(
-                        frozen_source=config.frozen_source,
-                        destination=build,
-                        stored=outcome.candidate,
-                        store=self.store,
-                        principal_scope=config.access_scope,
-                    )
-                except CancelledError:
-                    # Honouring the cooperative stop event ends this thread
-                    # normally (threading swallows the exception), so the
-                    # completed phase must still be classifiable as cancelled
-                    # by the main flow - record it explicitly.
-                    build_result["cancelled"] = True
-                except ArtifactError as exc:
-                    build_result["error"] = exc
-
-            build_run = self._run_cancelable(_do_build, cancel_event)
-            phase_abandoned = build_run.abandoned
-            # build_run.cancelled is checked FIRST and unconditionally
-            # (review finding #1): cancellation having been observed at all
-            # discards this phase's result outright, regardless of whether
-            # the worker also happened to finish (`completed`) within the
-            # grace window - see PhaseRun's docstring.
-            if build_run.cancelled or not build_run.completed or build_result.get("cancelled"):
+            build_run = self._run_build_isolated(
+                config.frozen_source,
+                build,
+                outcome.candidate,
+                self.store,
+                config.access_scope,
+                cancel_event,
+            )
+            if build_run.cancelled:
                 outcome.execution_validity = ExecutionValidity.CANCELLED
                 outcome.termination_reason = "cancelled"
                 return outcome
-            if "error" in build_result:
+            if build_run.kind != "ok":
                 outcome.execution_validity = ExecutionValidity.INFRASTRUCTURE_INVALID
                 outcome.attribution = FailureAttribution.HOST_FAILURE
-                outcome.diagnostics.append(f"candidate reconstruction failed (storage/reference integrity): {build_result['error']}")
+                outcome.diagnostics.append(
+                    f"candidate reconstruction failed (storage/reference integrity): {build_run.error}"
+                )
                 return outcome
 
             if cancel_event is not None and cancel_event.is_set():
@@ -768,41 +1026,8 @@ class LocalAttemptRunner:
                 outcome.verdict = Verdict.PASS
             return outcome
         finally:
-            # Teardown race (review finding #1/#2): deleting the build
-            # allocation while BUILD's phase thread may still be reading it
-            # corrupts the worker's read and this process's own cleanup
-            # bookkeeping. Only an ABANDONED BUILD thread - one that ignored
-            # the cooperative stop event past its grace period - can still be
-            # running here: VERIFY runs in a subprocess that is always
-            # confirmed dead (terminated/killed and joined) by the time
-            # _run_verify_isolated returns, so it never sets phase_abandoned
-            # and never needs this preservation.
-            #
-            # Deciding this on `phase_abandoned` ALONE - never also
-            # requiring `build.exists()` at this exact instant - matters
-            # because `reconstruct_candidate` (BUILD's worker) walks the
-            # FROZEN SOURCE tree before it ever creates `build` itself
-            # (aieb_runner.artifacts.reconstruct_candidate): an abandoned
-            # thread that hasn't reached that mkdir yet reads as
-            # `build.exists() == False` at the moment we check, so the old
-            # `phase_abandoned and build.exists()` condition fell through to
-            # the "safe to clean up" branch, reported cleanup_clean=True, and
-            # then the still-running abandoned thread created and started
-            # writing into `build` AFTER finalization had already declared
-            # cleanup complete - a real teardown race independent of the one
-            # fixed above. An abandoned thread's allocation (however much of
-            # it exists, now or later) is always left for host-side
-            # reconciliation instead.
-            if phase_abandoned:
-                self._finalize(outcome, attempt_root, evidence, ())
-                outcome.cleanup_clean = False  # deliberately NOT torn down - see above
-                outcome.diagnostics.append(
-                    "cancelled verification abandoned its evaluator past the stop-event grace period; "
-                    "the build allocation is left in place for host-side reconciliation"
-                )
-                self._write_evidence(outcome, evidence)
-            else:
-                self._finalize(outcome, attempt_root, evidence, (build,))
+            # BUILD and VERIFY process trees are stopped before teardown.
+            self._finalize(outcome, attempt_root, evidence, (build,))
 
     def run(self, config: AttemptConfig, evaluator: Evaluator, cancel_event: Event | None = None) -> AttemptOutcome:
         """Convenience wrapper preserving the original single-call contract for

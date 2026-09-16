@@ -79,6 +79,80 @@ def upgrade() -> None:
     op.create_index('ix_worker_artifact_reference_candidate', 'worker_artifact_reference', ['candidate_id'])
     op.create_index('ix_worker_artifact_reference_blob', 'worker_artifact_reference', ['blob_sha256'])
 
+    # Upgrade data written after e20d5d09b489 was applied but before these
+    # ownership columns existed. Claim only unambiguous references whose
+    # stored scope, visibility, digest, and byte length all agree with both
+    # the attempt and the database rows. Corrupt or ambiguous legacy records
+    # remain unclaimed staging data and retain their normal expiry.
+    op.execute(sa.text("""
+        WITH raw_candidate_references AS (
+            SELECT c.id AS candidate_id,
+                   c.attempt_id,
+                   entry->'reference' AS reference_data
+            FROM candidate AS c
+            CROSS JOIN LATERAL jsonb_array_elements(
+                CASE
+                    WHEN jsonb_typeof(c.stored_candidate->'file_references') = 'array'
+                    THEN c.stored_candidate->'file_references'
+                    ELSE '[]'::jsonb
+                END
+            ) AS file_reference(entry)
+        ), candidate_references AS (
+            SELECT candidate_id,
+                   attempt_id,
+                   CASE
+                       WHEN reference_data->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                       THEN (reference_data->>'id')::uuid
+                   END AS reference_id,
+                   reference_data->>'access_scope' AS access_scope,
+                   reference_data->>'visibility' AS visibility,
+                   CASE
+                       WHEN reference_data->'blob'->>'sha256' ~ '^[0-9a-f]{64}$'
+                       THEN reference_data->'blob'->>'sha256'
+                   END AS blob_sha256,
+                   CASE
+                       WHEN jsonb_typeof(reference_data->'blob'->'byte_length') = 'number'
+                           AND reference_data->'blob'->>'byte_length' ~ '^(0|[1-9][0-9]{0,9})$'
+                       THEN (reference_data->'blob'->>'byte_length')::numeric
+                   END AS byte_length
+            FROM raw_candidate_references
+        ), unambiguous_candidate_references AS (
+            SELECT candidate_references.*,
+                   count(*) OVER (PARTITION BY reference_id) AS claim_count
+            FROM candidate_references
+        )
+        UPDATE worker_artifact_reference AS r
+        SET candidate_id = claims.candidate_id
+        FROM unambiguous_candidate_references AS claims
+        JOIN worker_artifact_blob AS b
+          ON b.sha256 = claims.blob_sha256
+         AND b.byte_length = claims.byte_length
+        WHERE r.id = claims.reference_id
+          AND r.blob_sha256 = claims.blob_sha256
+          AND r.access_scope = claims.access_scope
+          AND r.access_scope = claims.attempt_id::text
+          AND claims.access_scope = claims.attempt_id::text
+          AND r.visibility = claims.visibility
+          AND claims.claim_count = 1
+          AND r.candidate_id IS NULL
+    """))
+    op.execute(sa.text("""
+        UPDATE worker_artifact_blob AS b
+        SET retention_class = 'evidence', staged_until = NULL
+        WHERE EXISTS (
+            SELECT 1 FROM worker_artifact_reference AS r
+            WHERE r.blob_sha256 = b.sha256 AND r.candidate_id IS NOT NULL
+        )
+    """))
+    # Data that has no recoverable candidate owner remains staging and can be
+    # reclaimed using the same 24-hour lifetime as newly staged artifacts.
+    # Use created_at so old, genuinely unclaimed objects can expire promptly.
+    op.execute(sa.text("""
+        UPDATE worker_artifact_blob
+        SET staged_until = created_at + INTERVAL '24 hours'
+        WHERE retention_class = 'staging' AND staged_until IS NULL
+    """))
+
 
 def downgrade() -> None:
     op.drop_index('ix_worker_artifact_reference_blob', table_name='worker_artifact_reference')
