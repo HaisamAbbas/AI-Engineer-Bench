@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015); a seventh review found the sixth pass's exclude_unset fix was STILL incomplete - a present stored integer value still got coerced to float by Pydantic's own validate/dump round trip, breaking the digest again through a different mechanism (fixed by serving row.snapshot verbatim via a JSONResponse substitution instead of letting response_model touch that field) plus making aggregate required-but-nullable instead of omittable - all fixed (ENG016-016) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015); a seventh review found the sixth pass's exclude_unset fix was STILL incomplete - a present stored integer value still got coerced to float by Pydantic's own validate/dump round trip, breaking the digest again through a different mechanism (fixed by serving row.snapshot verbatim via a JSONResponse substitution instead of letting response_model touch that field) plus making aggregate required-but-nullable instead of omittable - all fixed (ENG016-016) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store; a fifth review (ENG015-010) found the cancellation fix still only reported cancellation without actually stopping the abandoned thread, and the Postgres blob backend violated the frozen storage architecture with no size bound/retention/expiry - fixed with a cooperative-cancellation contract and ADR-11 staging/evidence semantics; a sixth review (ENG015-011) found ENG015-010's own cancellation fix still didn't close the race (an evaluator ignoring the stop signal but finishing naturally within grace was still scored), containment was still theoretical (abandonment, never real termination), a published migration had been rewritten in place, real orphaned staging artifacts still never expired (the purge treated any reference as protection, but collect_candidate always creates one), the size CHECK never checked real bytes, and visibility validation wasn't anchored - all fixed for real: VERIFY now runs the evaluator in an owned, forcibly-killable subprocess; the rewritten migration was reverted with its additions moved to a new one; the purge deletes orphaned references before their blob; the size CHECK checks octet_length(data); visibility is a Literal - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -572,6 +572,70 @@ of the five fixes still incomplete, plus one new gap - see DECISIONS.md ENG015-0
 `test_worker_leasing.py`, all 9 `test_attempt_lifecycle.py`, and all 39 `test_api_service.py` tests
 pass against real PostgreSQL; the new migration's upgrade/downgrade/upgrade round-trip was verified
 directly. ENG-015 remains `COMPLETE`.
+
+## ENG-015 hardened a third time (ENG015-010, baseline for this session's own further fix)
+
+A fifth review found the cancellation fix still only REPORTED cancellation - the abandoned thread
+kept executing (subprocesses, network, spend) and finalize could delete the build directory out
+from under it - and that the Postgres blob backend violated the frozen ADR-08 with no size bound,
+retention class, or orphan expiry. Both were addressed: verification evaluators ran under a
+cooperative cancellation contract (a stop Event; an evaluator honouring it was joined via the typed
+`CancelledError`; one ignoring it past `EVALUATOR_CANCEL_GRACE_SECONDS` was abandoned, with the build
+allocation deliberately left in place for host-side reconciliation instead of deleted); ADR-11
+documented the PostgreSQL staging deviation from ADR-08 with a 52 MiB cap, staging/evidence retention
+classes, 24-hour `staged_until` expiry, and a reconciler purge job. See DECISIONS.md ENG015-010 for
+full detail - this work was already in progress when the session that produced this handoff entry
+began, and is treated as the baseline the next review (below) is a review OF.
+
+## ENG-015 hardened a fourth time - ENG015-010's own fixes still didn't close what they claimed to (ENG015-011)
+
+A sixth review reproduced concrete failures for each finding rather than only reading code, and found
+ENG015-010 had NOT actually fixed the cancellation race or the containment gap it claimed to, plus
+four more real defects - see DECISIONS.md ENG015-011 for full detail:
+
+1. **The cancellation race was never actually closed.** `_run_cancelable()` still returned
+   `completed=True` for an evaluator that ignored the stop signal but happened to finish naturally
+   DURING the grace window - reproduced directly with a 1.5s-sleeping fixture against the 5s default
+   grace. Fixed: `PhaseRun` gained a `cancelled: bool` set the instant cancellation is observed,
+   checked unconditionally before `completed` at every call site.
+2. **Containment was still theoretical.** A thread can never be preempted, so "abandon" was the only
+   option available - not the spec's actual emergency-cancellation requirement to kill active runs.
+   Fixed for real: VERIFY's evaluator now runs in an owned, forcibly-killable `multiprocessing`
+   (spawn) subprocess (`LocalAttemptRunner._run_verify_isolated`) - `terminate()`, escalating to
+   `kill()`, then joined, so the process is CONFIRMED DEAD before the call returns. BUILD (trusted,
+   internal `reconstruct_candidate` code) stays thread-based. A related teardown race in that same
+   abandon path was fixed too: `reconstruct_candidate` creates `build` only after walking the frozen
+   source tree, so an abandoned thread checked at `phase_abandoned and build.exists()` could read as
+   "safe to delete" before the directory even existed, then create and write into it AFTER
+   finalization had already reported clean cleanup - fixed by deciding preservation on
+   `phase_abandoned` alone.
+3. **A migration already committed in 47b90e6 had been rewritten in place** to add columns - any
+   database that had already applied it would never receive them, while the ORM would expect them
+   regardless. Fixed: `e20d5d09b489` restored to its original committed content; a new migration
+   (`f2b6c9a417de`) adds the retention/candidate-linkage columns via `ALTER TABLE`.
+4. **Orphaned staging artifacts never actually expired.** The purge treated ANY reference (even an
+   unclaimed one) as protection, but `collect_candidate` always creates a blob AND a reference
+   together - so a real orphan always has exactly such a reference and was never purged in practice;
+   the existing test had synthesized an orphan as a referenceless blob, which doesn't reproduce the
+   real path. Fixed: since `attach_candidate_references` always flips a blob to `'evidence'` the
+   moment ANY reference on it is claimed, a still-`'staging'` blob's references are, by construction,
+   all unclaimed - the purge now deletes them before deleting their blob. A related gap: the
+   reconciler's engineering-crash recovery path (advance straight to verification when a candidate was
+   already persisted) never called `attach_candidate_references` at all - fixed by calling it there
+   too.
+5. **The size CHECK didn't check real bytes** - only the caller-supplied `byte_length` column against
+   the cap, so an INSERT could claim `byte_length=1` while storing far more actual `data`. Fixed with
+   `octet_length(data) = byte_length AND octet_length(data) <= MAX_WORKER_ARTIFACT_BYTES`.
+6. **Visibility validation wasn't anchored** - `Field(pattern=r"public|restricted")` uses `re.match`
+   (start-of-string, not whole-string), so `"public-evil"` validated. Fixed with
+   `Literal["public", "restricted"]`.
+
+Full regression after this pass: 106 tests across `test_api_service.py` (49), `test_worker_leasing.py`
+(29, up from 27), `test_attempt_lifecycle.py` (12, up from 9), and `test_analysis.py` (16) pass against
+real PostgreSQL; `test_ext_tool_admission.py` passes unchanged; the new migration's
+upgrade/downgrade/upgrade round-trip was verified against a freshly recreated disposable database (the
+existing one had been migrated through the now-reverted in-place edit and could not cleanly prove the
+split migration chain). ENG-015 remains `COMPLETE`.
 
 ## Recommended next prompt
 

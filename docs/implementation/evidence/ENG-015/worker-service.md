@@ -16,8 +16,81 @@ infrastructure_invalid, not a candidate contract violation; a malformed
 nested stored-candidate field now raises the typed error via a Pydantic
 envelope, not a bare AttributeError; and shared storage is now a real
 PostgreSQL-backed `PostgresArtifactStore`, the hosted worker's actual
-default, not merely a documented local-filesystem limitation). Local
-development/test evidence only; no remote deployment occurred.
+default, not merely a documented local-filesystem limitation.
+ENG015-010 (fifth review): the same review's four findings, all fixed.
+(1) Cancellation could still not TERMINATE a running verification - the
+phase thread was abandoned on cancel and `run_verification`'s finalize deleted
+the build directory under it. Verification now runs evaluators under a
+cooperative cancellation contract: every evaluator receives a stop Event,
+an evaluator honouring it is joined cleanly (never classified a scorer
+error via the typed `CancelledError`), and only an evaluator that ignores
+the stop event past a bounded grace (EVALUATOR_CANCEL_GRACE_SECONDS) is
+abandoned as a daemon thread - with the build allocation deliberately LEFT
+IN PLACE for host-side reconciliation instead of deleted under the live
+thread. Legacy single-argument evaluators are still supported via a
+signature-dispatch helper. (2) The PostgreSQL blob backend violated ADR-08
+and had no size bound, retention class, or orphan expiry - the superseding
+ADR-11 (recorded in DECISIONS.md, since the frozen spec files are
+hash-pinned) documents the deviation explicitly, and the schema enforces the
+submission policy's 52 MiB cap at both the store and the database
+(ck_worker_artifact_blob_max_bytes), splits staging from committed evidence
+(retention_class/staged_until), ties every reference to its candidate
+(candidate_id FK), and the reconciler purges unreferenced staging blobs
+after 24 hours while never deleting evidence or referenced blobs (spec
+sections 37/38). (3) A divergent evaluation retry (a second "fail" for an
+identity recorded as "pass") was silently treated as an idempotent replay -
+it now raises EvaluationConflictError (mirroring record_candidate's
+CandidateConflictError), lands in a durable audit_event row, and the worker
+finalizes infrastructure_invalid while the first persisted evaluation stays
+authoritative. (4) The stored-candidate envelope now validates STRICTLY
+(extra=forbid, strict=True, digest/visibility/path/length constraints, path
+uniqueness), with exactly one documented lenient field (the UUID id the
+writer serializes as a JSON string).
+ENG015-011 (a sixth review, reproducing failures directly rather than only
+reading code): ENG015-010's own fixes for findings #1/#2 had NOT actually
+closed what they claimed to, plus four more real defects, all fixed. (1) The
+cancellation race persisted: an evaluator that IGNORED the cooperative stop
+event but happened to finish naturally DURING the grace window still came
+back `completed=True` with nothing recording that cancellation had fired -
+reproduced directly with a 1.5s-sleeping fixture against the 5s default
+grace - so its late, unrequested result was silently scored. `PhaseRun`
+gained a `cancelled` flag set the INSTANT cancellation is observed,
+independent of `completed`, checked first and unconditionally by every
+caller. (2) Containment was still theoretical: a Python thread can never be
+preempted, so "abandon" was the only option, not the spec's actual
+emergency-cancellation requirement to kill active runs. VERIFY's evaluator
+now runs in an OWNED, forcibly-killable `multiprocessing` (spawn)
+subprocess (`LocalAttemptRunner._run_verify_isolated`) - `terminate()`,
+escalating to `kill()`, then joined, so the process is confirmed dead
+before the call returns; a related BUILD-phase teardown race (an abandoned
+thread's target directory not yet created at the moment `build.exists()`
+was checked, then created after cleanup already reported clean) was fixed
+by deciding preservation on `phase_abandoned` alone, never also on
+`build.exists()`. (3) Migration `e20d5d09b489` - already committed in a
+prior commit - had been rewritten in place to add columns/constraints; any
+database that had already applied it would never receive them, while the
+ORM would expect them regardless, and a fresh base-to-head test cannot
+detect this. Restored to its original committed content; a new migration
+(`f2b6c9a417de`) adds `retention_class`/`staged_until`/`candidate_id` and
+their constraints/indexes via `ALTER TABLE`. (4) Orphaned staging artifacts
+never actually expired: the purge treated ANY reference (even an unclaimed
+one) as protection, but `collect_candidate` always creates a blob AND a
+reference together, so a real orphan always has exactly such a reference
+and was never purged in practice - the existing test had synthesized an
+orphan as a referenceless blob, which doesn't reproduce the real path.
+Since `attach_candidate_references` always flips a blob to `'evidence'` the
+moment ANY reference on it is claimed, a still-`'staging'` blob's
+references are, by construction, all unclaimed - the purge now deletes them
+before deleting their blob; the reconciler's engineering-crash recovery path
+(advance straight to verification when a candidate was already persisted)
+also never called `attach_candidate_references` at all - fixed by calling
+it there too. (5) The database size CHECK only compared the caller-supplied
+`byte_length` against the cap, never the real `octet_length(data)` -
+reproduced directly with a mismatched INSERT; fixed with
+`octet_length(data) = byte_length AND octet_length(data) <= MAX_WORKER_ARTIFACT_BYTES`.
+(6) Reference visibility used an unanchored regex (`re.match` semantics
+accepted `"public-evil"`) - fixed with `Literal["public", "restricted"]`.
+Local development/test evidence only; no remote deployment occurred.
 
 ## What this ticket implements
 
@@ -66,15 +139,39 @@ development/test evidence only; no remote deployment occurred.
   campaign passes a set `cancel_event` into `LocalAttemptRunner.run_engineering()`
   or `run_verification()` respectively. `run_verification()` runs BOTH BUILD
   and VERIFY on a background thread, polled against `cancel_event`
-  (`LocalAttemptRunner._run_cancelable`, ENG015-009) - cancellation now
-  genuinely interrupts a phase that is actually running, not merely checked
+  (`LocalAttemptRunner._run_cancelable`, ENG015-009) - cancellation
+  interrupts a phase that is actually running, not merely checked
   before/after it (ENG015-008's own fix only checked the boundary between
   phases, which a third review correctly identified as still letting a
   cancellation arriving strictly DURING BUILD or VERIFY complete and persist
-  a score). Neither phase is preemptible mid-call in the strict sense - the
-  background thread running it is simply abandoned (daemon) on cancellation,
-  its eventual result discarded - but nothing from an abandoned phase is
-  ever recorded once its work item has already finalized `cancelled`.
+  a score).
+
+  ENG015-010 (fifth review finding #1) fixed the two ways that mechanism
+  still fell short of spec section 16's "emergency cancel kills active
+  runs": (a) the abandoned daemon thread kept EXECUTING - running candidate
+  subprocesses, consuming resources, making external calls - even though
+  its result was discarded; and (b) `run_verification`'s finalize could
+  `shutil.rmtree` the build allocation while that thread was still reading
+  it. Verification evaluators now run under a cooperative cancellation
+  contract: `_run_cancelable` passes each phase worker a stop Event, an
+  evaluator that honours it returns promptly as the typed
+  `aieb_runner.lifecycle.CancelledError` (a BaseException, so a broad
+  `except Exception` can never misreport cancellation as a scorer error)
+  and its thread is JOINED cleanly; only an evaluator that ignores the stop
+  event past `EVALUATOR_CANCEL_GRACE_SECONDS` is abandoned as a daemon
+  thread - and `run_verification` then deliberately leaves the build
+  allocation in place for host-side reconciliation instead of deleting it
+  under the live thread (`cleanup_clean=False` records the leftover; the
+  abandoned thread's eventual result is still discarded and never scored).
+  Legacy single-argument evaluators keep working through a
+  signature-dispatch helper (`_invoke_evaluator`). Engineering cancellation
+  was already hard (the runner owns and kills its subprocess tree via
+  `_stop_tree`); hard termination of a misbehaving verification evaluator
+  is documented as requiring a caller-owned subprocess, since Python
+  threads cannot be preempted. `test_cooperative_cancellation_during_verify_joins_the_evaluator`
+  and `test_uncooperative_evaluator_is_abandoned_without_teardown_race`
+  prove both paths deterministically (the evaluator itself triggers the
+  cancel, so it lands strictly inside VERIFY).
 - Stored-candidate integrity (ENG015-008/009, review findings #2/#3/#4):
   before a verification phase builds or scores a candidate reconstructed
   from persisted JSON, it recomputes that candidate's manifest digest and
@@ -166,6 +263,31 @@ CLI already uses for development verticals.
   `execute_leased_verification` construct this store directly; the local
   CLI is unaffected (no database at all) and still uses
   `FilesystemArtifactStore` exclusively.
+
+  Storing candidate bytes in PostgreSQL is an EXPLICIT, documented deviation
+  from ADR-08 ("PostgreSQL for hosted metadata, object storage for
+  artifacts"): the superseding decision, recorded as "ADR-11" in
+  `docs/implementation/DECISIONS.md` (the frozen spec files are hash-pinned
+  by `scripts/dev.py`, so the supersession lives in the decisions ledger,
+  not in an edited architecture doc), supersedes ADR-08 for
+  candidate-staging artifacts until ENG-019 delivers
+  the S3-compatible end state. The guardrails the frozen specs attach to
+  artifact storage are enforced (ENG015-010, fifth review finding #2):
+  the submission policy's own 52 MiB cap is checked at the store boundary
+  AND by the `ck_worker_artifact_blob_max_bytes` database CHECK;
+  `retention_class` distinguishes staging from committed evidence;
+  `staged_until` stamps the spec section 37 24-hour expiry on staging
+  blobs; `worker_artifact_reference.candidate_id` ties every reference to
+  the candidate that created it (claimed by
+  `repository.attach_candidate_references` inside the same fenced lease
+  that records the candidate, promoting its blobs to non-expiring
+  'evidence'); and the reconciler runs
+  `repository.purge_expired_worker_artifacts`, which deletes ONLY
+  unreferenced, expired staging blobs - committed evidence and blobs with
+  remaining live references are never removed (spec sections 37/38).
+  `test_worker_artifact_size_cap_is_enforced_at_store_and_database` and
+  `test_staging_blobs_expire_after_24h_but_committed_evidence_never_purged`
+  prove both behaviors against real Postgres.
   `test_verification_recovers_the_candidate_with_no_shared_filesystem_at_all`
   proves this directly: engineering and verification run against
   COMPLETELY SEPARATE, never-shared local directories (simulating two
@@ -309,24 +431,35 @@ See DECISIONS.md ENG015-006.
 ## Handoff
 
 Worker leasing, fencing, heartbeat, reconciliation, cancellation that
-genuinely interrupts a running BUILD/VERIFY (not merely checked at phase
-boundaries), stored-candidate integrity checking (manifest AND reference
+genuinely TERMINATES a running VERIFY (an owned, forcibly-killable
+subprocess, not merely an abandoned thread whose result is discarded -
+ENG015-011), stored-candidate integrity checking (manifest AND reference
 metadata, via correct failure classification rather than duplicated
 validation), conflict-aware idempotent artifact-first writes (a genuine
 retry conflict is now surfaced, never silently accepted), a real
-PostgreSQL-backed shared artifact store (`PostgresArtifactStore` - the
-hosted worker's actual default, not a documented local-filesystem
-limitation), and two independently leased phases (ENG015-007, hardened by
-ENG015-008 and then ENG015-009) are implemented and tested against a real
-PostgreSQL instance. Wiring `enqueue_frozen_campaign` to a real
-`POST /campaigns/{id}/start` endpoint with budget reservations, and
-exporting real OTel metrics remain ENG-017/ENG-016 dependencies. Local CLI
-functionality is unaffected: it has no database at all and continues to use
-`FilesystemArtifactStore` exclusively; `aieb_runner.lifecycle.LocalAttemptRunner`
-gained one backward-compatible optional parameter (`cancel_event`,
-ENG015-002/ENG015-008) on both `run_engineering()` and `run_verification()`,
-a private `_run_cancelable()` helper (ENG015-009) both phases use internally
-to poll that event against a background thread, and, for ENG015-007, two new
-public methods (`run_engineering`, `run_verification`) - `run()` itself is a
-thin wrapper composing them, so existing callers (the local CLI) see no
-behavior change beyond genuine cancellation now working correctly.
+PostgreSQL-backed shared artifact store with real size/retention/expiry
+enforcement at the database level (`PostgresArtifactStore` - the hosted
+worker's actual default, not a documented local-filesystem limitation),
+orphaned staging artifacts that actually expire (references included, not
+just blobs that happen to have none), and two independently leased phases
+(ENG015-007, hardened by ENG015-008, ENG015-009, ENG015-010, and ENG015-011)
+are implemented and tested against a real PostgreSQL instance. Wiring
+`enqueue_frozen_campaign` to a real `POST /campaigns/{id}/start` endpoint
+with budget reservations, and exporting real OTel metrics remain
+ENG-017/ENG-016 dependencies. Local CLI functionality is unaffected: it has
+no database at all and continues to use `FilesystemArtifactStore`
+exclusively; `aieb_runner.lifecycle.LocalAttemptRunner` gained one
+backward-compatible optional parameter (`cancel_event`, ENG015-002/
+ENG015-008) on both `run_engineering()` and `run_verification()`, a private
+`_run_cancelable()` helper (ENG015-009, hardened by ENG015-011's `cancelled`
+flag) BUILD uses internally to poll that event against a background thread,
+a `_run_verify_isolated()` helper (ENG015-011) VERIFY uses instead to run
+the evaluator in an owned subprocess it can forcibly terminate, and, for
+ENG015-007, two public methods (`run_engineering`, `run_verification`) -
+`run()` itself is a thin wrapper composing them, so existing callers (the
+local CLI) see no behavior change beyond genuine cancellation now working
+correctly. Full regression: 106 tests across `test_api_service.py` (49),
+`test_worker_leasing.py` (29), `test_attempt_lifecycle.py` (12), and
+`test_analysis.py` (16) pass against real PostgreSQL; `test_ext_tool_admission.py`
+(which also runs real attempts through `LocalAttemptRunner`) passes
+unchanged.
