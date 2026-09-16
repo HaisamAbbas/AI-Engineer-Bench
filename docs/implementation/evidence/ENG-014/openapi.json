@@ -732,6 +732,54 @@
         "title": "CohortIdentity",
         "type": "object"
       },
+      "ComparisonEntrantPanel": {
+        "additionalProperties": false,
+        "description": "One selected entrant panel in a comparison, identified by BOTH its\nslug AND the publication it was selected from (review finding #4, third\npass): the response was previously a dict keyed by slug alone, so\nselecting the same slug from two different releases (a genuine\ncross-release use case - \"did agent-a improve from release 1 to\nrelease 2?\") silently overwrote one entry, and both panels then rendered\nthe same, wrong aggregate. An ordered list keyed per selection preserves\nboth, so each panel shows its own publication's real result.",
+        "properties": {
+          "aggregate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate"
+          },
+          "eligible": {
+            "title": "Eligible",
+            "type": "boolean"
+          },
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "entrant_id",
+          "publication_id",
+          "eligible"
+        ],
+        "title": "ComparisonEntrantPanel",
+        "type": "object"
+      },
       "ComparisonResponse": {
         "additionalProperties": false,
         "properties": {
@@ -740,18 +788,11 @@
             "type": "boolean"
           },
           "entrants": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/EntrantComparisonEligible"
-                },
-                {
-                  "$ref": "#/components/schemas/EntrantComparisonIneligible"
-                }
-              ]
+            "items": {
+              "$ref": "#/components/schemas/ComparisonEntrantPanel"
             },
             "title": "Entrants",
-            "type": "object"
+            "type": "array"
           },
           "non_comparable_reason": {
             "anyOf": [
@@ -846,53 +887,6 @@
         ],
         "title": "DependencyMode",
         "type": "string"
-      },
-      "EntrantComparisonEligible": {
-        "additionalProperties": false,
-        "properties": {
-          "aggregate": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Aggregate"
-          },
-          "eligible": {
-            "const": true,
-            "title": "Eligible",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "eligible",
-          "aggregate"
-        ],
-        "title": "EntrantComparisonEligible",
-        "type": "object"
-      },
-      "EntrantComparisonIneligible": {
-        "additionalProperties": false,
-        "properties": {
-          "eligible": {
-            "const": false,
-            "title": "Eligible",
-            "type": "boolean"
-          },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "eligible",
-          "reason"
-        ],
-        "title": "EntrantComparisonIneligible",
-        "type": "object"
       },
       "EntrantResultEntry": {
         "additionalProperties": false,
@@ -1136,6 +1130,26 @@
           "budget"
         ],
         "title": "FreezeRegistry",
+        "type": "object"
+      },
+      "FrozenEntrantEntry": {
+        "additionalProperties": false,
+        "description": "One entrant from the campaign's own frozen manifest\n(`campaign.resolved[\"entrants\"]`) - the authoritative list of who was\nscheduled, NOT inferred from which entrants happen to have an observation\nin the snapshot. A frozen entrant with ZERO observations still appears\nhere (review finding #3, third pass: such an entrant previously vanished\nfrom the results table entirely instead of showing incomplete coverage,\nzero valid trials, and an unavailable aggregate).",
+        "properties": {
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "version"
+        ],
+        "title": "FrozenEntrantEntry",
         "type": "object"
       },
       "FrozenTaskEntry": {
@@ -1396,27 +1410,13 @@
             "title": "Created At",
             "type": "string"
           },
-          "evaluation_completed_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evaluation Completed At"
-          },
-          "evaluation_started_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evaluation Started At"
+          "frozen_entrants": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FrozenEntrantEntry"
+            },
+            "title": "Frozen Entrants",
+            "type": "array"
           },
           "frozen_tasks": {
             "default": [],
@@ -2238,7 +2238,7 @@
     },
     "/v1/comparisons": {
       "get": {
-        "description": "Compare 2-4 entrants. Each entrant is looked up in its OWN publication:\n`entrant_publication_ids` (same order/length as `entrant_ids`) names one\nper entrant for a genuine cross-release comparison; an entrant with no\ncorresponding entry falls back to `publication_id` (the common case: all\nentrants come from the same, single publication).\n\nPaired per-task differences are ONLY ever computed within a single\npublication. Spec journey 6.1 is unconditional: \"A cross-release\ncomparison shows separate panels with a non-comparable label, never a\ncalculated winner\" - not \"unless the cohorts happen to match.\" An\nearlier version of this endpoint treated equal `cohort_digest` values\nacross different publications as sufficient proof of comparable\nobservations; that was wrong on its own terms too, since `Cohort` itself\ndoes not carry the exact task list, entrant revisions, or repetition\nplan - a matching digest does not prove matching observations (review\nfinding #1, 2026-09-16). Entrants from different publications therefore\nalways get separate eligible panels with no paired difference, exactly\nas spec 6.1 requires - never a fabricated calculated winner.",
+        "description": "Compare 2-4 entrants. Each entrant is looked up in its OWN publication:\n`entrant_publication_ids` (same order/length as `entrant_ids`) names one\nper entrant for a genuine cross-release comparison; an entrant with no\ncorresponding entry falls back to `publication_id` (the common case: all\nentrants come from the same, single publication).\n\nPaired per-task differences are ONLY ever computed within a single\npublication. Spec journey 6.1 is unconditional: \"A cross-release\ncomparison shows separate panels with a non-comparable label, never a\ncalculated winner\" - not \"unless the cohorts happen to match.\" An\nearlier version of this endpoint treated equal `cohort_digest` values\nacross different publications as sufficient proof of comparable\nobservations; that was wrong on its own terms too, since `Cohort` itself\ndoes not carry the exact task list, entrant revisions, or repetition\nplan - a matching digest does not prove matching observations (review\nfinding #1, 2026-09-16). Entrants from different publications therefore\nalways get separate eligible panels with no paired difference, exactly\nas spec 6.1 requires - never a fabricated calculated winner.\n\nThe response `entrants` is an ORDERED LIST, one panel per selection,\neach carrying its own `publication_id` (review finding #4, third pass):\na prior version keyed it by slug alone, so selecting the same slug from\ntwo releases (the natural \"did agent-a improve from release 1 to 2?\"\ncomparison) silently overwrote one entry and both panels rendered the\nsame wrong aggregate. Selecting the exact same (slug, publication) twice\nis meaningless (comparing something to itself) and is rejected.",
         "operationId": "get_comparison_v1_comparisons_get",
         "parameters": [
           {

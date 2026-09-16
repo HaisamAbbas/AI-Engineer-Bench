@@ -11,22 +11,22 @@ from uuid import UUID
 
 from aieb_core.models import EntrantRevision
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..errors import invalid_request, not_found, service_unavailable
-from ..models import AttemptRow, CampaignRow, PublicationRow, TrialRow
+from ..models import CampaignRow, PublicationRow
 from ..snapshots import snapshot_digest as compute_snapshot_digest
 from ..pagination import clamp_limit, decode_cursor, page
 from ..schemas import (
     AnalysisSnapshot,
     CohortIdentity,
+    ComparisonEntrantPanel,
     ComparisonResponse,
     CorrectionEntry,
-    EntrantComparisonEligible,
-    EntrantComparisonIneligible,
     EntrantResultEntry,
+    FrozenEntrantEntry,
     FrozenTaskEntry,
     Page,
     PublicationEntrantConfiguration,
@@ -89,16 +89,22 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
         raise not_found()
     campaign = session.get(CampaignRow, row.campaign_id)
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
-    cohort, frozen_tasks = _frozen_manifest_data(campaign)
-    snapshot = _apply_frozen_task_coverage(_verified_snapshot(row), frozen_tasks)
-    evaluation_started_at, evaluation_completed_at = _evaluation_date_range(session, row.campaign_id)
+    cohort, frozen_tasks, frozen_entrants = _frozen_manifest_data(campaign)
+    # The snapshot is returned EXACTLY as stored - never mutated at read time
+    # (review finding #1, third pass): it is a digest-verified immutable
+    # publication artifact, and rewriting any field here would produce a
+    # response (and a downloaded bundle) whose `snapshot_digest` no longer
+    # hashes the `snapshot` beside it, breaking provenance. Frozen-plan
+    # coverage (the correct total task count, the full entrant roster) is
+    # served as SEPARATE `frozen_tasks`/`frozen_entrants` fields the frontend
+    # reads, rather than baked back into the snapshot.
     return PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
         supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat(),
         cohort_digest=campaign.cohort_digest if campaign else None,
         cohort=cohort, protocol_scoring_digest=_protocol_scoring_digest(campaign),
-        evaluation_started_at=evaluation_started_at, evaluation_completed_at=evaluation_completed_at,
-        frozen_tasks=frozen_tasks, snapshot=snapshot, notice=notice,
+        frozen_tasks=frozen_tasks, frozen_entrants=frozen_entrants,
+        snapshot=_verified_snapshot(row), notice=notice,
     )
 
 
@@ -113,55 +119,22 @@ def _protocol_scoring_digest(campaign: CampaignRow | None) -> str | None:
     return protocol.get("scoring_digest") if protocol else None
 
 
-def _evaluation_date_range(session: Session, campaign_id: UUID) -> tuple[str | None, str | None]:
-    """The real evaluation window for this campaign, derived from every
-    attempt its trials actually recorded (min/max `attempt.created_at`) -
-    not the publication's own `created_at` (when the snapshot was written,
-    often well after evaluation actually finished). Genuine data already in
-    the database, not a new tracked concept and not fabricated (review
-    finding #4, second pass)."""
-    started, completed = session.execute(
-        select(func.min(AttemptRow.created_at), func.max(AttemptRow.created_at))
-        .select_from(AttemptRow)
-        .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
-        .where(TrialRow.campaign_id == campaign_id)
-    ).one()
-    return (started.isoformat() if started else None, completed.isoformat() if completed else None)
-
-
-def _apply_frozen_task_coverage(snapshot: AnalysisSnapshot, frozen_tasks: list[FrozenTaskEntry]) -> AnalysisSnapshot:
-    """Review finding #1 (second pass): `per_entrant_total_tasks` is computed
-    by `aieb_analysis.metrics.summarize()` from DISTINCT OBSERVED tasks per
-    entrant, since that package has no access to the frozen plan - a task
-    with zero observations for an entrant was invisible to it entirely,
-    silently undercounting the denominator (a two-task campaign with one
-    unobserved task displayed "1/1", hiding exactly the incompleteness a
-    results table must show). Every entrant in a frozen campaign is
-    scheduled against every frozen task (the cross product
-    `packages/aieb-core/src/aieb_core/planner.py::freeze_campaign` builds),
-    so the correct total is simply `len(frozen_tasks)` for every entrant -
-    overridden here from the campaign's own frozen manifest, which this
-    route already has, not from what happened to get observed. Only
-    applied when the snapshot actually carries per-entrant breakdowns at
-    all (`None` means a legacy snapshot predating this field - left alone,
-    honestly unavailable rather than fabricated) and the frozen manifest is
-    actually available."""
-    if snapshot.per_entrant_total_tasks is None or not frozen_tasks:
-        return snapshot
-    corrected = {entrant_id: len(frozen_tasks) for entrant_id in snapshot.per_entrant}
-    return snapshot.model_copy(update={"per_entrant_total_tasks": corrected})
-
-
-def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity | None, list[FrozenTaskEntry]]:
+def _frozen_manifest_data(
+    campaign: CampaignRow | None,
+) -> tuple[CohortIdentity | None, list[FrozenTaskEntry], list[FrozenEntrantEntry]]:
     """Real data from the campaign's own frozen manifest
     (`campaign.resolved`), not inferred from which observations happen to
     exist in a published snapshot (review finding #3). `campaign.resolved`
     is only populated once a campaign is frozen - a campaign row that
-    somehow has none yields no cohort identity and an empty frozen task
-    list, rather than raising, since a publication should always have one
-    in practice but this must fail safe, not crash the results page."""
+    somehow has none yields no cohort identity and empty frozen lists,
+    rather than raising, since a publication should always have one in
+    practice but this must fail safe, not crash the results page. The frozen
+    task AND entrant lists both come from here so a zero-observation task or
+    entrant still appears (incomplete coverage), rather than vanishing
+    because nothing was scored for it (review finding #3, first and third
+    passes)."""
     if campaign is None or not campaign.resolved:
-        return None, []
+        return None, [], []
     resolved = campaign.resolved
     cohort_manifest = resolved.get("cohort")
     cohort = (
@@ -178,7 +151,11 @@ def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity 
         FrozenTaskEntry(slug=task["id"], version=task["version"], family_id=task["family_id"], category=task["category"])
         for task in resolved.get("tasks", [])
     ]
-    return cohort, frozen_tasks
+    frozen_entrants = [
+        FrozenEntrantEntry(slug=entrant["id"], version=entrant["agent_version"])
+        for entrant in resolved.get("entrants", [])
+    ]
+    return cohort, frozen_tasks, frozen_entrants
 
 
 @router.get("/publications/{publication_id}/entrants/{slug}", response_model=PublicationEntrantConfiguration)
@@ -311,6 +288,14 @@ def get_comparison(
     finding #1, 2026-09-16). Entrants from different publications therefore
     always get separate eligible panels with no paired difference, exactly
     as spec 6.1 requires - never a fabricated calculated winner.
+
+    The response `entrants` is an ORDERED LIST, one panel per selection,
+    each carrying its own `publication_id` (review finding #4, third pass):
+    a prior version keyed it by slug alone, so selecting the same slug from
+    two releases (the natural "did agent-a improve from release 1 to 2?"
+    comparison) silently overwrote one entry and both panels rendered the
+    same wrong aggregate. Selecting the exact same (slug, publication) twice
+    is meaningless (comparing something to itself) and is rejected.
     """
     if not (2 <= len(entrant_ids) <= 4):
         raise invalid_request("comparisons require between 2 and 4 entrant_ids")
@@ -328,6 +313,10 @@ def get_comparison(
             resolved_publication_ids.append(publication_id)
         else:
             raise invalid_request(f"no publication given for entrant_ids[{index}]")
+
+    selections = list(zip(entrant_ids, resolved_publication_ids))
+    if len(set(selections)) != len(selections):
+        raise invalid_request("the same entrant cannot be selected from the same publication twice in one comparison")
 
     publication_cache: dict[UUID, tuple[PublicationRow, AnalysisSnapshot]] = {}
     for pub_id in set(resolved_publication_ids):
@@ -359,19 +348,28 @@ def get_comparison(
         cohort_comparable = False
         non_comparable_reason = "entrants come from different publications (a cross-release comparison); paired statistics are only computed within a single publication"
 
-    entrants: dict[str, EntrantComparisonEligible | EntrantComparisonIneligible] = {}
+    entrants: list[ComparisonEntrantPanel] = []
     entrant_task_rates: dict[str, dict[str, float | None]] = {}
     for entrant_id, pub_id in zip(entrant_ids, resolved_publication_ids):
         _, snapshot = publication_cache[pub_id]
         if entrant_id in snapshot.per_entrant:
-            entrants[entrant_id] = EntrantComparisonEligible(eligible=True, aggregate=snapshot.per_entrant[entrant_id])
+            entrants.append(ComparisonEntrantPanel(
+                entrant_id=entrant_id, publication_id=pub_id, eligible=True, aggregate=snapshot.per_entrant[entrant_id],
+            ))
             entrant_task_rates[entrant_id] = _task_ids_for_entrant(snapshot, entrant_id)
         else:
-            entrants[entrant_id] = EntrantComparisonIneligible(eligible=False, reason="not present in its publication's snapshot")
+            entrants.append(ComparisonEntrantPanel(
+                entrant_id=entrant_id, publication_id=pub_id, eligible=False,
+                reason="not present in its publication's snapshot",
+            ))
 
     task_rate_deltas: dict[str, list[TaskRateDelta]] | None = None
     if cohort_comparable:
-        eligible_ids = [entrant_id for entrant_id in entrant_ids if entrants[entrant_id].eligible]
+        # cohort_comparable is only True when all entrants share ONE
+        # publication, and exact duplicate (slug, publication) selections
+        # were rejected above - so every eligible slug here is distinct and a
+        # slug-keyed delta map cannot collide.
+        eligible_ids = [panel.entrant_id for panel in entrants if panel.eligible]
         task_rate_deltas = {}
         for i, left in enumerate(eligible_ids):
             for right in eligible_ids[i + 1 :]:

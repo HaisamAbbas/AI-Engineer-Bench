@@ -7,7 +7,7 @@ core contracts do not model (pagination envelopes, freeze registry input).
 
 from __future__ import annotations
 
-from typing import Generic, Literal, TypeVar
+from typing import Generic, TypeVar
 from uuid import UUID
 
 from aieb_core.models import ApplicationProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
@@ -173,6 +173,21 @@ class FrozenTaskEntry(BaseModel):
     category: str
 
 
+class FrozenEntrantEntry(BaseModel):
+    """One entrant from the campaign's own frozen manifest
+    (`campaign.resolved["entrants"]`) - the authoritative list of who was
+    scheduled, NOT inferred from which entrants happen to have an observation
+    in the snapshot. A frozen entrant with ZERO observations still appears
+    here (review finding #3, third pass: such an entrant previously vanished
+    from the results table entirely instead of showing incomplete coverage,
+    zero valid trials, and an unavailable aggregate)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str
+    version: str
+
+
 class CohortIdentity(BaseModel):
     """The frozen cohort's own identifying fields
     (`campaign.resolved["cohort"]`) - real manifest data, not inferred from
@@ -209,32 +224,37 @@ class PublicationResultsResponse(BaseModel):
     cohort_digest: str | None
     cohort: CohortIdentity | None = None
     protocol_scoring_digest: str | None = None
-    # The real evaluation window, derived from every attempt this campaign's
-    # trials actually recorded (min/max attempt.created_at) - not the same
-    # as `created_at` above, which is only when the snapshot was PUBLISHED,
-    # often well after evaluation finished (review finding #4, second pass:
-    # the prior version had no evaluation-date field at all and a
-    # since-corrected label implied `created_at` was one). `None` only when
-    # no attempts exist yet to derive a window from.
-    evaluation_started_at: str | None = None
-    evaluation_completed_at: str | None = None
+    # NO evaluation-date-range field: a prior version derived one from
+    # min/max `attempt.created_at`, but AttemptRow only records CREATION time
+    # (row insert at enqueue), not evaluation start/finish - so
+    # "evaluation_completed_at" was the latest attempt-row insert, not a real
+    # completion, and a single long attempt reported a zero-duration window
+    # (review finding #2, third pass). Removed rather than served with an
+    # accurate-sounding but fabricated value; a genuine window must wait for
+    # real durable lifecycle start/finalization timestamps to exist.
     frozen_tasks: list[FrozenTaskEntry] = []
+    frozen_entrants: list[FrozenEntrantEntry] = []
     snapshot: AnalysisSnapshot
     notice: str | None = None
 
 
-class EntrantComparisonEligible(BaseModel):
+class ComparisonEntrantPanel(BaseModel):
+    """One selected entrant panel in a comparison, identified by BOTH its
+    slug AND the publication it was selected from (review finding #4, third
+    pass): the response was previously a dict keyed by slug alone, so
+    selecting the same slug from two different releases (a genuine
+    cross-release use case - "did agent-a improve from release 1 to
+    release 2?") silently overwrote one entry, and both panels then rendered
+    the same, wrong aggregate. An ordered list keyed per selection preserves
+    both, so each panel shows its own publication's real result."""
+
     model_config = ConfigDict(extra="forbid")
 
-    eligible: Literal[True]
-    aggregate: float | None
-
-
-class EntrantComparisonIneligible(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    eligible: Literal[False]
-    reason: str
+    entrant_id: str
+    publication_id: UUID
+    eligible: bool
+    aggregate: float | None = None
+    reason: str | None = None
 
 
 class TaskRateDelta(BaseModel):
@@ -269,7 +289,7 @@ class ComparisonResponse(BaseModel):
     publication_id: UUID
     cohort_comparable: bool
     non_comparable_reason: str | None = None
-    entrants: dict[str, EntrantComparisonEligible | EntrantComparisonIneligible]
+    entrants: list[ComparisonEntrantPanel]
     task_rate_deltas: dict[str, list[TaskRateDelta]] | None = None
 
 

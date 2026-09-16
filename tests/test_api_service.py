@@ -737,14 +737,17 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get(f"/v1/publications/{publication_id}/entrants/does-not-exist")
         self.assertEqual(response.status_code, 404)
 
-    def test_per_entrant_total_tasks_comes_from_the_frozen_plan_not_observed_cells(self) -> None:
-        """Review finding #1 (second pass): aieb_analysis.metrics.summarize()
-        counts DISTINCT OBSERVED tasks per entrant, since it has no access to
-        the frozen plan - a task with zero observations for an entrant was
-        invisible to it, undercounting the denominator (a two-task campaign
-        with one unobserved task reported "1/1" instead of "1/2", hiding
-        exactly the incompleteness a results table must show). This route
-        must override it from the campaign's own frozen task list."""
+    def test_frozen_task_count_is_served_separately_and_the_snapshot_is_not_mutated(self) -> None:
+        """Review findings #1/#3, third pass: the correct total-task denominator
+        (the FROZEN plan size, not the observed-cell count summarize() computes)
+        is served as the separate `frozen_tasks` list, NOT by rewriting the
+        snapshot at read time. The snapshot is a digest-verified immutable
+        artifact; mutating any field of it during a read produces a response
+        (and download bundle) whose `snapshot_digest` no longer hashes the
+        `snapshot` beside it. This asserts BOTH: the frozen task list has the
+        real plan size (2, including a zero-observation task), AND the served
+        snapshot's own `per_entrant_total_tasks` is returned exactly as stored
+        (1), untouched."""
         resolved = {
             "tasks": [
                 {"id": "rag.document-freshness", "version": "0.1.0", "family_id": "knowledge-service-a", "category": "rag"},
@@ -765,8 +768,62 @@ class ApiServiceTests(unittest.TestCase):
         )
         publication_id = self._seed_publication(snapshot, campaign_id=campaign_id)
 
-        response = self.client.get(f"/v1/publications/{publication_id}/results")
-        self.assertEqual(response.json()["snapshot"]["per_entrant_total_tasks"], {"agent-a": 2})
+        body = self.client.get(f"/v1/publications/{publication_id}/results").json()
+        self.assertEqual(len(body["frozen_tasks"]), 2)  # the real frozen plan size, the denominator
+        self.assertEqual(body["snapshot"]["per_entrant_total_tasks"], {"agent-a": 1})  # snapshot NOT mutated
+
+    def test_served_snapshot_still_hashes_to_its_recorded_digest(self) -> None:
+        """Review finding #1, third pass: the served `snapshot` must hash to
+        the `snapshot_digest` served beside it - if any read-time processing
+        rewrites the snapshot, the downloaded bundle's digest would no longer
+        match its own snapshot, breaking immutable publication provenance.
+        Guards against re-introducing snapshot mutation on reads."""
+        from aieb_api.snapshots import snapshot_digest
+
+        resolved = {
+            "tasks": [{"id": "rag.document-freshness", "version": "0.1.0", "family_id": "knowledge-service-a", "category": "rag"}],
+            "entrants": [{"id": "agent-a", "agent_version": "1.0.0"}],
+        }
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="digest-integrity-test", state="frozen", draft={"a": 1}, resolved=resolved)
+            session.add(campaign)
+            session.commit()
+            campaign_id = campaign.id
+        snapshot = self._analysis_snapshot(
+            {"agent-a": 1.0},
+            per_task={"rag.document-freshness:agent-a": {"s": 1, "n": 1, "rate": 1.0, "wilson_95": None, "all_k": True, "pass_power_k": 1.0}},
+            per_entrant_total_tasks={"agent-a": 1},
+        )
+        publication_id = self._seed_publication(snapshot, campaign_id=campaign_id)
+
+        body = self.client.get(f"/v1/publications/{publication_id}/results").json()
+        self.assertEqual(snapshot_digest(body["snapshot"]), body["snapshot_digest"])
+
+    def test_frozen_entrant_with_zero_observations_still_appears_in_the_roster(self) -> None:
+        """Review finding #3, third pass: a frozen entrant with ZERO
+        observations was previously invisible - absent from `per_entrant`, so
+        it had no results-table row at all instead of showing incomplete
+        coverage. The frozen entrant roster (`frozen_entrants`, from
+        `campaign.resolved["entrants"]`) must include it regardless of whether
+        anything was scored for it."""
+        resolved = {
+            "entrants": [
+                {"id": "agent-observed", "agent_version": "1.0.0"},
+                {"id": "agent-unobserved", "agent_version": "1.0.0"},
+            ],
+        }
+        with db.session_factory()() as session:
+            campaign = api_models.CampaignRow(name="frozen-entrant-roster-test", state="frozen", draft={"a": 1}, resolved=resolved)
+            session.add(campaign)
+            session.commit()
+            campaign_id = campaign.id
+        # Only agent-observed is in the snapshot; agent-unobserved has no cell.
+        publication_id = self._seed_publication(self._analysis_snapshot({"agent-observed": 1.0}), campaign_id=campaign_id)
+
+        body = self.client.get(f"/v1/publications/{publication_id}/results").json()
+        roster = {entrant["slug"] for entrant in body["frozen_entrants"]}
+        self.assertEqual(roster, {"agent-observed", "agent-unobserved"})
+        self.assertNotIn("agent-unobserved", body["snapshot"]["per_entrant"])  # genuinely unobserved
 
     def test_per_entrant_total_tasks_is_null_not_zero_for_a_legacy_snapshot(self) -> None:
         """Review finding #1 (second pass): a snapshot published before
@@ -974,7 +1031,10 @@ class ApiServiceTests(unittest.TestCase):
         body = response.json()
         self.assertTrue(body["cohort_comparable"])
         self.assertIsNone(body["non_comparable_reason"])
-        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
+        panels = {panel["entrant_id"]: panel for panel in body["entrants"]}
+        self.assertTrue(panels["agent-a"]["eligible"])
+        self.assertEqual(panels["agent-a"]["aggregate"], 1.0)
+        self.assertEqual(panels["agent-a"]["publication_id"], str(publication_id))
         diffs = body["task_rate_deltas"]["agent-a|agent-b"]
         self.assertEqual(diffs, [{"task_id": "task-1", "left_rate": 1.0, "right_rate": 0.5, "difference": 0.5}])
 
@@ -998,8 +1058,11 @@ class ApiServiceTests(unittest.TestCase):
         self.assertIsNotNone(body["non_comparable_reason"])
         self.assertIsNone(body["task_rate_deltas"])
         # Each entrant still gets its own eligible aggregate - separate panels, never a fabricated winner.
-        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
-        self.assertEqual(body["entrants"]["agent-b"], {"eligible": True, "aggregate": 0.5})
+        panels = {panel["entrant_id"]: panel for panel in body["entrants"]}
+        self.assertTrue(panels["agent-a"]["eligible"])
+        self.assertEqual(panels["agent-a"]["aggregate"], 1.0)
+        self.assertTrue(panels["agent-b"]["eligible"])
+        self.assertEqual(panels["agent-b"]["aggregate"], 0.5)
 
     def test_cross_release_comparison_is_never_comparable_even_with_a_matching_cohort_digest(self) -> None:
         """Review finding #1: a prior version of this endpoint treated a
@@ -1029,8 +1092,47 @@ class ApiServiceTests(unittest.TestCase):
         self.assertFalse(body["cohort_comparable"])  # matching cohort_digest is NOT sufficient across publications
         self.assertIsNotNone(body["non_comparable_reason"])
         self.assertIsNone(body["task_rate_deltas"])
-        self.assertEqual(body["entrants"]["agent-a"], {"eligible": True, "aggregate": 1.0})
-        self.assertEqual(body["entrants"]["agent-b"], {"eligible": True, "aggregate": 0.5})
+        panels = {panel["entrant_id"]: panel for panel in body["entrants"]}
+        self.assertEqual(panels["agent-a"]["aggregate"], 1.0)
+        self.assertEqual(panels["agent-b"]["aggregate"], 0.5)
+
+    def test_comparing_the_same_slug_across_two_releases_keeps_both_panels_distinct(self) -> None:
+        """Review finding #4, third pass: the response was a dict keyed by
+        slug alone, so selecting the same slug from two releases (the natural
+        "did agent-a improve from release 1 to 2?" comparison) silently
+        overwrote one entry and both panels rendered the same wrong aggregate.
+        The response is now an ordered LIST, one panel per selection, each
+        carrying its own publication_id - so agent-a@pub-a (rate 1.0) and
+        agent-a@pub-b (rate 0.3) stay two distinct panels with their own real
+        results."""
+        with db.session_factory()() as session:
+            campaign_a = api_models.CampaignRow(name="rel-1", state="frozen", draft={"a": 1}, cohort_digest="a" * 64)
+            campaign_b = api_models.CampaignRow(name="rel-2", state="frozen", draft={"a": 1}, cohort_digest="b" * 64)
+            session.add_all([campaign_a, campaign_b])
+            session.commit()
+            campaign_a_id, campaign_b_id = campaign_a.id, campaign_b.id
+        publication_a = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}), campaign_id=campaign_a_id)
+        publication_b = self._seed_publication(self._analysis_snapshot({"agent-a": 0.3}), campaign_id=campaign_b_id)
+
+        response = self.client.get(
+            "/v1/comparisons",
+            params={"entrant_ids": ["agent-a", "agent-a"], "entrant_publication_ids": [str(publication_a), str(publication_b)]},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["entrants"]), 2)  # two distinct panels, not one overwritten entry
+        by_pub = {panel["publication_id"]: panel["aggregate"] for panel in body["entrants"]}
+        self.assertEqual(by_pub[str(publication_a)], 1.0)
+        self.assertEqual(by_pub[str(publication_b)], 0.3)  # its own real result, not the other panel's
+
+    def test_comparing_the_exact_same_slug_and_publication_twice_is_rejected(self) -> None:
+        """Selecting the identical (slug, publication) pair twice is comparing
+        something to itself - meaningless, and rejected (review finding #4)."""
+        publication_id = self._seed_publication(self._analysis_snapshot({"agent-a": 1.0}))
+        response = self.client.get(
+            f"/v1/comparisons?publication_id={publication_id}&entrant_ids=agent-a&entrant_ids=agent-a"
+        )
+        self.assertEqual(response.status_code, 400)
 
     def test_publication_snapshot_row_rejects_direct_update_at_the_database_level(self) -> None:
         """Mirrors test_task_revision_row_rejects_direct_update_at_the_database_level

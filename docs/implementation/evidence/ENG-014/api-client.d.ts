@@ -99,6 +99,14 @@ export interface paths {
          *     finding #1, 2026-09-16). Entrants from different publications therefore
          *     always get separate eligible panels with no paired difference, exactly
          *     as spec 6.1 requires - never a fabricated calculated winner.
+         *
+         *     The response `entrants` is an ORDERED LIST, one panel per selection,
+         *     each carrying its own `publication_id` (review finding #4, third pass):
+         *     a prior version keyed it by slug alone, so selecting the same slug from
+         *     two releases (the natural "did agent-a improve from release 1 to 2?"
+         *     comparison) silently overwrote one entry and both panels rendered the
+         *     same wrong aggregate. Selecting the exact same (slug, publication) twice
+         *     is meaningless (comparing something to itself) and is rejected.
          */
         get: operations["get_comparison_v1_comparisons_get"];
         put?: never;
@@ -552,14 +560,38 @@ export interface components {
             /** Track */
             track: string;
         };
+        /**
+         * ComparisonEntrantPanel
+         * @description One selected entrant panel in a comparison, identified by BOTH its
+         *     slug AND the publication it was selected from (review finding #4, third
+         *     pass): the response was previously a dict keyed by slug alone, so
+         *     selecting the same slug from two different releases (a genuine
+         *     cross-release use case - "did agent-a improve from release 1 to
+         *     release 2?") silently overwrote one entry, and both panels then rendered
+         *     the same, wrong aggregate. An ordered list keyed per selection preserves
+         *     both, so each panel shows its own publication's real result.
+         */
+        ComparisonEntrantPanel: {
+            /** Aggregate */
+            aggregate?: number | null;
+            /** Eligible */
+            eligible: boolean;
+            /** Entrant Id */
+            entrant_id: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Reason */
+            reason?: string | null;
+        };
         /** ComparisonResponse */
         ComparisonResponse: {
             /** Cohort Comparable */
             cohort_comparable: boolean;
             /** Entrants */
-            entrants: {
-                [key: string]: components["schemas"]["EntrantComparisonEligible"] | components["schemas"]["EntrantComparisonIneligible"];
-            };
+            entrants: components["schemas"]["ComparisonEntrantPanel"][];
             /** Non Comparable Reason */
             non_comparable_reason?: string | null;
             /**
@@ -596,26 +628,6 @@ export interface components {
          * @enum {string}
          */
         DependencyMode: "fixture" | "live";
-        /** EntrantComparisonEligible */
-        EntrantComparisonEligible: {
-            /** Aggregate */
-            aggregate: number | null;
-            /**
-             * Eligible
-             * @constant
-             */
-            eligible: true;
-        };
-        /** EntrantComparisonIneligible */
-        EntrantComparisonIneligible: {
-            /**
-             * Eligible
-             * @constant
-             */
-            eligible: false;
-            /** Reason */
-            reason: string;
-        };
         /**
          * EntrantResultEntry
          * @description One publication an entrant slug appears in - the "results by release"
@@ -721,6 +733,22 @@ export interface components {
             protocol: components["schemas"]["ProtocolRevision"];
         };
         /**
+         * FrozenEntrantEntry
+         * @description One entrant from the campaign's own frozen manifest
+         *     (`campaign.resolved["entrants"]`) - the authoritative list of who was
+         *     scheduled, NOT inferred from which entrants happen to have an observation
+         *     in the snapshot. A frozen entrant with ZERO observations still appears
+         *     here (review finding #3, third pass: such an entrant previously vanished
+         *     from the results table entirely instead of showing incomplete coverage,
+         *     zero valid trials, and an unavailable aggregate).
+         */
+        FrozenEntrantEntry: {
+            /** Slug */
+            slug: string;
+            /** Version */
+            version: string;
+        };
+        /**
          * FrozenTaskEntry
          * @description One task from the campaign's own frozen manifest
          *     (`campaign.resolved["tasks"]`) - NOT inferred from which tasks happen to
@@ -820,10 +848,11 @@ export interface components {
             cohort_digest: string | null;
             /** Created At */
             created_at: string;
-            /** Evaluation Completed At */
-            evaluation_completed_at?: string | null;
-            /** Evaluation Started At */
-            evaluation_started_at?: string | null;
+            /**
+             * Frozen Entrants
+             * @default []
+             */
+            frozen_entrants: components["schemas"]["FrozenEntrantEntry"][];
             /**
              * Frozen Tasks
              * @default []
