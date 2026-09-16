@@ -880,7 +880,8 @@
         "required": [
           "entrant_id",
           "publication_id",
-          "eligible"
+          "eligible",
+          "aggregate"
         ],
         "title": "EligibleEntrantPanel",
         "type": "object"

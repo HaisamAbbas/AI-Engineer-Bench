@@ -11,6 +11,8 @@ from uuid import UUID
 
 from aieb_core.models import EntrantRevision
 from fastapi import APIRouter, Depends, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, tuple_
 from sqlalchemy.orm import Session
 
@@ -84,28 +86,50 @@ def list_releases(cursor: str | None = None, limit: int | None = None, session: 
     return Page(items=items, next_cursor=next_cursor)
 
 
-@router.get(
-    "/publications/{publication_id}/results",
-    response_model=PublicationResultsResponse,
-   
-    response_model_exclude_unset=True,
-)
-def get_publication_results(publication_id: UUID, session: Session = Depends(get_session)) -> PublicationResultsResponse:
+# response_model is kept for OpenAPI documentation only (see the JSONResponse
+# substitution below, which bypasses FastAPI's own response_model dump for
+# this one route).
+@router.get("/publications/{publication_id}/results", response_model=PublicationResultsResponse)
+def get_publication_results(publication_id: UUID, session: Session = Depends(get_session)) -> JSONResponse:
     row = session.get(PublicationRow, publication_id)
     if row is None:
         raise not_found()
     campaign = session.get(CampaignRow, row.campaign_id)
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
     cohort, frozen_tasks, frozen_entrants = _frozen_manifest_data(campaign)
-   
-    return PublicationResultsResponse(
+    response = PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
         supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat(),
         cohort_digest=campaign.cohort_digest if campaign else None,
         cohort=cohort, protocol_scoring_digest=_protocol_scoring_digest(campaign),
         frozen_tasks=frozen_tasks, frozen_entrants=frozen_entrants,
+        # _verified_snapshot() is called ONLY to digest-verify and shape-check
+        # the stored JSONB (raising 503 on either mismatch); its return value
+        # is discarded below in favor of the raw `row.snapshot` dict, never
+        # serialized through this.
         snapshot=_verified_snapshot(row), notice=notice,
     )
+    # The snapshot is served as the EXACT bytes/values recorded, never
+    # Pydantic-reserialized (review finding #1, seventh pass): even with
+    # `exclude_unset` keeping genuinely-absent legacy keys absent (ENG016-015),
+    # a PRESENT value still round-trips through `AnalysisSnapshot` validation
+    # and Pydantic's schema-driven JSON dump, which coerces a stored JSON
+    # integer (e.g. `suite_rate: 1`) into a served float (`1.0`) for any field
+    # typed `float | None` - reproduced directly (a snapshot with integer
+    # rate/per-entrant values served with a digest that no longer matched
+    # `snapshot_digest`, exactly the read-time-mutation defect ENG016-013
+    # already fixed once, recurring through a different mechanism). Building
+    # the JSON body via `jsonable_encoder` and then substituting the ORIGINAL
+    # `row.snapshot` dict for the `snapshot` key - rather than letting
+    # `response_model`'s own serialization touch it - guarantees the served
+    # value is exactly what was digested, regardless of what Pydantic's
+    # float/int handling would otherwise do to it. `response_model` on the
+    # route decorator still documents the shape in OpenAPI; returning a
+    # `JSONResponse` directly means FastAPI does not run this return value
+    # through that response_model at all.
+    body = jsonable_encoder(response)
+    body["snapshot"] = row.snapshot
+    return JSONResponse(content=body)
 
 
 def _protocol_scoring_digest(campaign: CampaignRow | None) -> str | None:

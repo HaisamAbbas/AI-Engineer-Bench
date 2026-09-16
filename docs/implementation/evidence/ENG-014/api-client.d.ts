@@ -611,7 +611,7 @@ export interface components {
          */
         EligibleEntrantPanel: {
             /** Aggregate */
-            aggregate?: number | null;
+            aggregate: number | null;
             /**
              * Eligible
              * @constant

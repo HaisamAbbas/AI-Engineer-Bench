@@ -249,7 +249,12 @@ class EligibleEntrantPanel(BaseModel):
     entrant_id: str
     publication_id: UUID
     eligible: Literal[True]
-    aggregate: float | None = None
+    # No default (review finding #2, seventh pass): required-but-nullable, not
+    # optional-and-absent. A default of `None` let the field be omitted from
+    # the payload entirely, which is a different, weaker contract than "always
+    # present, possibly null" - the endpoint always computes a real value
+    # (even if that value is itself `None`) for every eligible panel.
+    aggregate: float | None
 
 
 class IneligibleEntrantPanel(BaseModel):

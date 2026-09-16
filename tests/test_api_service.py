@@ -868,6 +868,31 @@ class ApiServiceTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(snapshot_digest(body["snapshot"]), body["snapshot_digest"])
 
+    def test_served_snapshot_preserves_integer_values_that_pydantic_would_coerce_to_float(self) -> None:
+        """Review finding #1, seventh pass: even with every key PRESENT (no
+        legacy absence), round-tripping the stored JSONB through
+        `AnalysisSnapshot.model_validate()` and Pydantic's own schema-driven
+        JSON dump silently coerces a stored JSON integer (e.g. `suite_rate: 1`)
+        into a served float (`1.0`) for any field typed `float | None` -
+        recomputing the digest from that reserialized body then no longer
+        matches `snapshot_digest`, the same failure mode as ENG016-013's
+        read-time mutation, recurring through Pydantic's own (de)serializer
+        rather than application code. The response must serve `row.snapshot`
+        verbatim, bypassing response-model reserialization for this field, so
+        an integer stored value is still an integer in the response."""
+        from aieb_api.snapshots import snapshot_digest
+
+        snapshot = self._analysis_snapshot({"agent-a": 1}, suite_rate=1, deadline_rate=0)
+        publication_id = self._seed_publication(snapshot)
+
+        response = self.client.get(f"/v1/publications/{publication_id}/results")
+        body = response.json()
+        self.assertEqual(body["snapshot"]["suite_rate"], 1)
+        self.assertNotIsInstance(body["snapshot"]["suite_rate"], float)
+        self.assertEqual(body["snapshot"]["per_entrant"]["agent-a"], 1)
+        self.assertNotIsInstance(body["snapshot"]["per_entrant"]["agent-a"], float)
+        self.assertEqual(snapshot_digest(body["snapshot"]), body["snapshot_digest"])
+
     # ---- idempotency.finalize must not misdiagnose an unrelated conflict ----
 
     def test_finalize_reraises_unrelated_integrity_error(self) -> None:
