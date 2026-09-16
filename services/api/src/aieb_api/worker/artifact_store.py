@@ -19,11 +19,32 @@ mount) and no change to aieb-runner's own generic storage abstraction.
 The local CLI is unaffected: it has no database at all (spec: "Local
 reports require no hosted account") and continues to use
 FilesystemArtifactStore exclusively.
+
+Storage-architecture note (fifth review, finding #2): storing candidate
+bytes in PostgreSQL is a DOCUMENTED deviation from ADR-08 ("PostgreSQL for
+hosted metadata, object storage for artifacts"), superseded for
+candidate-staging artifacts by the decision recorded as "ADR-11" in
+docs/implementation/DECISIONS.md (the frozen spec files are hash-pinned by
+scripts/dev.py, so the supersession lives in the decisions ledger, not by
+editing the architecture doc); an S3-compatible backend remains the end
+state for the ENG-019 hosted registry. The guardrails the spec's artifact
+contract requires are enforced here and at the database level: a per-blob
+size cap matching the submission policy's own max_artifact_bytes (52 MiB),
+a retention class distinguishing staging from committed evidence, and a
+24-hour expiry on unreferenced staging blobs (spec section 37: "Orphaned
+unreferenced staging objects expire after 24 hours by default; committed
+evidence is never deleted by that cleanup job") - implemented by
+repository.purge_expired_worker_artifacts, which the reconciler runs. Blobs
+acquired by a committed candidate are promoted to the 'evidence' class by
+repository.attach_candidate_references and are never removed by the purge
+job; shared blobs with remaining live references are likewise never
+deleted.
 """
 
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from aieb_runner.artifacts import (
@@ -37,7 +58,12 @@ from aieb_runner.artifacts import (
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
-from ..models import WorkerArtifactBlobRow, WorkerArtifactReferenceRow
+from ..models import MAX_WORKER_ARTIFACT_BYTES, WorkerArtifactBlobRow, WorkerArtifactReferenceRow
+
+# Spec section 37: unreferenced staging objects expire after 24 hours by
+# default. Stamped onto every staging blob at first insert and enforced by
+# the reconciler's purge pass.
+WORKER_ARTIFACT_STAGING_TTL = timedelta(hours=24)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -55,7 +81,17 @@ class PostgresArtifactStore:
     def __init__(self, session_factory: sessionmaker) -> None:
         self._session_factory = session_factory
 
-    def put_bytes(self, data: bytes) -> BlobRef:
+    def put_bytes(self, data: bytes, *, retention_class: str = "staging", staged_until: datetime | None = None) -> BlobRef:
+        if len(data) > MAX_WORKER_ARTIFACT_BYTES:
+            # Same cap the submission policy enforces on a collected candidate;
+            # enforced here at the store boundary AND at the database level
+            # (ck_worker_artifact_blob_max_bytes) so an oversized artifact can
+            # never silently accumulate in the control-plane database.
+            raise ArtifactValidationError(
+                f"artifact exceeds the maximum worker artifact size ({len(data)} > {MAX_WORKER_ARTIFACT_BYTES} bytes)"
+            )
+        if retention_class not in {"staging", "evidence"}:
+            raise ArtifactValidationError(f"unknown retention class: {retention_class!r}")
         digest = _sha256_bytes(data)
         blob = BlobRef(digest, len(data))
         with self._session_factory() as session:
@@ -64,24 +100,37 @@ class PostgresArtifactStore:
                 if existing.byte_length != len(data):
                     raise ArtifactIntegrityError("stored blob length mismatch for existing digest")
                 return blob
-            session.add(WorkerArtifactBlobRow(sha256=digest, byte_length=len(data), data=data))
+            if staged_until is None and retention_class == "staging":
+                staged_until = datetime.now(timezone.utc) + WORKER_ARTIFACT_STAGING_TTL
+            session.add(
+                WorkerArtifactBlobRow(
+                    sha256=digest, byte_length=len(data), data=data,
+                    retention_class=retention_class, staged_until=staged_until,
+                )
+            )
             try:
                 session.commit()
             except IntegrityError:
                 # A concurrent worker already committed the same content-addressed
                 # blob between our read and our insert - the same bytes under the
-                # same digest, so this is a safe no-op, not a conflict.
+                # same digest, so this is a safe no-op, not a conflict. The first
+                # writer's retention metadata stands.
                 session.rollback()
         return blob
 
-    def create_reference(self, blob: BlobRef, *, access_scope: str, visibility: str = "restricted") -> ArtifactReference:
+    def create_reference(
+        self, blob: BlobRef, *, access_scope: str, visibility: str = "restricted", candidate_id=None,
+    ) -> ArtifactReference:
         if visibility not in {"restricted", "public"} or not access_scope:
             raise ArtifactValidationError("reference visibility and scope are required")
         self.verify(blob)
         reference_id = uuid4()
         with self._session_factory() as session:
             session.add(
-                WorkerArtifactReferenceRow(id=reference_id, blob_sha256=blob.sha256, access_scope=access_scope, visibility=visibility)
+                WorkerArtifactReferenceRow(
+                    id=reference_id, blob_sha256=blob.sha256, candidate_id=candidate_id,
+                    access_scope=access_scope, visibility=visibility,
+                )
             )
             session.commit()
         return ArtifactReference(reference_id, blob, access_scope, visibility)

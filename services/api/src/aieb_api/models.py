@@ -28,6 +28,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+# Upper bound for a single worker artifact blob, shared by the API-level
+# validation in PostgresArtifactStore.put_bytes and the database-level
+# CHECK constraint below. Matches the submission policy's own
+# max_artifact_bytes cap (52 MiB) used across the codebase.
+MAX_WORKER_ARTIFACT_BYTES = 52_428_800
+
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -415,28 +421,80 @@ class WorkerArtifactBlobRow(Base):
     This is the hosted worker's PostgresArtifactStore backing table
     (ENG-015 review finding #5 - "the hosted storage requirement remains
     unimplemented"); the local CLI's FilesystemArtifactStore (ENG-003) is
-    unaffected and unchanged, since it has no database at all."""
+    unaffected and unchanged, since it has no database at all.
+
+    Deviation from ADR-08 ("PostgreSQL for hosted metadata, object storage
+    for artifacts") is explicit and documented: the frozen spec files are
+    hash-pinned (scripts/dev.py), so the superseding decision lives in the
+    decisions ledger - docs/implementation/DECISIONS.md, ENG015-010 "ADR-11
+    (recorded in DECISIONS.md)" - which supersedes ADR-08 for
+    candidate-staging artifacts, with the S3-compatible backend still the
+    required end state for the ENG-019 hosted registry. Constraint
+    correspondence with the spec's own artifact contract (section 33):
+    `octet_length(data) <= MAX_WORKER_ARTIFACT_BYTES` (and `= byte_length`)
+    bounds per-blob size to the same cap the submission policy already
+    enforces on collected candidates, checked against the REAL stored bytes
+    rather than only the caller-supplied `byte_length` column (review
+    finding #5); `retention_class` and `staged_until` implement the
+    staging/orphan semantics from spec section 37 (unreferenced staging
+    objects expire after 24 hours; committed evidence is never deleted by
+    that job, and shared blobs with live references are never removed).
+    These columns/constraints and `candidate_id` below were added by a
+    separate migration (f2b6c9a417de), not by editing the original
+    e20d5d09b489 in place (review finding #3: that revision was already
+    committed before this hardening began)."""
 
     __tablename__ = "worker_artifact_blob"
 
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
     data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    retention_class: Mapped[str] = mapped_column(String(16), nullable=False, server_default="staging")
+    staged_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        # A real size guarantee, not merely a check on the caller-supplied
+        # byte_length column (ENG-015 review finding #5): a row could
+        # previously claim byte_length=1 while storing up to MAX bytes of
+        # actual `data`, since nothing compared byte_length against
+        # octet_length(data). Both constraints together (migration
+        # f2b6c9a417de) require byte_length to genuinely equal the stored
+        # bytes' real length, nonnegative, and within the submission
+        # policy's cap.
+        CheckConstraint(
+            "byte_length >= 0 AND octet_length(data) = byte_length", name="ck_worker_artifact_blob_byte_length_matches_data",
+        ),
+        CheckConstraint(
+            f"octet_length(data) <= {MAX_WORKER_ARTIFACT_BYTES}", name="ck_worker_artifact_blob_max_bytes",
+        ),
+        CheckConstraint("retention_class in ('staging', 'evidence')", name="ck_worker_artifact_blob_retention_class"),
+    )
 
 
 class WorkerArtifactReferenceRow(Base):
     """An access-controlled reference to one worker_artifact_blob row -
     mirrors FilesystemArtifactStore's on-disk reference metadata exactly
     (id/blob digest/access_scope/visibility), just persisted in Postgres
-    instead of a JSON file next to the blob."""
+    instead of a JSON file next to the blob.
+
+    `candidate_id` ties the reference to the exact candidate whose
+    engineering phase created it (review finding #2: the previous schema
+    had no candidate linkage and therefore no notion of retention
+    ownership); it stays NULL for the legacy server_default rows that
+    predate this column."""
 
     __tablename__ = "worker_artifact_reference"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     blob_sha256: Mapped[str] = mapped_column(String(64), ForeignKey("worker_artifact_blob.sha256"), nullable=False)
+    candidate_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("candidate.id"), nullable=True)
     access_scope: Mapped[str] = mapped_column(String(128), nullable=False)
     visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="restricted")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    __table_args__ = (CheckConstraint("visibility in ('public','restricted')", name="ck_worker_artifact_reference_visibility"),)
+    __table_args__ = (
+        CheckConstraint("visibility in ('public','restricted')", name="ck_worker_artifact_reference_visibility"),
+        Index("ix_worker_artifact_reference_candidate", "candidate_id"),
+        Index("ix_worker_artifact_reference_blob", "blob_sha256"),
+    )

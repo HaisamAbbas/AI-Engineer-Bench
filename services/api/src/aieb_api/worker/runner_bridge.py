@@ -15,17 +15,18 @@ import sys
 import threading
 import uuid
 from dataclasses import dataclass
+from typing import Annotated, Literal
 from pathlib import Path
 from uuid import uuid4
 
 from aieb_core.models import CandidateManifest, ExecutionValidity, SubmissionPolicy
 from aieb_runner.artifacts import ArtifactReference, BlobRef, StoredCandidate
-from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, EngineeringCommand, LocalAttemptRunner
-from pydantic import BaseModel, ValidationError
+from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, CancelledError, EngineeringCommand, LocalAttemptRunner
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from ..models import TaskRevisionRow, TrialRow
+from ..models import AuditEventRow, TaskRevisionRow, TrialRow
 from . import repository
 from .artifact_store import PostgresArtifactStore
 from .repository import CandidateOutcome, EvaluationOutcome, LeasedWork
@@ -136,19 +137,47 @@ def _serialize_stored_candidate(stored: StoredCandidate) -> dict:
 
 
 class _StoredBlobEnvelope(BaseModel):
-    sha256: str
-    byte_length: int
+    """Strict (ENG-015 review finding #4): this payload is machine-written by
+    _serialize_stored_candidate and read back by an independent verification
+    process - there is no legitimate producer of extra fields, stringified
+    numbers, or empty digests. Lenient defaults (ignore unknown keys, coerce
+    "12" to 12) would let hand-edited or corrupted JSON validate that the
+    strict writer never emitted, so unknown fields are rejected and types
+    must match exactly. Range constraints (nonnegative length, 64-char
+    lowercase hex digest) match what the runner's own BlobRef producers
+    write, and downstream artifact-store reads re-verify bytes against the
+    digest anyway."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    sha256: str = Field(min_length=64, max_length=64, pattern=r"[0-9a-f]{64}")
+    byte_length: int = Field(ge=0)
 
 
 class _StoredReferenceEnvelope(BaseModel):
-    id: uuid.UUID
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # Strict everywhere EXCEPT here: _serialize_stored_candidate writes the
+    # id as a JSON string ("id": str(reference.id)), so a UUID field under
+    # strict=True would reject the writer's own legitimate output. Field-
+    # level strict=False re-enables exactly that one documented coercion
+    # (well-formed UUID string -> UUID) while every other type stays exact.
+    id: Annotated[uuid.UUID, Field(strict=False)]
     blob: _StoredBlobEnvelope
-    access_scope: str
-    visibility: str
+    access_scope: str = Field(min_length=1)
+    # A Literal, not `str = Field(pattern=r"public|restricted")` (ENG-015
+    # review finding #6): Pydantic's `pattern` constraint uses `re.match`
+    # (matches at the START of the string, not the WHOLE string), so the
+    # unanchored alternation accepted values like "public-evil" - reproduced
+    # directly. A Literal enum can only ever be exactly one of the two real
+    # values.
+    visibility: Literal["public", "restricted"]
 
 
 class _StoredFileReferenceEnvelope(BaseModel):
-    path: str
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1)
     reference: _StoredReferenceEnvelope
 
 
@@ -159,13 +188,19 @@ class _StoredCandidateEnvelope(BaseModel):
     e.g. `"id": []` - previously escaped as a bare, uncaught `AttributeError`
     from `uuid.UUID()` ('list' object has no attribute 'replace'), not the
     typed `StoredCandidateUnavailableError` every other malformed-input path
-    already raised. Every field here is typed (including `id: uuid.UUID`),
-    so ANY structural or type mismatch anywhere in the payload - including
+    already raised. Every field here is typed (including `id: uuid.UUID`), so
+    any structural or type mismatch anywhere in the payload - including
     nested references - surfaces as one well-defined `pydantic.ValidationError`
     instead of whatever built-in exception a hand-rolled accessor happens to
     raise for that particular kind of corruption."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     manifest: dict
+    # Deliberately NO min_length: a candidate with zero allowed file changes
+    # is a legitimate, scored outcome (collect_candidate emits an empty
+    # references list and the pipeline records/verdicts it), so requiring at
+    # least one reference would regress that path to infrastructure_invalid.
     file_references: list[_StoredFileReferenceEnvelope]
 
 
@@ -174,12 +209,20 @@ def _deserialize_stored_candidate(data: dict) -> StoredCandidate:
     (never a bare KeyError/TypeError/AttributeError) for anything that isn't a
     well-formed serialized StoredCandidate - in particular the '{}' a legacy
     pre-ENG015-007 candidate row carries, and any malformed nested field
-    (review finding #4)."""
+    (review finding #4). The envelope is STRICT (extra="forbid", strict=True)
+    with constrained digests, visibility, nonnegative lengths and non-empty
+    path/reference lists, and path uniqueness is enforced here to mirror
+    CandidateManifest's own uniqueness rule - the documentation's strictness
+    claim is now accurate for unknown fields, coercion and value domains,
+    not just structural shape."""
     try:
         envelope = _StoredCandidateEnvelope.model_validate(data)
         manifest = CandidateManifest.model_validate(envelope.manifest)
     except ValidationError as exc:
         raise StoredCandidateUnavailableError(f"stored_candidate is malformed: {exc}") from exc
+    paths = [entry.path for entry in envelope.file_references]
+    if len(set(paths)) != len(paths):
+        raise StoredCandidateUnavailableError("stored_candidate is malformed: duplicate file reference paths")
     file_references = tuple(
         (
             entry.path,
@@ -316,6 +359,13 @@ def execute_leased_engineering(
             return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
         if candidate_id is None:
             return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=None)
+        # Claim this candidate's artifact references as committed evidence
+        # (review finding #2): ties worker_artifact_reference.candidate_id to
+        # this candidate and flips the referenced blobs' retention_class from
+        # 'staging' to 'evidence', so the reconciler's 24-hour orphan purge
+        # can never delete bytes a committed candidate still references
+        # (spec section 37). Runs inside the same fenced lease window.
+        repository.attach_candidate_references(session, attempt_id=leased.attempt_id, candidate_id=candidate_id)
         advanced = repository.advance_to_verification(
             session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation, attempt_id=leased.attempt_id,
         )
@@ -457,10 +507,45 @@ def execute_leased_verification(
                 verdict=outcome.verdict.value if outcome.verdict else None,
                 result=outcome.evaluation,
             )
-            recorded_evaluation = repository.record_evaluation(
-                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-                candidate_id=loaded.candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
-            )
+            try:
+                recorded_evaluation = repository.record_evaluation(
+                    session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                    candidate_id=loaded.candidate_id, evaluation=evaluation, lease_seconds=lease_seconds,
+                )
+            except repository.EvaluationConflictError as conflict:
+                # Evaluator nondeterminism / integrity anomaly (review finding
+                # #3): a retry recomputed a DIFFERENT verdict or result under
+                # the exact (candidate_id, evaluator_id, fixture_id,
+                # schedule_digest) identity already persisted. The first
+                # persisted evaluation stays authoritative - the first valid
+                # scored attempt is final (spec section 16) - but the
+                # divergence is never silently swallowed: it is recorded as a
+                # durable audit event and this attempt is finalized
+                # infrastructure_invalid so the anomaly is investigated rather
+                # than laundered through an idempotent-replay path.
+                with session_factory() as audit_session:
+                    audit_session.add(
+                        AuditEventRow(
+                            target_type="evaluation",
+                            target_id=loaded.candidate_id,
+                            action="evaluation_conflict",
+                            evidence={
+                                "attempt_id": str(leased.attempt_id),
+                                "work_item_id": str(leased.work_item_id),
+                                "worker_id": worker_id,
+                                "persisted_verdict": conflict.persisted_verdict,
+                                "reported_verdict": conflict.reported_verdict,
+                                "schedule_digest": conflict.schedule_digest,
+                                "diagnostic": "a retried verification produced a different result for an already-recorded evaluation identity",
+                            },
+                        )
+                    )
+                    audit_session.commit()
+                finalized = repository.finalize(
+                    session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                    attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+                )
+                return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
             if recorded_evaluation is None:
                 return ExecutionResult(finalized=False, execution_validity=outcome.execution_validity.value, verdict=outcome.verdict.value if outcome.verdict else None)
 

@@ -35,6 +35,8 @@ from ..models import (
     TaskRevisionRow,
     TrialRow,
     WorkItemRow,
+    WorkerArtifactBlobRow,
+    WorkerArtifactReferenceRow,
 )
 
 DEFAULT_LEASE_SECONDS = 60
@@ -52,6 +54,26 @@ class CandidateConflictError(RuntimeError):
     the same write (review finding #2). Raised rather than silently
     returning the mismatched existing row's id, which would misrepresent
     what this call's caller believes was actually recorded."""
+
+
+class EvaluationConflictError(RuntimeError):
+    """A retried record_evaluation() call recomputed a DIFFERENT verdict or
+    result under the identical (candidate_id, evaluator_id, fixture_id,
+    schedule_digest) identity already persisted (review finding #3).
+    Deterministic evaluation means an honest replay produces byte-identical
+    output; divergence is evaluator nondeterminism or an integrity anomaly,
+    not idempotent input. The first persisted evaluation remains
+    authoritative (the first valid scored attempt is final, spec section 16);
+    the caller surfaces this via a durable audit event and infrastructure-
+    invalid finalization instead of silently swallowing the mismatch."""
+
+    def __init__(self, message: str, *, persisted_verdict: str | None, persisted_result: dict | None, reported_verdict: str | None, reported_result: dict | None, schedule_digest: str) -> None:
+        super().__init__(message)
+        self.persisted_verdict = persisted_verdict
+        self.persisted_result = persisted_result
+        self.reported_verdict = reported_verdict
+        self.reported_result = reported_result
+        self.schedule_digest = schedule_digest
 
 
 @dataclass(frozen=True)
@@ -322,7 +344,17 @@ def record_evaluation(
     IntegrityError is caught, and the row already there is returned as the
     authoritative result (review finding #2) rather than the caller's own
     (possibly different) retry payload being silently treated as if it had
-    been written."""
+    been written.
+
+    Idempotency vs conflict (review finding #3): a retry whose verdict AND
+    result match the persisted row is a genuine idempotent replay and
+    returns it as-is. A retry that recomputes a DIFFERENT verdict or result
+    under the same identity is evaluator nondeterminism or an integrity
+    anomaly, never idempotent input: the persisted row stays authoritative
+    (the first valid scored attempt is final), and the mismatch is raised as
+    EvaluationConflictError so the caller can surface it as a durable audit
+    event instead of laundering it through the replay path (record_candidate
+    already does the equivalent via CandidateConflictError)."""
     if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
         session.rollback()
         return None
@@ -345,6 +377,17 @@ def record_evaluation(
         ).scalar_one_or_none()
         if existing is None:
             raise
+        if existing.verdict != evaluation.verdict or existing.result != evaluation.result:
+            raise EvaluationConflictError(
+                f"evaluation identity (candidate {candidate_id}, evaluator {evaluation.evaluator_id}, "
+                f"fixture {evaluation.fixture_id}, schedule {evaluation.schedule_digest}) is already recorded "
+                "with a different verdict or result",
+                persisted_verdict=existing.verdict,
+                persisted_result=existing.result,
+                reported_verdict=evaluation.verdict,
+                reported_result=evaluation.result,
+                schedule_digest=evaluation.schedule_digest,
+            ) from None
         return RecordedEvaluation(evaluation_id=existing.id, verdict=existing.verdict, result=existing.result, newly_recorded=False)
     return RecordedEvaluation(evaluation_id=row.id, verdict=row.verdict, result=row.result, newly_recorded=True)
 
@@ -377,6 +420,107 @@ def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> LoadedCand
     )
 
 
+def attach_candidate_references(session: Session, *, attempt_id: uuid.UUID, candidate_id: uuid.UUID) -> int:
+    """Promote the artifact references an engineering phase created for this
+    attempt from anonymous staging to committed evidence (review finding #2:
+    the previous schema had no candidate linkage, so nothing distinguished a
+    candidate's live references from an orphaned staging leftover).
+
+    Called right after record_candidate() commits, in the same fenced lease:
+    - sets worker_artifact_reference.candidate_id on every reference whose
+      access_scope matches this attempt (the engineering phase passes
+      str(attempt_id) as the store's access_scope);
+    - flips each referenced blob's retention_class from 'staging' to
+      'evidence' and clears its staged_until, so the 24-hour orphan purge
+      (purge_expired_worker_artifacts) can NEVER delete a blob a committed
+      candidate still references (spec section 37).
+
+    Returns the number of references claimed. Legacy references predating
+    the candidate_id column match by access_scope exactly as before.
+    """
+    refs = session.execute(
+        select(WorkerArtifactReferenceRow).where(
+            WorkerArtifactReferenceRow.candidate_id.is_(None),
+            WorkerArtifactReferenceRow.access_scope == str(attempt_id),
+        )
+    ).scalars().all()
+    claimed = 0
+    for ref in refs:
+        ref.candidate_id = candidate_id
+        claimed += 1
+        blob = session.get(WorkerArtifactBlobRow, ref.blob_sha256)
+        if blob is not None and blob.retention_class == "staging":
+            blob.retention_class = "evidence"
+            blob.staged_until = None
+    session.flush()
+    return claimed
+
+
+def purge_expired_worker_artifacts(session: Session, *, now: datetime | None = None) -> int:
+    """Delete staging worker_artifact_blob rows whose staged_until has passed,
+    implementing spec section 37's "orphaned unreferenced staging objects
+    expire after 24 hours by default; committed evidence is never deleted by
+    that cleanup job".
+
+    Guardrails:
+    - only blobs with retention_class = 'staging' are ever considered;
+    - 'evidence' blobs (claimed by a committed candidate via
+      attach_candidate_references) are invisible to this job by class, and
+      that claim is exactly what protects "shared blobs with remaining live
+      references" (spec section 38) - see below.
+
+    ANY worker_artifact_reference row still pointing at an expired STAGING
+    blob is, by construction, an unclaimed/orphaned one (review finding #4):
+    attach_candidate_references always flips a blob's retention_class to
+    'evidence' in the SAME call that sets candidate_id on a reference, so a
+    blob that is still 'staging' can never have a claimed (candidate_id-set)
+    reference - every reference on it is orphaned. A prior version treated
+    ANY reference (claimed or not) as protection and skipped deletion
+    entirely, but `collect_candidate` always creates a blob AND a reference
+    together in the same call - a real orphan (a worker that died between
+    collection and record_candidate, or one that was never going to be
+    claimed at all) therefore ALWAYS has a reference, so that version never
+    purged a single real orphan in practice. Fixed: an expired staging
+    blob's own (necessarily orphaned) references are deleted first (the
+    'worker_artifact_reference.blob_sha256' FK requires this order), then
+    the blob itself.
+
+    Returns the number of blobs removed. Runs from the reconciler, so a
+    candidate collected but never recorded (its worker died before
+    record_candidate) is reclaimed by this job instead of accumulating in
+    the control-plane database indefinitely (review finding #2, kept
+    correct for real by review finding #4).
+    """
+    current_time = now if now is not None else datetime.now(timezone.utc)
+    expired = session.execute(
+        select(WorkerArtifactBlobRow)
+        .where(
+            WorkerArtifactBlobRow.retention_class == "staging",
+            WorkerArtifactBlobRow.staged_until.isnot(None),
+            WorkerArtifactBlobRow.staged_until < current_time,
+        )
+        .with_for_update(skip_locked=True)
+    ).scalars().all()
+    removed = 0
+    for blob in expired:
+        orphan_references = session.execute(
+            select(WorkerArtifactReferenceRow).where(WorkerArtifactReferenceRow.blob_sha256 == blob.sha256)
+        ).scalars().all()
+        for reference in orphan_references:
+            session.delete(reference)
+        # Flush the reference deletes before deleting the blob: there is no
+        # declared ORM relationship() between these two mapped classes (only
+        # a plain ForeignKey column), so the unit of work does not know to
+        # order these deletes by that dependency on its own - an unflushed
+        # delete(blob) queued alongside them can otherwise be emitted first
+        # and violate the FK.
+        session.flush()
+        session.delete(blob)
+        removed += 1
+    session.commit()
+    return removed
+
+
 def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID, terminal_status: str, done: bool) -> bool:
     """Fenced, atomic transition to a terminal work-item/attempt state. Returns False
     if this worker/generation no longer holds the lease - a stale worker returning
@@ -402,6 +546,7 @@ class ReconciliationSummary:
     advanced: int = 0
     requeued: int = 0
     orphaned_attempt_ids: tuple[uuid.UUID, ...] = ()
+    worker_artifacts_purged: int = 0
 
 
 def reconcile_expired_leases(session: Session, *, default_max_replacements: int = 2) -> ReconciliationSummary:
@@ -461,6 +606,17 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
                 item.state = "done"
                 attempt.phase = "verifying"
                 session.add(WorkItemRow(attempt_id=attempt.id, type="verification", state="ready"))
+                # Claim this candidate's artifact references as committed
+                # evidence, exactly as execute_leased_engineering does right
+                # after record_candidate() in the normal (non-crashed) path
+                # (review finding #4): a worker that dies between committing
+                # record_candidate and calling attach_candidate_references
+                # otherwise leaves those references permanently
+                # candidate_id=NULL / retention_class='staging' even though a
+                # real candidate now exists and verification is about to
+                # consume it - vulnerable to the 24-hour staging purge ever
+                # running before anyone claims them.
+                attach_candidate_references(session, attempt_id=attempt.id, candidate_id=candidate.id)
                 advanced += 1
                 orphaned.append(attempt.id)
                 continue
@@ -507,7 +663,8 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
             exhausted += 1
     session.commit()
     return ReconciliationSummary(
-        resumed=resumed, replaced=replaced, exhausted=exhausted, advanced=advanced, requeued=requeued, orphaned_attempt_ids=tuple(orphaned),
+        resumed=resumed, replaced=replaced, exhausted=exhausted, advanced=advanced, requeued=requeued,
+        orphaned_attempt_ids=tuple(orphaned),
     )
 
 

@@ -11,6 +11,7 @@ import os
 import shutil
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from sqlalchemy.orm import sessionmaker
@@ -62,10 +63,16 @@ def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ..
 def reconcile_once(session_factory: sessionmaker, work_root: Path | None = None) -> repository.ReconciliationSummary:
     with session_factory() as session:
         summary = repository.reconcile_expired_leases(session)
-    if summary.resumed or summary.replaced or summary.exhausted or summary.advanced or summary.requeued:
+        # Spec section 37: unreferenced staging blobs expire after 24 hours;
+        # committed evidence is never touched. Candidate bytes collected by a
+        # worker that died before record_candidate are reclaimed here instead
+        # of accumulating in the control-plane database (review finding #2).
+        purged = repository.purge_expired_worker_artifacts(session)
+    summary = replace(summary, worker_artifacts_purged=purged)
+    if summary.resumed or summary.replaced or summary.exhausted or summary.advanced or summary.requeued or purged:
         log_event(
             "reconciler.summary", resumed=summary.resumed, replaced=summary.replaced, exhausted=summary.exhausted,
-            advanced=summary.advanced, requeued=summary.requeued,
+            advanced=summary.advanced, requeued=summary.requeued, worker_artifacts_purged=purged,
         )
     if work_root is not None and summary.orphaned_attempt_ids:
         removed = _remove_orphan_allocations(work_root, summary.orphaned_attempt_ids)

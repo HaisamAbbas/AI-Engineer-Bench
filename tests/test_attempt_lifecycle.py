@@ -35,6 +35,20 @@ TASK = ROOT / "suites" / "dev" / "rag.document-freshness"
 BASE_DIGEST = "a" * 64
 
 
+def _raise_scorer_crashed(candidate_path: Path, stop=None) -> dict[str, object]:
+    """Module-level (not a lambda/closure) so it is picklable for
+    run_verification's subprocess-isolated VERIFY (review finding #2)."""
+    raise ValueError("scorer crashed")
+
+
+def _raise_bare_runtime_error(candidate_path: Path, stop=None) -> dict[str, object]:
+    raise RuntimeError("evaluator's own bug, nothing to do with the candidate")
+
+
+def _raise_outage(candidate_path: Path, stop=None) -> dict[str, object]:
+    raise ValueError("outage")
+
+
 class AttemptLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.root = ROOT / ".cache" / "eng006-007-tests" / str(uuid4())
@@ -175,6 +189,134 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertIsNone(outcome.verdict)
         self.assertTrue(outcome.cleanup_clean)
 
+    def _collected_outcome(self, name: str) -> AttemptOutcome:
+        """run_engineering -> outcome with a collected candidate, ready for
+        run_verification against any evaluator (the ENG015-007 split)."""
+        return self.runner.run_engineering(
+            self.config(name, self.script(f"{name}.py", self.reference_editor()), deadline=20)
+        )
+
+    def test_cooperative_cancellation_during_verify_terminates_the_subprocess_cleanly(self) -> None:
+        """Review finding #1/#2, fix part A: VERIFY now runs the evaluator in
+        an owned subprocess (_run_verify_isolated), not an in-process thread.
+        An evaluator honouring the cooperative stop event (fixtures/worker/
+        cooperative_slow_evaluator.py) exits promptly as CancelledError once
+        signalled, so the subprocess is joined cleanly well within the grace
+        period, the build allocation is torn down safely (cleanup_clean=True),
+        and nothing is ever scored. A background thread sets cancel_event
+        shortly after VERIFY starts - the evaluator is a real module-level
+        function (required: it must be picklable to run in a child process),
+        so cancellation can no longer be triggered from inside it via a
+        shared in-process closure the way the old thread-based test did."""
+        from threading import Event, Thread
+
+        from tests.fixtures.worker.cooperative_slow_evaluator import evaluate as cooperative_evaluate
+
+        collected = self._collected_outcome("cooperative-cancel")
+        self.assertIsNotNone(collected.candidate)
+        cancel_event = Event()
+        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+
+        outcome = self.runner.run_verification(
+            self.config("cooperative-cancel", self.script("cooperative-cancel.py", self.reference_editor()), deadline=20),
+            cooperative_evaluate, collected, cancel_event=cancel_event,
+        )
+        attempt_root = self.root / "attempts" / "cooperative-cancel"
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertIsNone(outcome.verdict)
+        self.assertIsNone(outcome.evaluation)
+        self.assertTrue(outcome.cleanup_clean)  # subprocess joined -> teardown safe
+        self.assertFalse((attempt_root / "build").exists())
+        # The evaluator exited via CancelledError before finishing its own
+        # 30-second loop - it never reached the line writing this marker.
+        self.assertFalse((self.root / "attempts" / "cooperative-cancel" / "build" / "evaluator-ran-to-completion.txt").exists())
+
+    def test_uncooperative_evaluator_result_is_discarded_even_if_it_finishes_within_grace(self) -> None:
+        """Review finding #1's exact reproduction: an evaluator that IGNORES
+        the stop event but happens to finish naturally DURING the grace
+        window (fixtures/worker/uncooperative_evaluator.py sleeps only 1.5s,
+        well under the default 5-second grace) previously came back from
+        _run_cancelable as `completed=True, abandoned=False` with nothing
+        recording that cancellation had fired - its late, unrequested result
+        was silently scored. With VERIFY's subprocess isolation, ANY
+        cancellation observed while the subprocess is still running is
+        unconditionally `cancelled=True` (VerifyRun), regardless of whether
+        the subprocess goes on to exit "cleanly" on its own - proven here by
+        confirming the evaluator DID actually run to completion (its file
+        marker exists) while the outcome is still discarded (no verdict)."""
+        from threading import Event, Thread
+
+        from tests.fixtures.worker.uncooperative_evaluator import evaluate as uncooperative_evaluate
+
+        collected = self._collected_outcome("uncooperative-within-grace")
+        self.assertIsNotNone(collected.candidate)
+        cancel_event = Event()
+        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+
+        outcome = self.runner.run_verification(
+            self.config("uncooperative-within-grace", self.script("uncooperative-within-grace.py", self.reference_editor()), deadline=20),
+            uncooperative_evaluate, collected, cancel_event=cancel_event,
+        )
+        attempt_root = self.root / "attempts" / "uncooperative-within-grace"
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertIsNone(outcome.verdict)  # never scored, despite the evaluator finishing "successfully"
+        self.assertIsNone(outcome.evaluation)
+        # The evaluator DID run to completion within the grace window -
+        # proving this is not merely a case that never gets far enough to
+        # matter, but the exact race finding #1 named. It writes its marker
+        # one level up from the candidate path it receives (fixtures/worker/
+        # uncooperative_evaluator.py), so the marker survives even though
+        # `build` itself is torn down as part of normal (non-abandoned)
+        # cleanup once the subprocess is confirmed dead.
+        time.sleep(0.5)
+        self.assertTrue((attempt_root / "abandoned-evaluator-finished.txt").exists())
+
+    def test_uncooperative_evaluator_past_grace_is_forcibly_terminated(self) -> None:
+        """Review finding #2's core fix: an evaluator that ignores the stop
+        event AND runs longer than the grace period is not merely
+        "abandoned" (the old thread-based behaviour, which could never
+        preempt it) - the owned subprocess is genuinely killed
+        (terminate()/kill()), so it can never go on to produce the marker
+        file its body would otherwise write. This is real containment, not
+        discarding a still-running worker's eventual result."""
+        from threading import Event, Thread
+
+        from aieb_runner import lifecycle as lifecycle_module
+        from tests.fixtures.worker.uncooperative_evaluator import evaluate as uncooperative_evaluate
+
+        collected = self._collected_outcome("uncooperative-terminated")
+        self.assertIsNotNone(collected.candidate)
+        cancel_event = Event()
+        Thread(target=lambda: (time.sleep(0.3), cancel_event.set()), daemon=True).start()
+
+        original_grace = lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS
+        lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS = 0.2  # test seam: shorter than the fixture's 1.5s sleep
+        try:
+            start = time.monotonic()
+            outcome = self.runner.run_verification(
+                self.config("uncooperative-terminated", self.script("uncooperative-terminated.py", self.reference_editor()), deadline=20),
+                uncooperative_evaluate, collected, cancel_event=cancel_event,
+            )
+            elapsed = time.monotonic() - start
+        finally:
+            lifecycle_module.EVALUATOR_CANCEL_GRACE_SECONDS = original_grace
+
+        attempt_root = self.root / "attempts" / "uncooperative-terminated"
+        self.assertEqual(outcome.execution_validity, ExecutionValidity.CANCELLED)
+        self.assertIsNone(outcome.verdict)
+        self.assertLess(elapsed, 5)  # bounded: poll + grace + forced termination, not the evaluator's own sleep
+        # Real containment (review finding #2): the subprocess was killed
+        # before it ever reached its own sleep's end, so it NEVER writes the
+        # marker - unlike the old thread-based "abandoned" behaviour, which
+        # could only let it keep running to completion unobserved.
+        time.sleep(2.0)
+        self.assertFalse((attempt_root / "abandoned-evaluator-finished.txt").exists())
+        # Subprocess containment means the build allocation is always safe
+        # to tear down once VERIFY returns - there is no "left running" state
+        # for a killed process the way there was for an abandoned thread.
+        self.assertTrue(outcome.cleanup_clean)
+        self.assertFalse((attempt_root / "build").exists())
+
     def test_partial_and_no_artifact_are_explicit_replay_outcomes(self) -> None:
         partial = self.runner.run(
             self.config(
@@ -215,7 +357,7 @@ class AttemptLifecycleTests(unittest.TestCase):
 
         scorer = self.runner.run(
             self.config("scorer", self.script("scorer.py", self.reference_editor())),
-            lambda _: (_ for _ in ()).throw(ValueError("scorer crashed")),
+            _raise_scorer_crashed,
         )
         self.assertEqual(scorer.execution_validity, ExecutionValidity.INFRASTRUCTURE_INVALID)
         self.assertIsNone(scorer.verdict)
@@ -231,7 +373,7 @@ class AttemptLifecycleTests(unittest.TestCase):
         unexpected trusted-evaluator exception."""
         bare_runtime_error = self.runner.run(
             self.config("bare-runtime-error", self.script("bare.py", self.reference_editor())),
-            lambda _: (_ for _ in ()).throw(RuntimeError("evaluator's own bug, nothing to do with the candidate")),
+            _raise_bare_runtime_error,
         )
         self.assertEqual(bare_runtime_error.execution_validity, ExecutionValidity.INFRASTRUCTURE_INVALID)
         self.assertIsNone(bare_runtime_error.verdict)
@@ -274,8 +416,6 @@ class AttemptLifecycleTests(unittest.TestCase):
 
         first = self.config("first", self.script("first.py", self.reference_editor()))
         second = self.config("second", self.script("second.py", self.reference_editor()))
-        outcomes = self.runner.run_with_replacements(
-            (first, second), lambda _: (_ for _ in ()).throw(ValueError("outage")), ReplacementPolicy(1)
-        )
+        outcomes = self.runner.run_with_replacements((first, second), _raise_outage, ReplacementPolicy(1))
         self.assertEqual(len(outcomes), 2)
         self.assertTrue(all(item.evidence_path.is_file() for item in outcomes))

@@ -44,6 +44,7 @@ if DATABASE_URL:
     from aieb_api import db
     from aieb_api import models as api_models
     from aieb_api.worker import repository
+    from aieb_api.worker.artifact_store import PostgresArtifactStore
     from aieb_api.worker.loop import run_worker
     from aieb_api.worker.reconciler import reconcile_once
     from aieb_api.worker.runner_bridge import execute_leased_work
@@ -354,6 +355,46 @@ class WorkerLeasingTests(unittest.TestCase):
             self.assertEqual(ready[0].attempt_id, engineering.attempt_id)  # same attempt - no re-engineering
             candidates = session.execute(select(api_models.CandidateRow).where(api_models.CandidateRow.attempt_id == engineering.attempt_id)).scalars().all()
             self.assertEqual(len(candidates), 1)  # the persisted candidate was reused, not recreated
+
+    def test_engineering_death_after_candidate_persistence_still_attaches_its_references(self) -> None:
+        """Review finding #4 (second half): a worker that dies after
+        record_candidate() commits but BEFORE attach_candidate_references()
+        runs leaves its collected blobs' references permanently
+        candidate_id=NULL / retention_class='staging' unless the reconciler's
+        own advance-to-verification recovery path also claims them - a prior
+        version of that recovery path only advanced the work item, never
+        called attach_candidate_references, so those references stayed
+        (incorrectly) classified as staging forever, vulnerable to the
+        24-hour orphan purge running before anyone ever claims them even
+        though a real candidate now exists and verification is about to
+        consume it."""
+        self._frozen_enqueued_campaign()
+        store = PostgresArtifactStore(self.session_factory)
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="doomed-engineer")
+            # Mirrors what collect_candidate really does: put_bytes + create_reference
+            # under the attempt's own access_scope, BEFORE record_candidate.
+            blob = store.put_bytes(b"collected-but-not-yet-attached")
+            reference = store.create_reference(blob, access_scope=str(engineering.attempt_id))
+            candidate_id = repository.record_candidate(
+                session, work_item_id=engineering.work_item_id, worker_id="doomed-engineer", generation=engineering.generation,
+                attempt_id=engineering.attempt_id,
+                candidate=repository.CandidateOutcome(tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid"),
+            )
+        self.assertIsNotNone(candidate_id)
+        # The worker dies here: attach_candidate_references() is never called,
+        # exactly like advance_to_verification() in the sibling test above.
+        self._backdate_lease(engineering.work_item_id)
+
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.advanced, 1)
+
+        with self.session_factory() as session:
+            row = session.get(api_models.WorkerArtifactReferenceRow, reference.id)
+            self.assertEqual(row.candidate_id, candidate_id)
+            blob_row = session.get(api_models.WorkerArtifactBlobRow, blob.sha256)
+            self.assertEqual(blob_row.retention_class, "evidence")
+            self.assertIsNone(blob_row.staged_until)
 
     def test_verification_death_after_evaluation_recorded_is_resumed_not_requeued(self) -> None:
         """The verification-phase analogue of artifact-first resume: a
@@ -892,19 +933,17 @@ class WorkerLeasingTests(unittest.TestCase):
         self.assertEqual(second.verdict, "pass")
         self.assertEqual(second.newly_recorded, False)
 
-    def test_record_evaluation_returns_the_first_persisted_verdict_not_a_conflicting_retry(self) -> None:
-        """Review finding #2: on IntegrityError, record_evaluation previously
-        returned True without comparing the stored verdict/result against the
-        retry payload - a caller finalizing from ITS OWN in-memory outcome
-        (rather than what record_evaluation actually reports) could finalize
-        a different verdict than the evaluation row that is actually
-        persisted. This proves the fix directly: a first call records "pass";
-        a second call under the IDENTICAL identity (candidate_id, evaluator,
-        fixture, schedule_digest - the same unique constraint key) tries to
-        record "fail" instead (e.g. a nondeterministic evaluator, or a bug) -
-        record_evaluation must report the FIRST persisted verdict ("pass"),
-        never silently accept the second, different one as if it had been
-        written."""
+    def test_conflicting_evaluation_retry_raises_and_keeps_the_persisted_verdict(self) -> None:
+        """Review finding #3 (fifth review): on IntegrityError,
+        record_evaluation previously returned the stored row WITHOUT comparing
+        verdict/result against the retry payload - a second "fail" result for
+        an identity already recorded as "pass" was silently treated as a
+        normal idempotent replay, hiding evaluator nondeterminism or an
+        integrity anomaly. record_candidate raises CandidateConflictError for
+        its equivalent case; record_evaluation now raises
+        EvaluationConflictError the same way. The FIRST persisted evaluation
+        stays authoritative (the first valid scored attempt is final, spec
+        section 16) - the row is never overwritten."""
         self._frozen_enqueued_campaign()
         with self.session_factory() as session:
             engineering = repository.claim_work_item(session, worker_id="w1")
@@ -931,21 +970,185 @@ class WorkerLeasingTests(unittest.TestCase):
         self.assertTrue(first.newly_recorded)
 
         with self.session_factory() as session:
-            conflicting = repository.record_evaluation(
-                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
-                candidate_id=candidate_id,
-                evaluation=repository.EvaluationOutcome(
-                    evaluator_id=evaluator_id, fixture_id=fixture_id, schedule_digest="s" * 64, verdict="fail", result={"pass": False},
-                ),
-            )
-        # The authoritative result is the FIRST persisted row - never the
-        # conflicting retry's own "fail" verdict.
-        self.assertEqual(conflicting.verdict, "pass")
-        self.assertFalse(conflicting.newly_recorded)
+            with self.assertRaises(repository.EvaluationConflictError) as conflict_context:
+                repository.record_evaluation(
+                    session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                    candidate_id=candidate_id,
+                    evaluation=repository.EvaluationOutcome(
+                        evaluator_id=evaluator_id, fixture_id=fixture_id, schedule_digest="s" * 64, verdict="fail", result={"pass": False},
+                    ),
+                )
+        conflict = conflict_context.exception
+        self.assertEqual(conflict.persisted_verdict, "pass")
+        self.assertEqual(conflict.reported_verdict, "fail")
         with self.session_factory() as session:
             rows = session.execute(select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate_id)).scalars().all()
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0].verdict, "pass")  # never overwritten by the conflicting retry
+            self.assertEqual(rows[0].result, {"pass": True})
+
+        # An IDENTICAL retry remains a genuine idempotent replay: same verdict,
+        # same result, no exception.
+        with self.session_factory() as session:
+            replay = repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w1", generation=verification.generation,
+                candidate_id=candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=evaluator_id, fixture_id=fixture_id, schedule_digest="s" * 64, verdict="pass", result={"pass": True},
+                ),
+            )
+        self.assertEqual(replay.verdict, "pass")
+        self.assertFalse(replay.newly_recorded)
+
+    def test_divergent_evaluation_retry_is_audited_and_reported_infrastructure_invalid(self) -> None:
+        """Review finding #3, worker path: a verification execution that
+        recomputes a DIFFERENT verdict for an already-recorded evaluation
+        identity (the worker-process replay after an ambiguous commit - the
+        exact scenario record_evaluation's IntegrityError path exists for)
+        is surfaced, not hidden: the divergence lands in a durable audit_event
+        row, execute_leased_work reports infrastructure_invalid, and the FIRST
+        persisted evaluation stays the authoritative score with the work item
+        already finalized from it."""
+        from aieb_api.worker import runner_bridge
+
+        failing_module = "tests.fixtures.worker.failing_evaluator"
+        original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+        with self.session_factory() as session:
+            verification = repository.claim_work_item(session, worker_id="w2", work_type="verification")
+
+        # Simulate the ambiguous-commit window record_evaluation's replay path
+        # exists for: the worker's record_evaluation commit landed ("pass") but
+        # it crashed before finalizing, so the lease is still live and a replay
+        # of the same leased item is fenced IN (not stale). The identity MUST
+        # be built exactly the way execute_leased_verification builds it
+        # (task-row evaluator, ensure_fixture_row fixture, manifest digest) or
+        # the replay would be a DIFFERENT identity and never conflict.
+        from aieb_api.worker.runner_bridge import ensure_fixture_row, task_row_evaluator_id
+
+        with self.session_factory() as session:
+            loaded = repository.load_stored_candidate(session, verification.attempt_id)
+            trial = session.get(api_models.TrialRow, verification.trial_id)
+            task_row = session.get(api_models.TaskRevisionRow, trial.task_revision_id)
+            repository.record_evaluation(
+                session, work_item_id=verification.work_item_id, worker_id="w2", generation=verification.generation,
+                candidate_id=loaded.candidate_id,
+                evaluation=repository.EvaluationOutcome(
+                    evaluator_id=task_row_evaluator_id(session, task_row.slug, task_row.version),
+                    fixture_id=ensure_fixture_row(session, task_row.slug),
+                    schedule_digest=loaded.manifest_digest, verdict="pass", result={"pass": True},
+                ),
+            )
+
+        # The same worker replays its last action - but this time the evaluator
+        # behaves differently and recomputes "fail" under the IDENTICAL
+        # evaluation identity.
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], failing_module)
+        try:
+            second = execute_leased_work(self.session_factory, verification, worker_id="w2", work_root=self.work_root)
+        finally:
+            runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = original
+
+        self.assertEqual(second.execution_validity, "infrastructure_invalid")
+        self.assertIsNone(second.verdict)
+        with self.session_factory() as session:
+            audits = session.execute(
+                select(api_models.AuditEventRow).where(api_models.AuditEventRow.action == "evaluation_conflict")
+            ).scalars().all()
+            self.assertEqual(len(audits), 1)
+            self.assertEqual(audits[0].evidence["persisted_verdict"], "pass")
+            self.assertEqual(audits[0].evidence["reported_verdict"], "fail")
+            # The first persisted evaluation remains the authoritative score;
+            # the conflicting retry never overwrote it and never scored.
+            evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
+            self.assertEqual(len(evaluations), 1)
+            self.assertEqual(evaluations[0].verdict, "pass")
+            item = session.get(api_models.WorkItemRow, verification.work_item_id)
+            self.assertEqual(item.state, "failed")
+            attempt = session.get(api_models.AttemptRow, verification.attempt_id)
+            self.assertEqual(attempt.terminal_status, "infrastructure_invalid")
+
+    def test_worker_artifact_size_cap_is_enforced_at_store_and_database(self) -> None:
+        """Review finding #2: candidate bytes previously accumulated in the
+        control-plane database with no size bound. The same 52 MiB cap the
+        submission policy enforces is now checked at the store boundary AND
+        by a database CHECK constraint, so an oversized artifact cannot be
+        written through either path."""
+        store = PostgresArtifactStore(self.session_factory)
+        oversized = b"x" * (52_428_800 + 1)
+        with self.assertRaises(Exception):
+            store.put_bytes(oversized)
+        with self.session_factory() as session:
+            session.add(
+                api_models.WorkerArtifactBlobRow(
+                    sha256="f" * 64, byte_length=len(oversized), data=oversized,
+                    retention_class="staging", staged_until=None,
+                )
+            )
+            with self.assertRaises(Exception):
+                session.commit()  # ck_worker_artifact_blob_max_bytes
+
+    def test_staging_blobs_expire_after_24h_but_committed_evidence_never_purged(self) -> None:
+        """Review finding #2 (then #4, a further review): unreferenced staging
+        objects expire after 24 hours by default and committed evidence is
+        never deleted by that cleanup job. Proven end to end: a real
+        engineering phase collects a candidate (its blobs are committed via
+        attach_candidate_references inside the fenced lease), and a REAL
+        orphan is created the same way collect_candidate actually creates one
+        - a blob AND its reference together, via the real
+        PostgresArtifactStore.put_bytes/create_reference calls, never
+        claimed by any candidate - aged past its own staged_until.
+
+        Review finding #4: a prior version of this test synthesized an
+        orphan as a bare blob row with NO reference at all, which does not
+        reproduce the real collection path (put_bytes + create_reference
+        always happen together) and masked the actual bug - the purge job
+        treated ANY reference (even an unclaimed, candidate_id=NULL one) as
+        protection, so a real orphan (which always has such a reference) was
+        never purged in practice. The fix must delete the orphaned reference
+        along with its blob, not merely skip blobs that happen to have none."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            engineering = repository.claim_work_item(session, worker_id="w1")
+        engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+        self.assertTrue(engineering_result.finalized)
+
+        with self.session_factory() as session:
+            candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
+            references = session.execute(select(api_models.WorkerArtifactReferenceRow)).scalars().all()
+            self.assertTrue(references)
+            self.assertTrue(all(ref.candidate_id == candidate.id for ref in references))
+            evidence_blobs = {
+                ref.blob_sha256: session.get(api_models.WorkerArtifactBlobRow, ref.blob_sha256)
+                for ref in references
+            }
+            self.assertTrue(evidence_blobs)
+            self.assertTrue(all(blob.retention_class == "evidence" and blob.staged_until is None for blob in evidence_blobs.values()))
+
+        # A REAL orphan: collected via the store's own put_bytes/create_reference
+        # (exactly what aieb_runner.artifacts.collect_candidate calls), never
+        # claimed by attach_candidate_references, aged past its own expiry.
+        store = PostgresArtifactStore(self.session_factory)
+        orphan_blob = store.put_bytes(b"never claimed")
+        orphan_reference = store.create_reference(orphan_blob, access_scope="dead-attempt-scope")
+        with self.session_factory() as session:
+            row = session.get(api_models.WorkerArtifactBlobRow, orphan_blob.sha256)
+            row.staged_until = datetime.now(timezone.utc) - timedelta(hours=1)
+            session.commit()
+
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.worker_artifacts_purged, 1)
+        with self.session_factory() as session:
+            self.assertIsNone(session.get(api_models.WorkerArtifactBlobRow, orphan_blob.sha256))  # orphan blob gone
+            self.assertIsNone(session.get(api_models.WorkerArtifactReferenceRow, orphan_reference.id))  # its orphaned reference gone too
+            for sha256 in evidence_blobs:
+                blob = session.get(api_models.WorkerArtifactBlobRow, sha256)
+                self.assertIsNotNone(blob)  # committed evidence never purged
+                self.assertEqual(blob.retention_class, "evidence")
 
     def test_record_candidate_raises_on_a_genuine_content_conflict(self) -> None:
         """Review finding #2: record_candidate previously returned an
