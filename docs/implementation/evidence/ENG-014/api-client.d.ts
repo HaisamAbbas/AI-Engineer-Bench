@@ -204,6 +204,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/publications/{publication_id}/entrants/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Publication Entrant Configuration
+         * @description The EXACT entrant configuration THIS publication's frozen campaign
+         *     used for `slug` - not whichever revision of that slug is newest right
+         *     now (review finding #2, second pass). Compare previously called
+         *     `GET /entrants/by-slug/{slug}` for every panel, which always resolves
+         *     the most recent `EntrantRevisionRow` regardless of which publication
+         *     the panel is actually showing metrics for - a historical or
+         *     cross-release comparison could silently combine one publication's
+         *     metrics with a DIFFERENT, newer entrant revision's model/capabilities.
+         *     Reads directly from `campaign.resolved["entrants"]`, the same frozen
+         *     manifest `frozen_tasks`/`cohort` already come from - real data, not a
+         *     second guess.
+         */
+        get: operations["get_publication_entrant_configuration_v1_publications__publication_id__entrants__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/publications/{publication_id}/results": {
         parameters: {
             query?: never;
@@ -328,62 +358,38 @@ export interface components {
             per_entrant: {
                 [key: string]: number | null;
             };
-            /**
-             * Per Entrant Cost Per Resolution
-             * @default {}
-             */
-            per_entrant_cost_per_resolution: {
+            /** Per Entrant Cost Per Resolution */
+            per_entrant_cost_per_resolution?: {
                 [key: string]: number | null;
-            };
-            /**
-             * Per Entrant Deadline Rate
-             * @default {}
-             */
-            per_entrant_deadline_rate: {
+            } | null;
+            /** Per Entrant Deadline Rate */
+            per_entrant_deadline_rate?: {
                 [key: string]: number | null;
-            };
-            /**
-             * Per Entrant Infrastructure Attrition
-             * @default {}
-             */
-            per_entrant_infrastructure_attrition: {
+            } | null;
+            /** Per Entrant Infrastructure Attrition */
+            per_entrant_infrastructure_attrition?: {
                 [key: string]: number | null;
-            };
-            /**
-             * Per Entrant Median Engineering Seconds
-             * @default {}
-             */
-            per_entrant_median_engineering_seconds: {
+            } | null;
+            /** Per Entrant Median Engineering Seconds */
+            per_entrant_median_engineering_seconds?: {
                 [key: string]: number | null;
-            };
-            /**
-             * Per Entrant Resolved Tasks
-             * @default {}
-             */
-            per_entrant_resolved_tasks: {
+            } | null;
+            /** Per Entrant Resolved Tasks */
+            per_entrant_resolved_tasks?: {
                 [key: string]: number;
-            };
-            /**
-             * Per Entrant Total Tasks
-             * @default {}
-             */
-            per_entrant_total_tasks: {
+            } | null;
+            /** Per Entrant Total Tasks */
+            per_entrant_total_tasks?: {
                 [key: string]: number;
-            };
-            /**
-             * Per Entrant Valid Trials
-             * @default {}
-             */
-            per_entrant_valid_trials: {
+            } | null;
+            /** Per Entrant Valid Trials */
+            per_entrant_valid_trials?: {
                 [key: string]: number;
-            };
-            /**
-             * Per Entrant Verifier Cost Usd
-             * @default {}
-             */
-            per_entrant_verifier_cost_usd: {
+            } | null;
+            /** Per Entrant Verifier Cost Usd */
+            per_entrant_verifier_cost_usd?: {
                 [key: string]: number | null;
-            };
+            } | null;
             /** Per Task */
             per_task: {
                 [key: string]: components["schemas"]["TaskCellStats"];
@@ -522,14 +528,25 @@ export interface components {
          *     (`campaign.resolved["cohort"]`) - real manifest data, not inferred from
          *     result rows, so a release page can show suite/track/dependency-mode/
          *     profile identifiers (review finding #2) without recomputing anything.
+         *
+         *     A prior version omitted `budget_profile_id`, `application_model_profile`,
+         *     and `required_capabilities` - real fields on `Cohort` this route already
+         *     had access to - and the frontend mislabeled `hardware_class` as "profile",
+         *     which is a distinct concept from the budget/application profile the spec
+         *     actually asks for (review finding #4, second pass).
          */
         CohortIdentity: {
+            application_model_profile: components["schemas"]["ApplicationProfile"];
+            /** Budget Profile Id */
+            budget_profile_id: string;
             /** Dependency Mode */
             dependency_mode: string;
             /** Hardware Class */
             hardware_class: string;
             /** Protocol Id */
             protocol_id: string;
+            /** Required Capabilities */
+            required_capabilities: string[];
             /** Suite Id */
             suite_id: string;
             /** Track */
@@ -545,15 +562,15 @@ export interface components {
             };
             /** Non Comparable Reason */
             non_comparable_reason?: string | null;
-            /** Paired Differences */
-            paired_differences?: {
-                [key: string]: components["schemas"]["TaskPairedDifference"][];
-            } | null;
             /**
              * Publication Id
              * Format: uuid
              */
             publication_id: string;
+            /** Task Rate Deltas */
+            task_rate_deltas?: {
+                [key: string]: components["schemas"]["TaskRateDelta"][];
+            } | null;
         };
         /** CorrectionEntry */
         CorrectionEntry: {
@@ -778,6 +795,19 @@ export interface components {
             /** Scoring Digest */
             scoring_digest: string;
         };
+        /**
+         * PublicationEntrantConfiguration
+         * @description The EXACT entrant configuration (model, prompt/tools digests,
+         *     capabilities, credential reference type) THIS publication's frozen
+         *     campaign actually used for one entrant slug, read from
+         *     `campaign.resolved["entrants"]` - not whichever revision of that slug
+         *     happens to be newest right now. Compare must never combine a historical
+         *     (or cross-release) publication's metrics with a newer entrant
+         *     revision's configuration (review finding #2, second pass).
+         */
+        PublicationEntrantConfiguration: {
+            manifest: components["schemas"]["EntrantRevision"];
+        };
         /** PublicationResultsResponse */
         PublicationResultsResponse: {
             /**
@@ -790,6 +820,10 @@ export interface components {
             cohort_digest: string | null;
             /** Created At */
             created_at: string;
+            /** Evaluation Completed At */
+            evaluation_completed_at?: string | null;
+            /** Evaluation Started At */
+            evaluation_started_at?: string | null;
             /**
              * Frozen Tasks
              * @default []
@@ -802,6 +836,8 @@ export interface components {
             id: string;
             /** Notice */
             notice?: string | null;
+            /** Protocol Scoring Digest */
+            protocol_scoring_digest?: string | null;
             snapshot: components["schemas"]["AnalysisSnapshot"];
             /** Snapshot Digest */
             snapshot_digest: string;
@@ -916,21 +952,25 @@ export interface components {
             ] | null;
         };
         /**
-         * TaskPairedDifference
+         * TaskRateDelta
          * @description A per-task rate difference between two entrants IN THE SAME
          *     publication, computed from each entrant's own aggregated `per_task` rate
-         *     cell. This is NOT the project/family-resampled, repetition-matched
-         *     statistic spec section 28 describes ("resampling projects/families then
-         *     repetitions according to the declared hierarchical model") - that
-         *     requires per-repetition observations grouped by underlying project,
-         *     which the persisted publication snapshot does not retain (only
-         *     aggregated per-task rate/n). Building that is real future work (the
-         *     existing `aieb_analysis.paired_project_difference` implements the
-         *     correct hierarchical procedure already, but nothing in the hosted
-         *     persistence schema populates the `project_id` it requires yet -
-         *     disclosed, not silently claimed here). Review finding #1 (2026-09-16).
+         *     cell. Deliberately NOT named "paired difference"/"paired task outcome"
+         *     (review finding #5, second pass: the API had already disclosed this
+         *     wasn't real pairing, but the field/UI naming still called it "paired,"
+         *     which overclaims by name even with an accurate docstring) - this is NOT
+         *     the project/family-resampled, repetition-matched statistic spec section
+         *     28 describes ("resampling projects/families then repetitions according
+         *     to the declared hierarchical model") - that requires per-repetition
+         *     observations grouped by underlying project, which the persisted
+         *     publication snapshot does not retain (only aggregated per-task rate/n).
+         *     Building that is real future work (the existing
+         *     `aieb_analysis.paired_project_difference` implements the correct
+         *     hierarchical procedure already, but nothing in the hosted persistence
+         *     schema populates the `project_id` it requires yet - disclosed, not
+         *     silently claimed here). Review finding #1 (2026-09-16).
          */
-        TaskPairedDifference: {
+        TaskRateDelta: {
             /** Difference */
             difference: number | null;
             /** Left Rate */
@@ -1288,6 +1328,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntrantRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_publication_entrant_configuration_v1_publications__publication_id__entrants__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationEntrantConfiguration"];
                 };
             };
             /** @description Validation Error */

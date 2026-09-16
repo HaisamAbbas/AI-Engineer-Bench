@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Generic, Literal, TypeVar
 from uuid import UUID
 
-from aieb_core.models import BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
+from aieb_core.models import ApplicationProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
 from pydantic import BaseModel, ConfigDict
 
 ItemT = TypeVar("ItemT")
@@ -115,24 +115,34 @@ class AnalysisSnapshot(BaseModel):
     cost_per_resolution: float | None
     total_campaign_cost_usd: float | None
     verifier_cost_total_usd: float | None
-    successful_engineering_median_seconds: int | None
+    # statistics.median of successful engineer_seconds - a genuine
+    # conventional median, fractional for an even sample count (e.g.
+    # [10, 20] -> 15.0). A prior version picked the upper-middle raw value
+    # instead ([10, 20] -> 20), and a test locked that defect in as expected
+    # behavior (review finding #3, second pass).
+    successful_engineering_median_seconds: float | None
     deadline_rate: float | None
     infrastructure_attrition: float | None
     # Per-entrant breakdowns of the suite-wide metrics above (review finding
     # #2: a results table needs these AS entrant rows, not one suite-wide
-    # number repeated on every row). Optional/default-empty so older
-    # persisted snapshots (written before this field existed) still validate
-    # - _verified_snapshot's digest re-check uses the snapshot exactly as
-    # stored, so a snapshot published before this field existed genuinely
-    # has no such data, not merely an omitted-but-derivable one.
-    per_entrant_valid_trials: dict[str, int] = {}
-    per_entrant_resolved_tasks: dict[str, int] = {}
-    per_entrant_total_tasks: dict[str, int] = {}
-    per_entrant_cost_per_resolution: dict[str, float | None] = {}
-    per_entrant_verifier_cost_usd: dict[str, float | None] = {}
-    per_entrant_median_engineering_seconds: dict[str, int | None] = {}
-    per_entrant_deadline_rate: dict[str, float | None] = {}
-    per_entrant_infrastructure_attrition: dict[str, float | None] = {}
+    # number repeated on every row). Default None, NOT an empty dict (review
+    # finding #1, second pass): a snapshot published before this field
+    # existed genuinely has no such data at all ("unavailable in this
+    # historical snapshot"), which is a different fact from "this field is
+    # present and every entrant happens to have zero of something." An
+    # empty-dict default collapsed both cases into the same shape, and the
+    # frontend's `?.[entrantId] ?? 0` fallback then displayed a fabricated
+    # `0` for genuinely-missing historical data. `None` here means "ask
+    # `snapshot.per_entrant_total_tasks is None` before rendering a number,"
+    # not merely "check whether this entrant's key exists."
+    per_entrant_valid_trials: dict[str, int] | None = None
+    per_entrant_resolved_tasks: dict[str, int] | None = None
+    per_entrant_total_tasks: dict[str, int] | None = None
+    per_entrant_cost_per_resolution: dict[str, float | None] | None = None
+    per_entrant_verifier_cost_usd: dict[str, float | None] | None = None
+    per_entrant_median_engineering_seconds: dict[str, float | None] | None = None
+    per_entrant_deadline_rate: dict[str, float | None] | None = None
+    per_entrant_infrastructure_attrition: dict[str, float | None] | None = None
     limitations: list[str]
 
 
@@ -167,7 +177,13 @@ class CohortIdentity(BaseModel):
     """The frozen cohort's own identifying fields
     (`campaign.resolved["cohort"]`) - real manifest data, not inferred from
     result rows, so a release page can show suite/track/dependency-mode/
-    profile identifiers (review finding #2) without recomputing anything."""
+    profile identifiers (review finding #2) without recomputing anything.
+
+    A prior version omitted `budget_profile_id`, `application_model_profile`,
+    and `required_capabilities` - real fields on `Cohort` this route already
+    had access to - and the frontend mislabeled `hardware_class` as "profile",
+    which is a distinct concept from the budget/application profile the spec
+    actually asks for (review finding #4, second pass)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -176,6 +192,9 @@ class CohortIdentity(BaseModel):
     protocol_id: str
     dependency_mode: str
     hardware_class: str
+    budget_profile_id: str
+    application_model_profile: ApplicationProfile
+    required_capabilities: tuple[str, ...]
 
 
 class PublicationResultsResponse(BaseModel):
@@ -189,6 +208,16 @@ class PublicationResultsResponse(BaseModel):
     created_at: str
     cohort_digest: str | None
     cohort: CohortIdentity | None = None
+    protocol_scoring_digest: str | None = None
+    # The real evaluation window, derived from every attempt this campaign's
+    # trials actually recorded (min/max attempt.created_at) - not the same
+    # as `created_at` above, which is only when the snapshot was PUBLISHED,
+    # often well after evaluation finished (review finding #4, second pass:
+    # the prior version had no evaluation-date field at all and a
+    # since-corrected label implied `created_at` was one). `None` only when
+    # no attempts exist yet to derive a window from.
+    evaluation_started_at: str | None = None
+    evaluation_completed_at: str | None = None
     frozen_tasks: list[FrozenTaskEntry] = []
     snapshot: AnalysisSnapshot
     notice: str | None = None
@@ -208,19 +237,23 @@ class EntrantComparisonIneligible(BaseModel):
     reason: str
 
 
-class TaskPairedDifference(BaseModel):
+class TaskRateDelta(BaseModel):
     """A per-task rate difference between two entrants IN THE SAME
     publication, computed from each entrant's own aggregated `per_task` rate
-    cell. This is NOT the project/family-resampled, repetition-matched
-    statistic spec section 28 describes ("resampling projects/families then
-    repetitions according to the declared hierarchical model") - that
-    requires per-repetition observations grouped by underlying project,
-    which the persisted publication snapshot does not retain (only
-    aggregated per-task rate/n). Building that is real future work (the
-    existing `aieb_analysis.paired_project_difference` implements the
-    correct hierarchical procedure already, but nothing in the hosted
-    persistence schema populates the `project_id` it requires yet -
-    disclosed, not silently claimed here). Review finding #1 (2026-09-16)."""
+    cell. Deliberately NOT named "paired difference"/"paired task outcome"
+    (review finding #5, second pass: the API had already disclosed this
+    wasn't real pairing, but the field/UI naming still called it "paired,"
+    which overclaims by name even with an accurate docstring) - this is NOT
+    the project/family-resampled, repetition-matched statistic spec section
+    28 describes ("resampling projects/families then repetitions according
+    to the declared hierarchical model") - that requires per-repetition
+    observations grouped by underlying project, which the persisted
+    publication snapshot does not retain (only aggregated per-task rate/n).
+    Building that is real future work (the existing
+    `aieb_analysis.paired_project_difference` implements the correct
+    hierarchical procedure already, but nothing in the hosted persistence
+    schema populates the `project_id` it requires yet - disclosed, not
+    silently claimed here). Review finding #1 (2026-09-16)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -237,7 +270,7 @@ class ComparisonResponse(BaseModel):
     cohort_comparable: bool
     non_comparable_reason: str | None = None
     entrants: dict[str, EntrantComparisonEligible | EntrantComparisonIneligible]
-    paired_differences: dict[str, list[TaskPairedDifference]] | None = None
+    task_rate_deltas: dict[str, list[TaskRateDelta]] | None = None
 
 
 class TaskCatalogEntry(BaseModel):
@@ -281,3 +314,17 @@ class EntrantResultEntry(BaseModel):
     created_at: str
     aggregate_rate: float | None
     entrant_version: str | None = None
+
+
+class PublicationEntrantConfiguration(BaseModel):
+    """The EXACT entrant configuration (model, prompt/tools digests,
+    capabilities, credential reference type) THIS publication's frozen
+    campaign actually used for one entrant slug, read from
+    `campaign.resolved["entrants"]` - not whichever revision of that slug
+    happens to be newest right now. Compare must never combine a historical
+    (or cross-release) publication's metrics with a newer entrant
+    revision's configuration (review finding #2, second pass)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: EntrantRevision

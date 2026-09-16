@@ -95,103 +95,151 @@
             "type": "object"
           },
           "per_entrant_cost_per_resolution": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "number"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default": {},
-            "title": "Per Entrant Cost Per Resolution",
-            "type": "object"
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Cost Per Resolution"
           },
           "per_entrant_deadline_rate": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "number"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default": {},
-            "title": "Per Entrant Deadline Rate",
-            "type": "object"
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Deadline Rate"
           },
           "per_entrant_infrastructure_attrition": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "number"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default": {},
-            "title": "Per Entrant Infrastructure Attrition",
-            "type": "object"
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Infrastructure Attrition"
           },
           "per_entrant_median_engineering_seconds": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "integer"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default": {},
-            "title": "Per Entrant Median Engineering Seconds",
-            "type": "object"
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Median Engineering Seconds"
           },
           "per_entrant_resolved_tasks": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "default": {},
-            "title": "Per Entrant Resolved Tasks",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Resolved Tasks"
           },
           "per_entrant_total_tasks": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "default": {},
-            "title": "Per Entrant Total Tasks",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Total Tasks"
           },
           "per_entrant_valid_trials": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "default": {},
-            "title": "Per Entrant Valid Trials",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Valid Trials"
           },
           "per_entrant_verifier_cost_usd": {
-            "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "number"
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "default": {},
-            "title": "Per Entrant Verifier Cost Usd",
-            "type": "object"
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Per Entrant Verifier Cost Usd"
           },
           "per_task": {
             "additionalProperties": {
@@ -218,7 +266,7 @@
           "successful_engineering_median_seconds": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -634,8 +682,15 @@
       },
       "CohortIdentity": {
         "additionalProperties": false,
-        "description": "The frozen cohort's own identifying fields\n(`campaign.resolved[\"cohort\"]`) - real manifest data, not inferred from\nresult rows, so a release page can show suite/track/dependency-mode/\nprofile identifiers (review finding #2) without recomputing anything.",
+        "description": "The frozen cohort's own identifying fields\n(`campaign.resolved[\"cohort\"]`) - real manifest data, not inferred from\nresult rows, so a release page can show suite/track/dependency-mode/\nprofile identifiers (review finding #2) without recomputing anything.\n\nA prior version omitted `budget_profile_id`, `application_model_profile`,\nand `required_capabilities` - real fields on `Cohort` this route already\nhad access to - and the frontend mislabeled `hardware_class` as \"profile\",\nwhich is a distinct concept from the budget/application profile the spec\nactually asks for (review finding #4, second pass).",
         "properties": {
+          "application_model_profile": {
+            "$ref": "#/components/schemas/ApplicationProfile"
+          },
+          "budget_profile_id": {
+            "title": "Budget Profile Id",
+            "type": "string"
+          },
           "dependency_mode": {
             "title": "Dependency Mode",
             "type": "string"
@@ -647,6 +702,13 @@
           "protocol_id": {
             "title": "Protocol Id",
             "type": "string"
+          },
+          "required_capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Capabilities",
+            "type": "array"
           },
           "suite_id": {
             "title": "Suite Id",
@@ -662,7 +724,10 @@
           "suite_id",
           "protocol_id",
           "dependency_mode",
-          "hardware_class"
+          "hardware_class",
+          "budget_profile_id",
+          "application_model_profile",
+          "required_capabilities"
         ],
         "title": "CohortIdentity",
         "type": "object"
@@ -699,12 +764,17 @@
             ],
             "title": "Non Comparable Reason"
           },
-          "paired_differences": {
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "task_rate_deltas": {
             "anyOf": [
               {
                 "additionalProperties": {
                   "items": {
-                    "$ref": "#/components/schemas/TaskPairedDifference"
+                    "$ref": "#/components/schemas/TaskRateDelta"
                   },
                   "type": "array"
                 },
@@ -714,12 +784,7 @@
                 "type": "null"
               }
             ],
-            "title": "Paired Differences"
-          },
-          "publication_id": {
-            "format": "uuid",
-            "title": "Publication Id",
-            "type": "string"
+            "title": "Task Rate Deltas"
           }
         },
         "required": [
@@ -1284,6 +1349,20 @@
         "title": "ProtocolRevision",
         "type": "object"
       },
+      "PublicationEntrantConfiguration": {
+        "additionalProperties": false,
+        "description": "The EXACT entrant configuration (model, prompt/tools digests,\ncapabilities, credential reference type) THIS publication's frozen\ncampaign actually used for one entrant slug, read from\n`campaign.resolved[\"entrants\"]` - not whichever revision of that slug\nhappens to be newest right now. Compare must never combine a historical\n(or cross-release) publication's metrics with a newer entrant\nrevision's configuration (review finding #2, second pass).",
+        "properties": {
+          "manifest": {
+            "$ref": "#/components/schemas/EntrantRevision"
+          }
+        },
+        "required": [
+          "manifest"
+        ],
+        "title": "PublicationEntrantConfiguration",
+        "type": "object"
+      },
       "PublicationResultsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1317,6 +1396,28 @@
             "title": "Created At",
             "type": "string"
           },
+          "evaluation_completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Completed At"
+          },
+          "evaluation_started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Started At"
+          },
           "frozen_tasks": {
             "default": [],
             "items": {
@@ -1340,6 +1441,17 @@
               }
             ],
             "title": "Notice"
+          },
+          "protocol_scoring_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol Scoring Digest"
           },
           "snapshot": {
             "$ref": "#/components/schemas/AnalysisSnapshot"
@@ -1670,9 +1782,9 @@
         "title": "TaskCellStats",
         "type": "object"
       },
-      "TaskPairedDifference": {
+      "TaskRateDelta": {
         "additionalProperties": false,
-        "description": "A per-task rate difference between two entrants IN THE SAME\npublication, computed from each entrant's own aggregated `per_task` rate\ncell. This is NOT the project/family-resampled, repetition-matched\nstatistic spec section 28 describes (\"resampling projects/families then\nrepetitions according to the declared hierarchical model\") - that\nrequires per-repetition observations grouped by underlying project,\nwhich the persisted publication snapshot does not retain (only\naggregated per-task rate/n). Building that is real future work (the\nexisting `aieb_analysis.paired_project_difference` implements the\ncorrect hierarchical procedure already, but nothing in the hosted\npersistence schema populates the `project_id` it requires yet -\ndisclosed, not silently claimed here). Review finding #1 (2026-09-16).",
+        "description": "A per-task rate difference between two entrants IN THE SAME\npublication, computed from each entrant's own aggregated `per_task` rate\ncell. Deliberately NOT named \"paired difference\"/\"paired task outcome\"\n(review finding #5, second pass: the API had already disclosed this\nwasn't real pairing, but the field/UI naming still called it \"paired,\"\nwhich overclaims by name even with an accurate docstring) - this is NOT\nthe project/family-resampled, repetition-matched statistic spec section\n28 describes (\"resampling projects/families then repetitions according\nto the declared hierarchical model\") - that requires per-repetition\nobservations grouped by underlying project, which the persisted\npublication snapshot does not retain (only aggregated per-task rate/n).\nBuilding that is real future work (the existing\n`aieb_analysis.paired_project_difference` implements the correct\nhierarchical procedure already, but nothing in the hosted persistence\nschema populates the `project_id` it requires yet - disclosed, not\nsilently claimed here). Review finding #1 (2026-09-16).",
         "properties": {
           "difference": {
             "anyOf": [
@@ -1718,7 +1830,7 @@
           "right_rate",
           "difference"
         ],
-        "title": "TaskPairedDifference",
+        "title": "TaskRateDelta",
         "type": "object"
       },
       "TaskRevision": {
@@ -2402,6 +2514,59 @@
         "summary": "Get Entrant Revision",
         "tags": [
           "registry"
+        ]
+      }
+    },
+    "/v1/publications/{publication_id}/entrants/{slug}": {
+      "get": {
+        "description": "The EXACT entrant configuration THIS publication's frozen campaign\nused for `slug` - not whichever revision of that slug is newest right\nnow (review finding #2, second pass). Compare previously called\n`GET /entrants/by-slug/{slug}` for every panel, which always resolves\nthe most recent `EntrantRevisionRow` regardless of which publication\nthe panel is actually showing metrics for - a historical or\ncross-release comparison could silently combine one publication's\nmetrics with a DIFFERENT, newer entrant revision's model/capabilities.\nReads directly from `campaign.resolved[\"entrants\"]`, the same frozen\nmanifest `frozen_tasks`/`cohort` already come from - real data, not a\nsecond guess.",
+        "operationId": "get_publication_entrant_configuration_v1_publications__publication_id__entrants__slug__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "slug",
+            "required": true,
+            "schema": {
+              "title": "Slug",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationEntrantConfiguration"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Publication Entrant Configuration",
+        "tags": [
+          "results"
         ]
       }
     },

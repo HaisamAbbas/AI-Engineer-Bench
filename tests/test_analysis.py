@@ -65,7 +65,7 @@ class AnalysisTests(unittest.TestCase):
   result=summarize(rows)
   self.assertEqual(result["per_entrant_cost_per_resolution"]["left"],2.0)
   self.assertEqual(result["per_entrant_cost_per_resolution"]["right"],100.0)
-  self.assertEqual(result["per_entrant_median_engineering_seconds"]["left"],20)
+  self.assertEqual(result["per_entrant_median_engineering_seconds"]["left"],15.0)
   self.assertEqual(result["per_entrant_deadline_rate"]["left"],0.0)
   self.assertEqual(result["per_entrant_deadline_rate"]["right"],0.5)
   self.assertEqual(result["per_entrant_infrastructure_attrition"]["left"],0.0)
@@ -74,6 +74,23 @@ class AnalysisTests(unittest.TestCase):
   self.assertEqual(result["per_entrant_valid_trials"]["right"],1)
   self.assertEqual(result["per_entrant_total_tasks"]["left"],2)
   self.assertEqual(result["per_entrant_total_tasks"]["right"],2)
+ def test_median_engineering_time_is_a_real_median_not_the_upper_middle_value(self):
+  # Review finding #3 (second pass): [10, 20] was reported as 20 (picking
+  # times[len(times)//2], the upper-middle raw value for an even sample),
+  # not the conventional median (15). A prior test even asserted 20,
+  # locking the defect in as expected behavior.
+  rows=(
+   TrialObservation("a","f","p","e",0,True,True,engineer_seconds=10),
+   TrialObservation("b","f","p","e",0,True,True,engineer_seconds=20),
+  )
+  self.assertEqual(summarize(rows)["successful_engineering_median_seconds"],15.0)
+  # An odd sample still returns the middle value, as a median always should.
+  rows_odd=(
+   TrialObservation("a","f","p","e",0,True,True,engineer_seconds=10),
+   TrialObservation("b","f","p","e",0,True,True,engineer_seconds=20),
+   TrialObservation("c","f","p","e",0,True,True,engineer_seconds=30),
+  )
+  self.assertEqual(summarize(rows_odd)["successful_engineering_median_seconds"],20)
  def test_required_repetitions_is_echoed_for_labeling_all_k(self):
   # Review finding #2: the frontend needs the actual k value to label
   # "all-5" rather than a generic "all-k".

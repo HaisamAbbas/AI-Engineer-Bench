@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from aieb_core.models import EntrantRevision
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..errors import invalid_request, not_found, service_unavailable
-from ..models import CampaignRow, PublicationRow
+from ..models import AttemptRow, CampaignRow, PublicationRow, TrialRow
 from ..snapshots import snapshot_digest as compute_snapshot_digest
 from ..pagination import clamp_limit, decode_cursor, page
 from ..schemas import (
@@ -28,9 +29,10 @@ from ..schemas import (
     EntrantResultEntry,
     FrozenTaskEntry,
     Page,
+    PublicationEntrantConfiguration,
     PublicationResultsResponse,
     PublicationSummary,
-    TaskPairedDifference,
+    TaskRateDelta,
 )
 
 router = APIRouter(prefix="/v1", tags=["results"])
@@ -88,13 +90,66 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
     campaign = session.get(CampaignRow, row.campaign_id)
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
     cohort, frozen_tasks = _frozen_manifest_data(campaign)
+    snapshot = _apply_frozen_task_coverage(_verified_snapshot(row), frozen_tasks)
+    evaluation_started_at, evaluation_completed_at = _evaluation_date_range(session, row.campaign_id)
     return PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
         supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat(),
         cohort_digest=campaign.cohort_digest if campaign else None,
-        cohort=cohort, frozen_tasks=frozen_tasks,
-        snapshot=_verified_snapshot(row), notice=notice,
+        cohort=cohort, protocol_scoring_digest=_protocol_scoring_digest(campaign),
+        evaluation_started_at=evaluation_started_at, evaluation_completed_at=evaluation_completed_at,
+        frozen_tasks=frozen_tasks, snapshot=snapshot, notice=notice,
     )
+
+
+def _protocol_scoring_digest(campaign: CampaignRow | None) -> str | None:
+    """The frozen protocol's own scoring digest (`campaign.resolved["protocol"]
+    ["scoring_digest"]`) - real manifest data, part of the provenance bundle
+    spec section 36 describes (review finding #4, second pass: a prior
+    version of the download bundle had no protocol/scoring digest at all)."""
+    if campaign is None or not campaign.resolved:
+        return None
+    protocol = campaign.resolved.get("protocol")
+    return protocol.get("scoring_digest") if protocol else None
+
+
+def _evaluation_date_range(session: Session, campaign_id: UUID) -> tuple[str | None, str | None]:
+    """The real evaluation window for this campaign, derived from every
+    attempt its trials actually recorded (min/max `attempt.created_at`) -
+    not the publication's own `created_at` (when the snapshot was written,
+    often well after evaluation actually finished). Genuine data already in
+    the database, not a new tracked concept and not fabricated (review
+    finding #4, second pass)."""
+    started, completed = session.execute(
+        select(func.min(AttemptRow.created_at), func.max(AttemptRow.created_at))
+        .select_from(AttemptRow)
+        .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
+        .where(TrialRow.campaign_id == campaign_id)
+    ).one()
+    return (started.isoformat() if started else None, completed.isoformat() if completed else None)
+
+
+def _apply_frozen_task_coverage(snapshot: AnalysisSnapshot, frozen_tasks: list[FrozenTaskEntry]) -> AnalysisSnapshot:
+    """Review finding #1 (second pass): `per_entrant_total_tasks` is computed
+    by `aieb_analysis.metrics.summarize()` from DISTINCT OBSERVED tasks per
+    entrant, since that package has no access to the frozen plan - a task
+    with zero observations for an entrant was invisible to it entirely,
+    silently undercounting the denominator (a two-task campaign with one
+    unobserved task displayed "1/1", hiding exactly the incompleteness a
+    results table must show). Every entrant in a frozen campaign is
+    scheduled against every frozen task (the cross product
+    `packages/aieb-core/src/aieb_core/planner.py::freeze_campaign` builds),
+    so the correct total is simply `len(frozen_tasks)` for every entrant -
+    overridden here from the campaign's own frozen manifest, which this
+    route already has, not from what happened to get observed. Only
+    applied when the snapshot actually carries per-entrant breakdowns at
+    all (`None` means a legacy snapshot predating this field - left alone,
+    honestly unavailable rather than fabricated) and the frozen manifest is
+    actually available."""
+    if snapshot.per_entrant_total_tasks is None or not frozen_tasks:
+        return snapshot
+    corrected = {entrant_id: len(frozen_tasks) for entrant_id in snapshot.per_entrant}
+    return snapshot.model_copy(update={"per_entrant_total_tasks": corrected})
 
 
 def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity | None, list[FrozenTaskEntry]]:
@@ -113,6 +168,9 @@ def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity 
         CohortIdentity(
             track=cohort_manifest["track"], suite_id=cohort_manifest["suite_id"], protocol_id=cohort_manifest["protocol_id"],
             dependency_mode=cohort_manifest["dependency_mode"], hardware_class=cohort_manifest["hardware_class"],
+            budget_profile_id=cohort_manifest["budget_profile_id"],
+            application_model_profile=cohort_manifest["application_model_profile"],
+            required_capabilities=tuple(cohort_manifest["required_capabilities"]),
         )
         if cohort_manifest else None
     )
@@ -121,6 +179,33 @@ def _frozen_manifest_data(campaign: CampaignRow | None) -> tuple[CohortIdentity 
         for task in resolved.get("tasks", [])
     ]
     return cohort, frozen_tasks
+
+
+@router.get("/publications/{publication_id}/entrants/{slug}", response_model=PublicationEntrantConfiguration)
+def get_publication_entrant_configuration(
+    publication_id: UUID, slug: str, session: Session = Depends(get_session),
+) -> PublicationEntrantConfiguration:
+    """The EXACT entrant configuration THIS publication's frozen campaign
+    used for `slug` - not whichever revision of that slug is newest right
+    now (review finding #2, second pass). Compare previously called
+    `GET /entrants/by-slug/{slug}` for every panel, which always resolves
+    the most recent `EntrantRevisionRow` regardless of which publication
+    the panel is actually showing metrics for - a historical or
+    cross-release comparison could silently combine one publication's
+    metrics with a DIFFERENT, newer entrant revision's model/capabilities.
+    Reads directly from `campaign.resolved["entrants"]`, the same frozen
+    manifest `frozen_tasks`/`cohort` already come from - real data, not a
+    second guess."""
+    row = session.get(PublicationRow, publication_id)
+    if row is None:
+        raise not_found()
+    campaign = session.get(CampaignRow, row.campaign_id)
+    if campaign is None or not campaign.resolved:
+        raise not_found()
+    for entrant in campaign.resolved.get("entrants", []):
+        if entrant.get("id") == slug:
+            return PublicationEntrantConfiguration(manifest=EntrantRevision.model_validate(entrant))
+    raise not_found()
 
 
 @router.get("/corrections", response_model=Page[CorrectionEntry])
@@ -284,10 +369,10 @@ def get_comparison(
         else:
             entrants[entrant_id] = EntrantComparisonIneligible(eligible=False, reason="not present in its publication's snapshot")
 
-    paired_differences: dict[str, list[TaskPairedDifference]] | None = None
+    task_rate_deltas: dict[str, list[TaskRateDelta]] | None = None
     if cohort_comparable:
         eligible_ids = [entrant_id for entrant_id in entrant_ids if entrants[entrant_id].eligible]
-        paired_differences = {}
+        task_rate_deltas = {}
         for i, left in enumerate(eligible_ids):
             for right in eligible_ids[i + 1 :]:
                 pair_key = f"{left}|{right}"
@@ -297,10 +382,10 @@ def get_comparison(
                     left_rate = entrant_task_rates[left].get(task_id)
                     right_rate = entrant_task_rates[right].get(task_id)
                     difference = (left_rate - right_rate) if left_rate is not None and right_rate is not None else None
-                    diffs.append(TaskPairedDifference(task_id=task_id, left_rate=left_rate, right_rate=right_rate, difference=difference))
-                paired_differences[pair_key] = diffs
+                    diffs.append(TaskRateDelta(task_id=task_id, left_rate=left_rate, right_rate=right_rate, difference=difference))
+                task_rate_deltas[pair_key] = diffs
 
     return ComparisonResponse(
         publication_id=resolved_publication_ids[0], cohort_comparable=cohort_comparable,
-        non_comparable_reason=non_comparable_reason, entrants=entrants, paired_differences=paired_differences,
+        non_comparable_reason=non_comparable_reason, entrants=entrants, task_rate_deltas=task_rate_deltas,
     )
