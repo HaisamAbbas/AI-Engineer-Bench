@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { usePublicationResults, useComparison, useEntrantRevisionBySlug } from "../api/hooks";
+import { usePublicationResults, useComparison, usePublicationEntrantConfiguration } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
 import { formatRate, formatPercentagePointDifference, formatUsd, formatSeconds, formatCount } from "../lib/format";
 
@@ -112,8 +112,8 @@ export function Compare() {
               />
             ))}
           </div>
-          {comparison.data.cohort_comparable && comparison.data.paired_differences && (
-            <PairedDifferences pairs={comparison.data.paired_differences} />
+          {comparison.data.cohort_comparable && comparison.data.task_rate_deltas && (
+            <TaskRateDeltas pairs={comparison.data.task_rate_deltas} />
           )}
         </div>
       )}
@@ -156,9 +156,15 @@ function EntrantPanel({
   entry: NonNullable<ReturnType<typeof useComparison>["data"]>["entrants"][string];
   onRemove: () => void;
 }) {
-  const revision = useEntrantRevisionBySlug(entrantId);
+  // The EXACT configuration THIS publication's frozen campaign used - never
+  // useEntrantRevisionBySlug, which resolves whichever revision is newest
+  // right now and could silently mismatch a historical/cross-release panel's
+  // own metrics (review finding #2, second pass).
+  const configuration = usePublicationEntrantConfiguration(publicationId, entrantId);
   const results = usePublicationResults(publicationId);
   const snapshot = results.data?.snapshot;
+  const resolvedTasks = snapshot?.per_entrant_resolved_tasks?.[entrantId];
+  const totalTasks = snapshot?.per_entrant_total_tasks?.[entrantId];
 
   return (
     <article className="compare-panel">
@@ -166,14 +172,16 @@ function EntrantPanel({
       <button type="button" onClick={onRemove}>
         Remove
       </button>
-      {revision.isSuccess && (
+      {configuration.isSuccess && (
         <dl>
           <dt>Version</dt>
-          <dd>{revision.data.manifest.agent_version}</dd>
+          <dd>{configuration.data.manifest.agent_version}</dd>
           <dt>Model</dt>
-          <dd>{revision.data.manifest.engineer_model.reported_model ?? revision.data.manifest.engineer_model.requested_model}</dd>
+          <dd>
+            {configuration.data.manifest.engineer_model.reported_model ?? configuration.data.manifest.engineer_model.requested_model}
+          </dd>
           <dt>Capabilities</dt>
-          <dd>{revision.data.manifest.capabilities.join(", ")}</dd>
+          <dd>{configuration.data.manifest.capabilities.join(", ")}</dd>
         </dl>
       )}
       {entry.eligible ? (
@@ -183,9 +191,11 @@ function EntrantPanel({
           {snapshot && (
             <>
               <dt>Resolved tasks</dt>
+              {/* per_entrant_total_tasks is null (not fabricated 0) for a
+               * historical snapshot predating this field (review finding
+               * #1, second pass) - shown as "Unknown", never "0/0". */}
               <dd className="tabular-nums">
-                {formatCount(snapshot.per_entrant_resolved_tasks?.[entrantId] ?? 0)}/
-                {formatCount(snapshot.per_entrant_total_tasks?.[entrantId] ?? 0)}
+                {resolvedTasks === undefined || totalTasks === undefined ? "Unknown" : `${formatCount(resolvedTasks)}/${formatCount(totalTasks)}`}
               </dd>
               <dt>Cost / resolution</dt>
               <dd className="tabular-nums">{formatUsd(snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null)}</dd>
@@ -203,15 +213,26 @@ function EntrantPanel({
   );
 }
 
-function PairedDifferences({
+function TaskRateDeltas({
   pairs,
 }: {
-  pairs: NonNullable<ReturnType<typeof useComparison>["data"]>["paired_differences"];
+  pairs: NonNullable<ReturnType<typeof useComparison>["data"]>["task_rate_deltas"];
 }) {
   if (!pairs) return null;
   return (
     <>
-      <h2>Paired task outcomes</h2>
+      {/* Named "per-task rate deltas," never "paired task outcomes" (review
+       * finding #5, second pass): two entrants can have rates based on
+       * DIFFERENT valid repetition counts within the same publication -
+       * subtracting them is a real, honest descriptive comparison, but it
+       * is not the repetition-matched statistic "paired" implies. Real
+       * paired statistics need raw matched observations, which the
+       * persisted snapshot does not retain (disclosed separately). */}
+      <h2>Per-task rate deltas</h2>
+      <p>
+        A rate difference per task between two entrants, computed from each entrant&rsquo;s own aggregated rate for
+        that task - not a repetition-matched paired statistic (see the API's own disclosure).
+      </p>
       {Object.entries(pairs).map(([pairKey, diffs]) => {
         const [left, right] = pairKey.split("|");
         return (

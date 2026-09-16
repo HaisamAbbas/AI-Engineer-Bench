@@ -15,9 +15,13 @@ type AnalysisSnapshot = PublicationResultsData["snapshot"];
 interface EntrantRow {
   entrantId: string;
   suiteRate: number | null;
-  resolvedTasks: number;
-  totalTasks: number;
-  validTrials: number;
+  // null (not 0) means "unavailable in this historical snapshot" -
+  // per_entrant_total_tasks/resolved_tasks/valid_trials are whole-field
+  // null on a snapshot published before they existed (review finding #1,
+  // second pass); a fabricated 0 would misreport that as "zero tasks."
+  resolvedTasks: number | null;
+  totalTasks: number | null;
+  validTrials: number | null;
   costPerResolution: number | null;
   verifierCostUsd: number | null;
   medianEngineeringSeconds: number | null;
@@ -40,9 +44,9 @@ function buildEntrantRows(snapshot: AnalysisSnapshot): EntrantRow[] {
     return {
       entrantId,
       suiteRate: snapshot.per_entrant[entrantId],
-      resolvedTasks: snapshot.per_entrant_resolved_tasks?.[entrantId] ?? 0,
-      totalTasks: snapshot.per_entrant_total_tasks?.[entrantId] ?? 0,
-      validTrials: snapshot.per_entrant_valid_trials?.[entrantId] ?? 0,
+      resolvedTasks: snapshot.per_entrant_resolved_tasks?.[entrantId] ?? null,
+      totalTasks: snapshot.per_entrant_total_tasks?.[entrantId] ?? null,
+      validTrials: snapshot.per_entrant_valid_trials?.[entrantId] ?? null,
       costPerResolution: snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null,
       verifierCostUsd: snapshot.per_entrant_verifier_cost_usd?.[entrantId] ?? null,
       medianEngineeringSeconds: snapshot.per_entrant_median_engineering_seconds?.[entrantId] ?? null,
@@ -198,9 +202,12 @@ function ResultsTable({
       snapshot_digest: data.snapshot_digest,
       status: data.status,
       supersedes_id: data.supersedes_id,
-      created_at: data.created_at,
+      published_at: data.created_at,
       cohort_digest: data.cohort_digest,
       cohort: data.cohort,
+      protocol_scoring_digest: data.protocol_scoring_digest,
+      evaluation_started_at: data.evaluation_started_at,
+      evaluation_completed_at: data.evaluation_completed_at,
       frozen_tasks: data.frozen_tasks,
       snapshot: data.snapshot,
     };
@@ -236,14 +243,28 @@ function ResultsTable({
             <dd>
               {data.cohort.protocol_id} / {data.cohort.dependency_mode}
             </dd>
-            <dt>Hardware class (profile)</dt>
+            <dt>Hardware class</dt>
             <dd>{data.cohort.hardware_class}</dd>
+            <dt>Budget / model profile</dt>
+            <dd>
+              {data.cohort.budget_profile_id} / {data.cohort.application_model_profile.model_profile_id}
+            </dd>
+            <dt>Required capabilities</dt>
+            <dd>{data.cohort.required_capabilities.join(", ")}</dd>
           </>
         )}
         <dt>Cohort digest (provenance)</dt>
         <dd className="tabular-nums">{data.cohort_digest ?? "Unknown"}</dd>
         <dt>Snapshot digest (provenance)</dt>
         <dd className="tabular-nums">{data.snapshot_digest}</dd>
+        <dt>Protocol scoring digest (provenance)</dt>
+        <dd className="tabular-nums">{data.protocol_scoring_digest ?? "Unknown"}</dd>
+        <dt>Evaluation window</dt>
+        <dd>
+          {data.evaluation_started_at && data.evaluation_completed_at
+            ? `${formatUtc(data.evaluation_started_at).display} to ${formatUtc(data.evaluation_completed_at).display}`
+            : "Unknown"}
+        </dd>
         <dt>Suite rate (fixed-weight, all entrants)</dt>
         <dd className="tabular-nums">{formatRate(snapshot.suite_rate)}</dd>
         <dt>Cost per resolution (suite-wide)</dt>
@@ -258,7 +279,11 @@ function ResultsTable({
         <dd className="tabular-nums">{formatRate(snapshot.deadline_rate)}</dd>
         <dt>Infrastructure attrition</dt>
         <dd className="tabular-nums">{formatRate(snapshot.infrastructure_attrition)}</dd>
-        <dt>Evaluation date</dt>
+        {/* Publication time, not an evaluation date range - the campaign's
+         * own actual run-window dates are not tracked yet (review finding
+         * #4, second pass: labeling this "Evaluation date" implied a fact
+         * this field doesn't carry). */}
+        <dt>Published</dt>
         <dd>{publicationCreatedAt ? formatUtc(publicationCreatedAt).display : "Unknown"}</dd>
       </dl>
       {snapshot.limitations.length > 0 && (

@@ -35,6 +35,14 @@ export function ReleaseDetail() {
         <dd>{data.campaign_id}</dd>
         <dt>Cohort digest</dt>
         <dd>{data.cohort_digest ?? "Unknown"}</dd>
+        <dt>Protocol scoring digest</dt>
+        <dd>{data.protocol_scoring_digest ?? "Unknown"}</dd>
+        <dt>Evaluation window</dt>
+        <dd>
+          {data.evaluation_started_at && data.evaluation_completed_at
+            ? `${formatUtc(data.evaluation_started_at).display} to ${formatUtc(data.evaluation_completed_at).display}`
+            : "Unknown"}
+        </dd>
         {data.cohort && (
           <>
             <dt>Suite / track</dt>
@@ -45,11 +53,20 @@ export function ReleaseDetail() {
             <dd>
               {data.cohort.protocol_id} / {data.cohort.dependency_mode}
             </dd>
-            <dt>Hardware class (profile)</dt>
+            <dt>Hardware class</dt>
             <dd>{data.cohort.hardware_class}</dd>
+            <dt>Budget / model profile</dt>
+            <dd>
+              {data.cohort.budget_profile_id} / {data.cohort.application_model_profile.model_profile_id}
+            </dd>
+            <dt>Required capabilities</dt>
+            <dd>{data.cohort.required_capabilities.join(", ")}</dd>
           </>
         )}
-        <dt>Evaluation date</dt>
+        {/* Publication time, not an evaluation date range - the campaign's
+         * own actual run-window dates are not tracked yet (review finding
+         * #4, second pass). */}
+        <dt>Published</dt>
         <dd title={created.localTitle}>{created.display}</dd>
       </dl>
       {data.status === "withdrawn" && (

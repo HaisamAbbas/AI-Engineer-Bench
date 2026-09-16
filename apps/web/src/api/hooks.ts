@@ -68,6 +68,25 @@ export function useEntrantRevisionBySlug(slug: string | undefined) {
   });
 }
 
+// The EXACT entrant configuration one publication's frozen campaign used for
+// a slug - not useEntrantRevisionBySlug's "whichever revision is newest now"
+// (review finding #2, second pass). Compare must use this, not the by-slug
+// route, so a historical/cross-release panel never combines one
+// publication's metrics with a different, newer entrant revision's config.
+export function usePublicationEntrantConfiguration(publicationId: string | undefined, slug: string | undefined) {
+  return useQuery({
+    queryKey: ["publication-entrant-configuration", publicationId, slug],
+    queryFn: () =>
+      unwrap(
+        api.GET("/v1/publications/{publication_id}/entrants/{slug}", {
+          params: { path: { publication_id: publicationId!, slug: slug! } },
+        }),
+      ),
+    enabled: publicationId !== undefined && slug !== undefined,
+    staleTime: Infinity,
+  });
+}
+
 export function useEntrantResults(slug: string | undefined) {
   return useQuery({
     queryKey: ["entrant-results", slug],
