@@ -1,7 +1,9 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015); a seventh review found the sixth pass's exclude_unset fix was STILL incomplete - a present stored integer value still got coerced to float by Pydantic's own validate/dump round trip, breaking the digest again through a different mechanism (fixed by serving row.snapshot verbatim via a JSONResponse substitution instead of letting response_model touch that field) plus making aggregate required-but-nullable instead of omittable - all fixed (ENG016-016) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store; a fifth review (ENG015-010) found the cancellation fix still only reported cancellation without actually stopping the abandoned thread, and the Postgres blob backend violated the frozen storage architecture with no size bound/retention/expiry - fixed with a cooperative-cancellation contract and ADR-11 staging/evidence semantics; a sixth review (ENG015-011) found ENG015-010's own cancellation fix still didn't close the race (an evaluator ignoring the stop signal but finishing naturally within grace was still scored), containment was still theoretical (abandonment, never real termination), a published migration had been rewritten in place, real orphaned staging artifacts still never expired (the purge treated any reference as protection, but collect_candidate always creates one), the size CHECK never checked real bytes, and visibility validation wasn't anchored - all fixed for real: VERIFY now runs the evaluator in an owned, forcibly-killable subprocess; the rewritten migration was reverted with its additions moved to a new one; the purge deletes orphaned references before their blob; the size CHECK checks octet_length(data); visibility is a Literal - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website).
+ENG-015 is COMPLETE: the real PostgreSQL migration/backfill test (`tests.test_api_migrations`) was run against a real disposable database and passes, closing the gate ENG015-012 left open; the full relevant regression (`test_api_service`, `test_worker_leasing`, `test_attempt_lifecycle`, `test_analysis`, `test_api_migrations`, `test_ext_tool_admission` - 111 tests) passes. The Unix process-group branch remains untested in this Windows-only environment (trusted by code symmetry with the Windows Job Object branch, matching this codebase's existing disclosed pattern for other OS-conditional code).
+ENG-016 remains IN_PROGRESS: Prompt 13 still needs real public/redacted run evidence, versioned Methodology data, task ticket text and candidate log/diff rendering, HTTP/browser integration tests, and full-page accessibility, responsive, and visual checks.
 
 ## Current state
 
@@ -635,15 +637,48 @@ Full regression after this pass: 106 tests across `test_api_service.py` (49), `t
 real PostgreSQL; `test_ext_tool_admission.py` passes unchanged; the new migration's
 upgrade/downgrade/upgrade round-trip was verified against a freshly recreated disposable database (the
 existing one had been migrated through the now-reverted in-place edit and could not cleanly prove the
-split migration chain). ENG-015 remains `COMPLETE`.
+split migration chain). ENG-015 was marked `COMPLETE` at that point; the ENG015-012 review below
+reopened it pending the listed verification gates.
+
+## ENG-015 follow-up review - four remaining containment and cleanup gaps addressed (ENG015-012)
+
+The next review found two high-severity VERIFY gaps and two medium data/cleanup gaps. Fixes are in:
+
+1. VERIFY establishes a Unix session/process group before evaluator code runs. On Windows the child
+   waits until the parent assigns it to a kill-on-close Job Object. Cancellation and normal completion
+   stop the full tree, including candidate servers launched with `subprocess.Popen()`.
+   `test_verify_cancellation_kills_evaluator_and_descendant_processes` records and checks both PIDs;
+   its Windows PID probe now imports `ctypes` and the regression passes.
+2. Evaluator and BUILD results use a private capability channel: a Unix socket pair or a Windows
+   anonymous pipe whose write handle is explicitly duplicated only into the child. The parent drains
+   results while workers run, validates an 8 MiB bounded JSON envelope, and never unpickles worker
+   output. Regression coverage sends a 2 MiB result and checks a 9 MiB result is rejected cleanly.
+3. Migration `f2b6c9a417de` now links a reference only when exactly one candidate claims it and the
+   stored attempt scope, visibility, blob digest, and byte length match the candidate JSON and
+   database rows. Ambiguous or inconsistent references remain unclaimed; their staging blobs get
+   `created_at + 24 hours` expirations. The real-Postgres regression covers these mismatch cases.
+4. BUILD reconstruction now runs in its own process group/Windows Job Object. Cancellation kills
+   it while artifact I/O is stalled and waits for its process tree to stop before cleanup. The
+   PostgreSQL artifact store reconstructs a process-local SQLAlchemy engine in the child.
+
+Validation on the current Windows environment: all 15 `tests.test_attempt_lifecycle` tests pass,
+including the descendant PID regression, large and oversized results, and cancellation during a
+blocked BUILD. `tests.test_api_migrations` was then run against a real disposable PostgreSQL instance
+(`AIEB_DATABASE_URL` set) and passes - the migration backfill gate this section originally left open
+is now closed. Full regression against real Postgres: 111 tests across `test_api_service` (49),
+`test_worker_leasing` (29), `test_attempt_lifecycle` (15), `test_analysis` (16), and
+`test_api_migrations` (1) pass; `test_ext_tool_admission` (1) passes unchanged. ENG-015 is back to
+`COMPLETE` in STATUS.md. The Unix process-group branch is still untested here (Windows-only
+environment) - trusted by code symmetry with the passing Windows Job Object branch, the same
+disclosure this codebase already makes for its other OS-conditional code.
 
 ## Recommended next prompt
 
-Decide whether ENG-011's `planned_cells`/`category` inputs should be wired end to end from a real
-campaign (currently only tests supply them) - the one remaining IN_PROGRESS item. Prompt 14
-(ENG-017/018: admin campaigns, budget reservations, publication/correction workflows) is the
-natural next prompt, since it both depends on and will exercise ENG-015's now-complete leasing
-layer, and gives the website's Corrections/admin-adjacent pages real write paths to react to.
+Exercise the Unix process-group branch in a real Linux/macOS CI runner or environment (untestable
+on this Windows-only development machine) as a follow-up, though it is not blocking further work
+given ENG-015 is otherwise fully verified. Prompt 14 (ENG-017/018: admin campaigns, budget
+reservations, publication/correction workflows) is the natural next prompt, since it depends on and
+exercises the now-complete worker leasing layer.
 Independent task reviews remain a
 precondition before any admitted-only ENG-013 release manifest can be created; ENG-012 remains
 blocked on provider/model authorization, credentials, and spend cap.
