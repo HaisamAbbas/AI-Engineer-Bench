@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012); a fifth review found the fourth pass itself introduced two High integrity bugs (read-time mutation of the digest-verified snapshot; a fabricated evaluation window from attempt-creation timestamps) plus two Medium gaps (a zero-observation frozen entrant still vanished; comparison panels keyed by slug alone corrupted same-slug-across-releases) - all fixed (ENG016-013/014); a sixth review found the fifth pass's own digest fix still broke for a legacy snapshot missing per_entrant_* keys (fixed via response_model_exclude_unset) plus a comparison-eligibility contract regression (fixed via a real Literal-tagged union, deliberately non-discriminated to avoid an OpenAPI boolean-discriminator bug in openapi-typescript) - all fixed (ENG016-015) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -398,6 +398,48 @@ cancellation mechanism (the `Evaluator` type now takes a cooperative cancel `Eve
 excluded from the ENG-016 commits. It changes the evaluator signature, so it likely needs matching
 updates to every evaluator (`tests/maintainer/*/evaluator.py`) and to `runner_bridge`'s call sites
 before the worker/lifecycle tests will pass; whoever owns that change should finish and verify it.
+
+## Prompt 13 sixth-pass review - the fifth pass's digest fix was still incomplete, plus a contract regression
+
+A sixth review found the fifth pass's snapshot-digest fix (ENG016-013) still broke for a legacy
+snapshot missing the `per_entrant_*` keys, plus a contract-quality regression in comparison
+eligibility - see DECISIONS.md ENG016-015:
+
+1. **A legacy snapshot's served digest broke again, differently (High).** `_verified_snapshot()`
+   parses stored JSONB through `AnalysisSnapshot.model_validate()`, whose `per_entrant_*` fields
+   default to `None` when a legacy snapshot lacks those keys entirely. Ordinary response
+   serialization dumps every declared field including those filled-in defaults, so a legacy snapshot
+   was served with extra `null` keys its stored/digested JSON never had - reproduced directly by
+   deleting a key from a seeded snapshot and recomputing the digest from the HTTP response, which no
+   longer matched `snapshot_digest`. Fixed with `response_model_exclude_unset=True` on the results
+   route: FastAPI/Pydantic's exclude-unset dump uses each nested model's own `model_fields_set`, so a
+   legacy snapshot's absent keys stay genuinely absent in the response, while a current-format
+   snapshot (every key present) is unaffected.
+   `test_served_snapshot_still_hashes_to_its_recorded_digest_for_a_legacy_snapshot` covers this
+   directly; `test_per_entrant_total_tasks_is_null_not_zero_for_a_legacy_snapshot` was updated to
+   assert the key is genuinely absent (not present-and-null).
+2. **Comparison eligibility had regressed to an unconstrained flat shape (Low).** When
+   `publication_id` was added to the panel (fifth pass), `ComparisonEntrantPanel` became a single
+   model with both `aggregate` and `reason` optional - nothing in the contract stopped an
+   eligible=True panel carrying a `reason`, or an eligible=False panel carrying a fabricated
+   `aggregate`. Fixed with a real tagged union (`EligibleEntrantPanel`/`IneligibleEntrantPanel`,
+   `Literal[True]`/`Literal[False]`). Deliberately NOT a Pydantic `Field(discriminator="eligible")`:
+   OpenAPI discriminator mappings need string keys, so a boolean-tagged discriminated union
+   serializes its mapping with string `"True"`/`"False"` keys, and `openapi-typescript` reads THAT
+   for the generated field type instead of the schema's own `const: true`/`const: false` -
+   discovered directly while regenerating artifacts: it produced `eligible: "True"` (a string
+   literal) in the generated TypeScript even though every real response carries the JSON boolean
+   `true`/`false`. Left as a plain (non-discriminated) union instead - Pydantic's smart-union mode
+   still disambiguates correctly on the boolean value, and the generated TypeScript now correctly
+   types `eligible: true | false`. `test_comparison_entrant_panel_rejects_inconsistent_eligible_reason_combinations`
+   covers the validation directly.
+
+OpenAPI/TypeScript artifacts were regenerated (`docs/implementation/evidence/ENG-014/openapi.json`,
+`api-client.d.ts`, `apps/web/src/api/schema.ts`). No frontend source changes were needed -
+`Compare.tsx` only reads `entry.eligible`/`entry.aggregate`/`entry.reason` by field name, unchanged
+by the union restructuring. Full ENG-016 verification: 48 `test_api_service.py` (up from 46) + 16
+`test_analysis.py` tests pass against real PostgreSQL, 29 frontend tests, `tsc --noEmit`/`vite build`
+clean against the regenerated types.
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 

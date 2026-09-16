@@ -12,10 +12,12 @@ fixed (see DECISIONS.md ENG016-007 through ENG016-009, and "Third-pass fixes" be
 a fourth time after a review of THAT pass found findings #2/#3/#4/#6 (that review's own numbering)
 still partially overstated (see DECISIONS.md ENG016-010 through ENG016-012, and "Fourth-pass fixes"
 below), then a fifth time after a review found the fourth pass had itself introduced two integrity
-bugs plus two more gaps (see DECISIONS.md ENG016-013/014, and "Fifth-pass fixes" below). ENG-016
-remains IN_PROGRESS: real HTTP/browser integration tests and broader accessibility coverage are
-deliberately not attempted here - a real separate effort, disclosed as open rather than bundled
-into this pass - along with the other open acceptance gates listed below.
+bugs plus two more gaps (see DECISIONS.md ENG016-013/014, and "Fifth-pass fixes" below), then a
+sixth time after a review found the fifth pass's own snapshot-digest fix was still incomplete for
+one case, plus a comparison-contract regression (see DECISIONS.md ENG016-015, and "Sixth-pass
+fixes" below). ENG-016 remains IN_PROGRESS: real HTTP/browser integration tests and broader
+accessibility coverage are deliberately not attempted here - a real separate effort, disclosed as
+open rather than bundled into this pass - along with the other open acceptance gates listed below.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -279,6 +281,40 @@ per selection, each carrying its own `publication_id`; both the configuration an
 panel are keyed to that publication, and selecting the exact same `(slug, publication)` twice
 (comparing something to itself) is rejected with 400.
 
+## Sixth-pass fixes (2026-09-16, a review of the fifth pass)
+
+The fifth pass's own snapshot-digest fix was still incomplete for one case, and one comparison
+contract had regressed - both fixed (DECISIONS.md ENG016-015).
+
+**A legacy snapshot's served digest broke again, differently.** The fifth pass stopped mutating the
+snapshot on reads, but `_verified_snapshot()` still parses the stored JSONB through
+`AnalysisSnapshot.model_validate()`, whose `per_entrant_*` fields default to `None` when a legacy
+snapshot (published before those fields existed) lacks the keys entirely. Ordinary response
+serialization dumps every declared field, including those filled-in defaults - so a legacy snapshot
+was served with extra `null` keys its stored/digested JSON never had, and recomputing the digest
+from that served body no longer matched `snapshot_digest`. Reproduced directly (deleting a key from
+a seeded snapshot, then recomputing the digest from the HTTP response). Fixed with
+`response_model_exclude_unset=True` on the results route: FastAPI/Pydantic's exclude-unset dump uses
+each (possibly nested) model's own `model_fields_set` - the fields actually present in what it was
+validated from - so a legacy snapshot's absent keys stay genuinely absent in the response (not
+present-and-null), while a current-format snapshot (every key genuinely present) is unaffected.
+
+**Comparison eligibility had regressed to an unconstrained flat shape.** When `publication_id` was
+added to the comparison panel (fifth pass), `ComparisonEntrantPanel` became a single model with both
+`aggregate` and `reason` optional - nothing stopped an eligible=True panel from carrying a `reason`,
+or an eligible=False panel from carrying a fabricated `aggregate`; only endpoint code happened to
+avoid it. Fixed with a real tagged union: `EligibleEntrantPanel` (`eligible: Literal[True]`,
+`aggregate`) and `IneligibleEntrantPanel` (`eligible: Literal[False]`, `reason`). Deliberately left
+as a plain (non-discriminated) union rather than a Pydantic `Field(discriminator="eligible")`:
+OpenAPI discriminator mappings require string keys, so a boolean-tagged discriminated union
+serializes its mapping as string `"True"`/`"False"` keys, and `openapi-typescript` reads THAT
+mapping for the generated field type instead of the schema's own `const: true`/`const: false` -
+producing a wrong string-literal `eligible: "True"` in generated TypeScript even though every real
+response carries the JSON boolean `true`/`false`. This was caught directly while regenerating
+artifacts for this fix, not merely reasoned about - the plain union avoids it entirely (Pydantic's
+smart-union mode still disambiguates correctly on the boolean value) and produces the correct
+`eligible: true | false` boolean type end to end.
+
 ## Known, disclosed gaps that remain (not fabricated data)
 
 - **Run evidence** (`/runs/:trialId`): the only backing endpoint, `GET /v1/trials/{id}`, is
@@ -337,10 +373,13 @@ boundary instead; still real hook/component/render code):
 - Structural accessibility (`axe-core`: label association, table semantics, landmark structure -
   color-contrast disabled since jsdom cannot evaluate real color).
 
-`services/api`'s own test suite (46 tests in `tests/test_api_service.py`, 3 in
+`services/api`'s own test suite (48 tests in `tests/test_api_service.py`, 3 in
 `tests/test_api_cors.py`) covers: CORS allow/deny, newest-first pagination across multiple pages,
 snapshot-shape validation (a digest-matching but structurally wrong snapshot is rejected), that the
-SERVED snapshot still hashes to its recorded digest (never mutated on a read), real
+SERVED snapshot still hashes to its recorded digest (never mutated on a read, and for a LEGACY
+snapshot missing `per_entrant_*` keys entirely, whose absent keys must stay absent rather than
+serialize back out as fabricated `null`s), that `ComparisonEntrantPanel`'s tagged union rejects an
+eligible panel carrying a `reason` or an ineligible panel carrying a fabricated `aggregate`, real
 cohort-comparability (same-publication always comparable; cross-publication is now UNCONDITIONALLY
 non-comparable, including when `cohort_digest` happens to match) with real per-task rate-delta
 output, comparing the same slug across two releases keeping both panels distinct (and rejecting the
