@@ -8,10 +8,12 @@ public routes: `/`, `/results`, `/compare`, `/entrants/:slug`, `/tasks`, `/tasks
 Date: 2026-09-15, revised 2026-09-16 after a second independent review found six real gaps in the
 first pass (see DECISIONS.md ENG016-003 through ENG016-006), then revised again the same day after
 a third independent review found findings #2, #3, and #7 from that second pass were only partially
-fixed (see DECISIONS.md ENG016-007 through ENG016-009, and "Third-pass fixes" below). ENG-016
-remains IN_PROGRESS: the third review's finding #5 (real HTTP/browser integration tests, broader
-accessibility coverage) is deliberately not attempted here - a real separate effort, disclosed as
-open rather than bundled into this pass.
+fixed (see DECISIONS.md ENG016-007 through ENG016-009, and "Third-pass fixes" below), then revised
+a fourth time after a review of THAT pass found findings #2/#3/#4/#6 (that review's own numbering)
+still partially overstated (see DECISIONS.md ENG016-010 through ENG016-012, and "Fourth-pass fixes"
+below). ENG-016 remains IN_PROGRESS: real HTTP/browser integration tests and broader accessibility
+coverage are deliberately not attempted here - a real separate effort, disclosed as open rather than
+bundled into this pass - along with the other open acceptance gates listed below.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -175,6 +177,67 @@ merely re-saving the same literal character and hoping the mojibake does not rec
 
 See DECISIONS.md ENG016-007 (comparison), ENG016-008 (per-entrant metrics/provenance), ENG016-009
 (Compare/download/encoding) for full detail and test references.
+
+## Fourth-pass fixes (2026-09-16, a review of the third pass)
+
+A review of the third pass found four of its own claims (that review's findings #2, #3, #4, #6)
+still partially overstated, plus a real correctness bug (#3) - see DECISIONS.md ENG016-010 through
+ENG016-012 for full detail and test references.
+
+**Per-entrant coverage still excluded zero-observation frozen tasks.** `per_entrant_total_tasks`
+was computed by `aieb_analysis.metrics.summarize()` from DISTINCT OBSERVED tasks per entrant, since
+that package has no access to the frozen plan - a task with zero observations for an entrant was
+invisible to it entirely, so a two-task campaign with one unobserved task reported "1/1" instead of
+"1/2", hiding exactly the incompleteness Release Detail's own frozen task list correctly showed.
+Fixed at the API layer, where the frozen manifest actually is available: `GET /v1/publications/{id}/
+results` now overrides `per_entrant_total_tasks` with `len(frozen_tasks)` for every entrant (every
+entrant in a frozen campaign is scheduled against every frozen task - the cross product
+`freeze_campaign` builds). Separately, the per-entrant fields' schema default changed from `{}` to
+`None`: a snapshot published before these fields existed has no such data at all, which is a
+different fact from "this field is present and every entrant happens to have zero of something" -
+collapsing both into `{}` let the frontend's `?? 0` fallback render a fabricated `0` for genuinely
+unavailable historical data. `Results.tsx`/`Compare.tsx` now render "Unknown" when the whole field
+is `null`, never a fabricated count.
+
+**Compare still showed the newest entrant configuration, not the selected publication's exact
+one.** Every comparison panel called `GET /entrants/by-slug/{slug}`, which always resolves the
+newest `EntrantRevisionRow` - a historical or cross-release panel could silently combine one
+publication's metrics with a DIFFERENT, newer entrant revision's model/capabilities. Fixed with a
+new `GET /v1/publications/{publication_id}/entrants/{slug}`, reading the frozen configuration
+directly from `campaign.resolved["entrants"]` - pinned to that publication forever, unaffected by
+any later revision of the same slug. `Compare.tsx`'s `EntrantPanel` now calls this instead.
+
+**Median engineering time was wrong for an even sample.** Both the suite-wide and per-entrant
+medians picked `times[len(times)//2]` (the upper-middle raw value) instead of a real median -
+`[10, 20]` returned `20`, not `15`, and a test explicitly asserted `20`, locking the defect in as
+expected behavior. Fixed with `statistics.median`; `successful_engineering_median_seconds` and
+`per_entrant_median_engineering_seconds` are now `float`, since a real median of an even sample is
+fractional.
+
+**Provenance remained incomplete and partly mislabeled.** `CohortIdentity` omitted
+`budget_profile_id`, `application_model_profile`, and `required_capabilities` - real fields on the
+frozen `Cohort` this route already had access to. `hardware_class` was labeled "(profile)" on
+screen, which is a distinct concept from the budget/application profile the spec actually asks for
+- fixed by exposing both separately ("Hardware class" and "Budget / model profile"). Publication
+`created_at` was labeled "Evaluation date," which it isn't (publication time, often well after
+evaluation actually finished) - relabeled "Published," and a genuine evaluation window
+(`evaluation_started_at`/`evaluation_completed_at`) was added, derived from real
+`attempt.created_at` timestamps already in the database (min/max across the campaign's trials) -
+not a new tracked concept, not fabricated. `protocol_scoring_digest` (from
+`campaign.resolved["protocol"]["scoring_digest"]`) was also added, closing the "downloaded bundle
+lacks an actual protocol/scoring digest" gap. The downloaded JSON bundle now includes all of this.
+
+**Aggregate rate deltas were still labeled "paired task outcomes."** The backend's own docstrings
+already disclosed these are not repetition-matched paired statistics, but the UI still called them
+"Paired task outcomes" and the API field was `paired_differences` - overclaiming by name even with
+an accurate docstring underneath. Renamed throughout: the API field is now `task_rate_deltas`, the
+schema is `TaskRateDelta`, and the UI heading is "Per-task rate deltas."
+
+Not attempted: the review's finding #6 (open acceptance gates - HTTP/browser integration tests,
+valid/planned trial coverage, per-entrant uncertainty, public redacted run evidence, versioned
+Methodology, task ticket text, candidate log/diff rendering, full-page accessibility/responsive
+checks) lists real, already-disclosed gaps rather than a new claim to fix - see "Known, disclosed
+gaps" below, unchanged in kind by this pass.
 
 ## Known, disclosed gaps that remain (not fabricated data)
 

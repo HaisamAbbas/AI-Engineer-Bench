@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus the third review's finding #5 - real HTTP/browser integration tests - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
+Current phase: Prompt 13 (ENG-016, public website) implemented; a second independent review found six more real gaps (no CORS, untyped responses, no comparison eligibility, incomplete results table, wrong pagination ordering, thin test coverage), all fixed; a third review then found three of those fixes (comparison eligibility, results-table completeness, publication provenance) only partially correct plus new gaps in Compare/downloads/encoding, all fixed (ENG016-007/008/009); a fourth review then found four of THOSE fixes still partially overstated (per-entrant task coverage, Compare's entrant configuration, median calculation, provenance completeness/labeling) plus rate-delta naming that overclaimed pairing - all fixed (ENG016-010/011/012) - ENG-016 remains IN_PROGRESS (run evidence/methodology/task-ticket-text gaps remain, disclosed, plus real HTTP/browser integration tests and full-page accessibility coverage - deliberately deferred); post-Prompt-12 audit remediation complete across five independent review rounds (AUDIT-001-007); ENG-015's leasing split (ENG015-007) is implemented, then a further review (ENG015-008) found and fixed four more real gaps (verification cancellation, stored-candidate digest checking, legacy-row handling, idempotent artifact-first writes) plus narrowed one topology overclaim, then a fourth review (ENG015-009) found ENG015-008's own fixes for findings #1/#2/#3/#5 each only partial plus one new gap - all fixed for real this time, including a genuine PostgreSQL-backed shared artifact store - COMPLETE; ENG-011 remains IN_PROGRESS
 
 ## Current state
 
@@ -308,6 +308,52 @@ tests, `tsc --noEmit` and `vite build` clean. Also corrected: a prior "115 Pytho
 claim did not name that PostgreSQL-dependent test classes are skipped (not failed) without
 `AIEB_DATABASE_URL` configured - stated explicitly now (125 discovered either way; 64 pass/61 skip
 without the database, 124 pass/1 skip with it).
+
+## Prompt 13 fourth-pass review - four of the third pass's fixes were still partially overstated
+
+A review of the third pass found four of its own claims (findings #2, #3, #4, #6 in that review's
+own numbering) still partially overstated, plus a real correctness bug - see DECISIONS.md
+ENG016-010 through ENG016-012 for full detail:
+
+1. **Per-entrant coverage still excluded zero-observation frozen tasks.** `per_entrant_total_tasks`
+   counted DISTINCT OBSERVED tasks per entrant (`aieb_analysis.metrics.summarize()` has no access to
+   the frozen plan), so a two-task campaign with one unobserved task reported "1/1" instead of
+   "1/2." Fixed at the API layer: `GET /v1/publications/{id}/results` now overrides it with
+   `len(frozen_tasks)` for every entrant (every entrant is scheduled against every frozen task by
+   construction). Separately, all `per_entrant_*` fields' schema default changed from `{}` to
+   `None`, so a snapshot predating these fields reports honestly unavailable, not a fabricated `0`
+   via the frontend's old `?? 0` fallback.
+2. **Compare still showed the newest entrant configuration, not the publication's exact one.**
+   Every panel called `GET /entrants/by-slug/{slug}` (always the newest revision). Fixed with a new
+   `GET /v1/publications/{publication_id}/entrants/{slug}`, reading `campaign.resolved["entrants"]`
+   directly - pinned to that publication forever, unaffected by a later revision being registered.
+3. **Median engineering time was wrong for an even sample.** `times[len(times)//2]` picked the
+   upper-middle value (`[10, 20]` -> `20`, not `15`), and a test had locked the defect in as expected
+   behavior. Fixed with `statistics.median`; both `successful_engineering_median_seconds` and
+   `per_entrant_median_engineering_seconds` are now `float`.
+4. **Provenance remained incomplete and partly mislabeled.** `CohortIdentity` gained
+   `budget_profile_id`/`application_model_profile`/`required_capabilities`; `hardware_class` is no
+   longer mislabeled "(profile)"; `created_at` is labeled "Published," not "Evaluation date"; a
+   genuine `evaluation_started_at`/`evaluation_completed_at` window (derived from real
+   `attempt.created_at` timestamps already in the database) and `protocol_scoring_digest` were added
+   to the response and the downloaded bundle.
+5. **Aggregate rate deltas were still labeled "paired task outcomes."** Renamed throughout -
+   `paired_differences`/`TaskPairedDifference` are now `task_rate_deltas`/`TaskRateDelta`, and the UI
+   heading is "Per-task rate deltas" - since the backend already disclosed these aren't
+   repetition-matched pairing, but the naming still implied it.
+
+Not attempted: that review's finding #6 names the same already-disclosed open acceptance gates
+(HTTP/browser integration tests, valid/planned trial coverage, per-entrant uncertainty, public
+redacted run evidence, versioned Methodology, task ticket text, candidate log/diff rendering,
+full-page accessibility/responsive checks) rather than a new claim to fix.
+
+Full regression: 42 `test_api_service.py` tests (up from 39) and 16 `test_analysis.py` tests (up
+from 15) pass against real PostgreSQL, 27 frontend tests, `tsc --noEmit`/`vite build` clean.
+Environment note: Docker Desktop was found not running partway through this session's verification
+(the `aieb-test-postgres` container had stopped along with it) - restarted directly
+(`docker start aieb-test-postgres`) rather than working around it, and the full suite was re-run
+clean afterward; two stale test runs from the outage window failed with connection timeouts and
+were correctly discarded as artifacts of that outage, not real regressions.
 
 ## ENG-015 leasing split - implemented (ENG015-007)
 
