@@ -15,7 +15,7 @@ describe("Compare", () => {
       "/v1/publications/{publication_id}/results": {
         data: {
           id: "pub-1", campaign_id: "camp-1", snapshot_digest: "d", status: "published", supersedes_id: null,
-          created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a",
+          created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a", frozen_tasks: [], frozen_entrants: [],
           snapshot: { schema_version: "aieb.analysis/v1", per_task: {}, per_entrant: {}, per_category: null, complete_for_rank: true, suite_rate: null, cost_per_resolution: null, total_campaign_cost_usd: null, verifier_cost_total_usd: null, successful_engineering_median_seconds: null, deadline_rate: null, infrastructure_attrition: null, limitations: [] },
         },
       },
@@ -24,7 +24,10 @@ describe("Compare", () => {
           publication_id: "pub-1",
           cohort_comparable: true,
           non_comparable_reason: null,
-          entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
+          entrants: [
+            { entrant_id: "a", publication_id: "pub-1", eligible: true, aggregate: 1.0 },
+            { entrant_id: "b", publication_id: "pub-1", eligible: true, aggregate: 0.5 },
+          ],
           task_rate_deltas: {
             "a|b": [{ task_id: "task-1", left_rate: 1.0, right_rate: 0.5, difference: 0.5 }],
           },
@@ -47,6 +50,14 @@ describe("Compare", () => {
         data: {
           id: "pub-1", campaign_id: "camp-1", snapshot_digest: "d", status: "published", supersedes_id: null,
           created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a",
+          // Total tasks now comes from the frozen plan (3 tasks), not the
+          // snapshot's observed-cell count - resolved (2) / frozen (3) = "2/3".
+          frozen_tasks: [
+            { slug: "t1", version: "0.1.0", family_id: "f", category: "rag" },
+            { slug: "t2", version: "0.1.0", family_id: "f", category: "rag" },
+            { slug: "t3", version: "0.1.0", family_id: "f", category: "rag" },
+          ],
+          frozen_entrants: [{ slug: "a", version: "1.0.0" }, { slug: "b", version: "1.0.0" }],
           snapshot: {
             schema_version: "aieb.analysis/v1", required_repetitions: null, per_task: {}, per_entrant: { a: 1.0, b: 0.5 },
             per_category: null, complete_for_rank: true, suite_rate: null, cost_per_resolution: null,
@@ -72,7 +83,10 @@ describe("Compare", () => {
       "/v1/comparisons": {
         data: {
           publication_id: "pub-1", cohort_comparable: true, non_comparable_reason: null,
-          entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
+          entrants: [
+            { entrant_id: "a", publication_id: "pub-1", eligible: true, aggregate: 1.0 },
+            { entrant_id: "b", publication_id: "pub-1", eligible: true, aggregate: 0.5 },
+          ],
           task_rate_deltas: { "a|b": [] },
         },
       },
@@ -90,7 +104,7 @@ describe("Compare", () => {
       "/v1/publications/{publication_id}/results": {
         data: {
           id: "pub-1", campaign_id: "camp-1", snapshot_digest: "d", status: "published", supersedes_id: null,
-          created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a",
+          created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a", frozen_tasks: [], frozen_entrants: [],
           snapshot: { schema_version: "aieb.analysis/v1", per_task: {}, per_entrant: {}, per_category: null, complete_for_rank: true, suite_rate: null, cost_per_resolution: null, total_campaign_cost_usd: null, verifier_cost_total_usd: null, successful_engineering_median_seconds: null, deadline_rate: null, infrastructure_attrition: null, limitations: [] },
         },
       },
@@ -99,7 +113,10 @@ describe("Compare", () => {
           publication_id: "pub-1",
           cohort_comparable: false,
           non_comparable_reason: "entrants come from publications with different (or unresolvable) frozen cohorts; paired statistics are not meaningful across different cohorts",
-          entrants: { a: { eligible: true, aggregate: 1.0 }, b: { eligible: true, aggregate: 0.5 } },
+          entrants: [
+            { entrant_id: "a", publication_id: "pub-1", eligible: true, aggregate: 1.0 },
+            { entrant_id: "b", publication_id: "pub-1", eligible: true, aggregate: 0.5 },
+          ],
           task_rate_deltas: null,
         },
       },
@@ -110,5 +127,48 @@ describe("Compare", () => {
     // Each entrant still shown separately - never a fabricated winner.
     expect(screen.getByText("a")).toBeInTheDocument();
     expect(screen.getByText("b")).toBeInTheDocument();
+  });
+
+  it("keeps two panels distinct when the same slug is compared across two releases", async () => {
+    // Review finding #4, third pass: the same slug from two publications must
+    // render as two panels each showing its OWN publication's aggregate, not
+    // one overwriting the other.
+    const resultsData = {
+      id: "pub", campaign_id: "camp", snapshot_digest: "d", status: "published", supersedes_id: null,
+      created_at: "2026-01-01T00:00:00Z", cohort_digest: "c", frozen_tasks: [], frozen_entrants: [],
+      snapshot: { schema_version: "aieb.analysis/v1", per_task: {}, per_entrant: {}, per_category: null, complete_for_rank: true, suite_rate: null, cost_per_resolution: null, total_campaign_cost_usd: null, verifier_cost_total_usd: null, successful_engineering_median_seconds: null, deadline_rate: null, infrastructure_attrition: null, limitations: [] },
+    };
+    mockApi({
+      "/v1/publications/{publication_id}/results": { data: resultsData },
+      "/v1/publications/{publication_id}/entrants/{slug}": ({ path }: any) => ({
+        data: {
+          manifest: {
+            schema_version: "aieb.entrant/v1", id: path.slug, track: "agents", agent_implementation: "demo",
+            agent_version: "1.0.0", engineer_model: { provider_class: "demo", requested_model: "m", settings_digest: "a".repeat(64) },
+            prompt_digest: "b".repeat(64), tools_digest: "c".repeat(64), capabilities: ["cap"], credential_ref_type: "broker",
+          },
+        },
+      }),
+      "/v1/comparisons": {
+        data: {
+          publication_id: "pub-a",
+          cohort_comparable: false,
+          non_comparable_reason: "entrants come from different publications (a cross-release comparison)",
+          entrants: [
+            { entrant_id: "agent-a", publication_id: "pub-a", eligible: true, aggregate: 1.0 },
+            { entrant_id: "agent-a", publication_id: "pub-b", eligible: true, aggregate: 0.3 },
+          ],
+          task_rate_deltas: null,
+        },
+      },
+    });
+    renderWithProviders(<Compare />, {
+      route: "/compare?entrants=agent-a,agent-a&entrant_publications=pub-a,pub-b",
+      path: "/compare",
+    });
+    // Two panels, both for agent-a, each with its own aggregate (100% and 30%).
+    await waitFor(() => expect(screen.getAllByText("agent-a").length).toBe(2));
+    expect(screen.getByText("100.0%")).toBeInTheDocument();
+    expect(screen.getByText("30.0%")).toBeInTheDocument();
   });
 });

@@ -37,12 +37,6 @@ export function ReleaseDetail() {
         <dd>{data.cohort_digest ?? "Unknown"}</dd>
         <dt>Protocol scoring digest</dt>
         <dd>{data.protocol_scoring_digest ?? "Unknown"}</dd>
-        <dt>Evaluation window</dt>
-        <dd>
-          {data.evaluation_started_at && data.evaluation_completed_at
-            ? `${formatUtc(data.evaluation_started_at).display} to ${formatUtc(data.evaluation_completed_at).display}`
-            : "Unknown"}
-        </dd>
         {data.cohort && (
           <>
             <dt>Suite / track</dt>

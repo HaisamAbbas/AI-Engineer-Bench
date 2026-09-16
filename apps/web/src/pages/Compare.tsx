@@ -71,9 +71,11 @@ export function Compare() {
     setParams(next);
   }
 
-  function removeEntrant(id: string) {
-    const index = entrantIds.indexOf(id);
-    const nextIds = entrantIds.filter((e) => e !== id);
+  // Remove by POSITION, not by slug: the same slug can appear twice (agent-a
+  // from two releases), so filtering by slug would drop the wrong panel
+  // (review finding #4, third pass).
+  function removeEntrantAt(index: number) {
+    const nextIds = entrantIds.filter((_, i) => i !== index);
     const nextPubs = (entrantPublicationIds ?? entrantIds.map(() => undefined)).filter((_, i) => i !== index);
     updateUrl(nextIds, nextPubs);
   }
@@ -102,13 +104,11 @@ export function Compare() {
             </p>
           )}
           <div className="compare-grid">
-            {entrantIds.map((entrantId, index) => (
+            {comparison.data.entrants.map((entry, index) => (
               <EntrantPanel
-                key={entrantId}
-                entrantId={entrantId}
-                publicationId={entrantPublicationIds?.[index] || publicationId}
-                entry={comparison.data.entrants[entrantId]}
-                onRemove={() => removeEntrant(entrantId)}
+                key={`${entry.entrant_id}::${entry.publication_id}::${index}`}
+                entry={entry}
+                onRemove={() => removeEntrantAt(index)}
               />
             ))}
           </div>
@@ -146,25 +146,31 @@ export function Compare() {
  * publication's snapshot, the same per-entrant cost/time/coverage numbers the
  * Results table shows - not merely an aggregate rate. */
 function EntrantPanel({
-  entrantId,
-  publicationId,
   entry,
   onRemove,
 }: {
-  entrantId: string;
-  publicationId: string | undefined;
-  entry: NonNullable<ReturnType<typeof useComparison>["data"]>["entrants"][string];
+  entry: NonNullable<ReturnType<typeof useComparison>["data"]>["entrants"][number];
   onRemove: () => void;
 }) {
+  const entrantId = entry.entrant_id;
+  const publicationId = entry.publication_id;
   // The EXACT configuration THIS publication's frozen campaign used - never
   // useEntrantRevisionBySlug, which resolves whichever revision is newest
   // right now and could silently mismatch a historical/cross-release panel's
-  // own metrics (review finding #2, second pass).
+  // own metrics (review finding #2, second pass). Both the config and the
+  // metrics are keyed to `entry.publication_id`, so two panels for the same
+  // slug from different releases never cross-contaminate (review finding #4,
+  // third pass).
   const configuration = usePublicationEntrantConfiguration(publicationId, entrantId);
   const results = usePublicationResults(publicationId);
   const snapshot = results.data?.snapshot;
-  const resolvedTasks = snapshot?.per_entrant_resolved_tasks?.[entrantId];
-  const totalTasks = snapshot?.per_entrant_total_tasks?.[entrantId];
+  // Total tasks come from the frozen plan (data.frozen_tasks), never a
+  // per-entrant count derived from observed cells; resolved is a genuine 0
+  // for an unobserved entrant but "Unknown" (null) for a snapshot predating
+  // the field (review findings #1/#3, third pass).
+  const totalTasks = results.data ? (results.data.frozen_tasks.length > 0 ? results.data.frozen_tasks.length : null) : null;
+  const resolvedField = snapshot?.per_entrant_resolved_tasks;
+  const resolvedTasks = resolvedField == null ? null : resolvedField[entrantId] ?? 0;
 
   return (
     <article className="compare-panel">
@@ -191,11 +197,8 @@ function EntrantPanel({
           {snapshot && (
             <>
               <dt>Resolved tasks</dt>
-              {/* per_entrant_total_tasks is null (not fabricated 0) for a
-               * historical snapshot predating this field (review finding
-               * #1, second pass) - shown as "Unknown", never "0/0". */}
               <dd className="tabular-nums">
-                {resolvedTasks === undefined || totalTasks === undefined ? "Unknown" : `${formatCount(resolvedTasks)}/${formatCount(totalTasks)}`}
+                {formatCount(resolvedTasks)}/{formatCount(totalTasks)}
               </dd>
               <dt>Cost / resolution</dt>
               <dd className="tabular-nums">{formatUsd(snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null)}</dd>

@@ -38,6 +38,11 @@ function mockOnePublication(overrides: { status?: string; snapshot?: unknown } =
         supersedes_id: null,
         created_at: "2026-01-01T00:00:00Z",
         cohort_digest: "cohort-a",
+        frozen_tasks: [],
+        frozen_entrants: [
+          { slug: "a", version: "1.0.0" }, { slug: "b", version: "1.0.0" }, { slug: "c", version: "1.0.0" },
+          { slug: "d", version: "1.0.0" }, { slug: "e", version: "1.0.0" },
+        ],
         snapshot: overrides.snapshot ?? SNAPSHOT_WITH_FIVE_ENTRANTS,
         ...(overrides.status === "withdrawn"
           ? { notice: "this snapshot has been withdrawn; it remains addressable but is not canonical" }
@@ -85,5 +90,43 @@ describe("Results", () => {
     }
     expect(checkboxes[4]).toBeDisabled();
     expect(screen.getByRole("link", { name: /Compare 4 selected entrants/i })).toBeInTheDocument();
+  });
+
+  it("shows a frozen entrant with zero observations as an incomplete row, not omitted", async () => {
+    // Review finding #3, third pass: a frozen entrant never observed must
+    // still appear (incomplete coverage), sourced from frozen_entrants, not
+    // vanish because it has no per_entrant cell.
+    mockApi({
+      "/v1/releases": {
+        data: { items: [{ id: "pub-1", campaign_id: "camp-1", snapshot_digest: "d", status: "published", created_at: "2026-01-01T00:00:00Z" }], next_cursor: null },
+      },
+      "/v1/publications/{publication_id}/results": {
+        data: {
+          id: "pub-1", campaign_id: "camp-1", snapshot_digest: "d", status: "published", supersedes_id: null,
+          created_at: "2026-01-01T00:00:00Z", cohort_digest: "cohort-a",
+          frozen_tasks: [{ slug: "t1", version: "0.1.0", family_id: "f", category: "rag" }],
+          frozen_entrants: [{ slug: "observed", version: "1.0.0" }, { slug: "never-run", version: "1.0.0" }],
+          snapshot: {
+            schema_version: "aieb.analysis/v1", per_task: {}, per_entrant: { observed: 0.5 }, per_category: null,
+            complete_for_rank: false, suite_rate: null, cost_per_resolution: null, total_campaign_cost_usd: null,
+            verifier_cost_total_usd: null, successful_engineering_median_seconds: null, deadline_rate: null,
+            infrastructure_attrition: null, per_entrant_valid_trials: { observed: 2 },
+            per_entrant_resolved_tasks: { observed: 1 }, per_entrant_total_tasks: { observed: 1 },
+            per_entrant_cost_per_resolution: {}, per_entrant_verifier_cost_usd: {},
+            per_entrant_median_engineering_seconds: {}, per_entrant_deadline_rate: {},
+            per_entrant_infrastructure_attrition: {}, limitations: [],
+          },
+        },
+      },
+    });
+    renderWithProviders(<Results />);
+    await waitFor(() => expect(screen.getByRole("table")).toBeInTheDocument());
+    // The unobserved frozen entrant has a row (link in the row header).
+    expect(screen.getByRole("link", { name: "never-run" })).toBeInTheDocument();
+    const neverRunRow = screen.getByRole("link", { name: "never-run" }).closest("tr")!;
+    // Its aggregate rate is Unknown (never a fabricated 0%); its valid-trials
+    // count is a genuine 0 (frozen but unobserved).
+    expect(within(neverRunRow).getAllByText("Unknown").length).toBeGreaterThan(0);
+    expect(within(neverRunRow).getAllByText("0").length).toBeGreaterThan(0);
   });
 });

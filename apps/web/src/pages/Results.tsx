@@ -10,7 +10,6 @@ const MAX_COMPARE = 4;
 // rather than a separately-declared alias, so it can never structurally
 // drift from what usePublicationResults actually returns.
 type PublicationResultsData = NonNullable<ReturnType<typeof usePublicationResults>["data"]>;
-type AnalysisSnapshot = PublicationResultsData["snapshot"];
 
 interface EntrantRow {
   entrantId: string;
@@ -30,28 +29,67 @@ interface EntrantRow {
   categories: [string, number | null][];
 }
 
-/** Every number here is read directly off the typed AnalysisSnapshot the API
- * returns - none of it is recomputed from per_task cells (spec: "Do not
- * recompute scores in JavaScript", review finding #2). The `per_entrant_*`
- * fields are themselves authoritative aieb_analysis output, mirroring
- * `per_entrant`/`per_category`'s own per-entrant grouping. */
-function buildEntrantRows(snapshot: AnalysisSnapshot): EntrantRow[] {
-  const entrantIds = Object.keys(snapshot.per_entrant);
-  return entrantIds.map((entrantId) => {
+// A coverage COUNT (resolved tasks, valid trials): if the whole per-entrant
+// map is null the snapshot predates the field entirely - genuinely
+// unavailable (null). If the map is present but this entrant's slug is
+// absent, the entrant was scheduled (frozen) but never observed - a genuine
+// zero, not unavailable (review findings #1/#3, third pass).
+function coverageCount(field: Record<string, number> | null | undefined, slug: string): number | null {
+  if (field == null) return null;
+  return field[slug] ?? 0;
+}
+
+// An optional METRIC (rate, cost, time): null both when the whole map is
+// absent (legacy snapshot) and when this entrant has no value (unobserved -
+// e.g. cost per resolution is undefined with zero resolutions). Never a
+// fabricated zero for either.
+function optionalMetric<T>(field: Record<string, T | null> | null | undefined, slug: string): T | null {
+  if (field == null) return null;
+  return field[slug] ?? null;
+}
+
+/** Rows come from the UNION of the frozen entrant roster (authoritative -
+ * `data.frozen_entrants`, from `campaign.resolved`) and any observed entrant,
+ * so a frozen entrant with ZERO observations still gets a row showing
+ * incomplete coverage rather than vanishing (review finding #3, third pass).
+ * The total-task denominator is `data.frozen_tasks.length` (the frozen plan -
+ * every entrant is scheduled against every task by construction), NOT a
+ * per-entrant count derived from observed cells; the snapshot itself is never
+ * mutated on the server, so we read the frozen counts from these sibling
+ * fields (review finding #1, third pass). Every metric is read straight off
+ * the typed response - none recomputed from per_task cells. */
+function buildEntrantRows(data: PublicationResultsData): EntrantRow[] {
+  const snapshot = data.snapshot;
+  const totalTasks = data.frozen_tasks.length > 0 ? data.frozen_tasks.length : null;
+  const roster: string[] = [];
+  const seen = new Set<string>();
+  for (const entrant of data.frozen_entrants) {
+    if (!seen.has(entrant.slug)) {
+      seen.add(entrant.slug);
+      roster.push(entrant.slug);
+    }
+  }
+  for (const slug of Object.keys(snapshot.per_entrant)) {
+    if (!seen.has(slug)) {
+      seen.add(slug);
+      roster.push(slug);
+    }
+  }
+  return roster.map((entrantId) => {
     const categories: [string, number | null][] = snapshot.per_category
       ? Object.entries(snapshot.per_category).map(([category, byEntrant]) => [category, byEntrant[entrantId] ?? null])
       : [];
     return {
       entrantId,
-      suiteRate: snapshot.per_entrant[entrantId],
-      resolvedTasks: snapshot.per_entrant_resolved_tasks?.[entrantId] ?? null,
-      totalTasks: snapshot.per_entrant_total_tasks?.[entrantId] ?? null,
-      validTrials: snapshot.per_entrant_valid_trials?.[entrantId] ?? null,
-      costPerResolution: snapshot.per_entrant_cost_per_resolution?.[entrantId] ?? null,
-      verifierCostUsd: snapshot.per_entrant_verifier_cost_usd?.[entrantId] ?? null,
-      medianEngineeringSeconds: snapshot.per_entrant_median_engineering_seconds?.[entrantId] ?? null,
-      deadlineRate: snapshot.per_entrant_deadline_rate?.[entrantId] ?? null,
-      infrastructureAttrition: snapshot.per_entrant_infrastructure_attrition?.[entrantId] ?? null,
+      suiteRate: snapshot.per_entrant[entrantId] ?? null,
+      resolvedTasks: coverageCount(snapshot.per_entrant_resolved_tasks, entrantId),
+      totalTasks,
+      validTrials: coverageCount(snapshot.per_entrant_valid_trials, entrantId),
+      costPerResolution: optionalMetric(snapshot.per_entrant_cost_per_resolution, entrantId),
+      verifierCostUsd: optionalMetric(snapshot.per_entrant_verifier_cost_usd, entrantId),
+      medianEngineeringSeconds: optionalMetric(snapshot.per_entrant_median_engineering_seconds, entrantId),
+      deadlineRate: optionalMetric(snapshot.per_entrant_deadline_rate, entrantId),
+      infrastructureAttrition: optionalMetric(snapshot.per_entrant_infrastructure_attrition, entrantId),
       categories,
     };
   });
@@ -159,7 +197,7 @@ function ResultsTable({
 }) {
   const { snapshot, status } = data;
   const notice = data.notice ?? undefined;
-  const rows = buildEntrantRows(snapshot);
+  const rows = buildEntrantRows(data);
   const categoryNames = snapshot.per_category ? Object.keys(snapshot.per_category).sort() : [];
   const allKLabel = snapshot.required_repetitions ? `Resolved tasks (all-${snapshot.required_repetitions})` : "Resolved tasks (all-k)";
 
@@ -206,9 +244,8 @@ function ResultsTable({
       cohort_digest: data.cohort_digest,
       cohort: data.cohort,
       protocol_scoring_digest: data.protocol_scoring_digest,
-      evaluation_started_at: data.evaluation_started_at,
-      evaluation_completed_at: data.evaluation_completed_at,
       frozen_tasks: data.frozen_tasks,
+      frozen_entrants: data.frozen_entrants,
       snapshot: data.snapshot,
     };
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
@@ -259,12 +296,6 @@ function ResultsTable({
         <dd className="tabular-nums">{data.snapshot_digest}</dd>
         <dt>Protocol scoring digest (provenance)</dt>
         <dd className="tabular-nums">{data.protocol_scoring_digest ?? "Unknown"}</dd>
-        <dt>Evaluation window</dt>
-        <dd>
-          {data.evaluation_started_at && data.evaluation_completed_at
-            ? `${formatUtc(data.evaluation_started_at).display} to ${formatUtc(data.evaluation_completed_at).display}`
-            : "Unknown"}
-        </dd>
         <dt>Suite rate (fixed-weight, all entrants)</dt>
         <dd className="tabular-nums">{formatRate(snapshot.suite_rate)}</dd>
         <dt>Cost per resolution (suite-wide)</dt>
