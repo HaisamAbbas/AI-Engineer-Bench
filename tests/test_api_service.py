@@ -667,6 +667,95 @@ class ApiServiceTests(unittest.TestCase):
         detail = self.client.get(f"/v1/campaigns/{campaign_id}", headers=_auth_header(("operator",)))
         self.assertEqual(detail.json()["campaign"]["state"], "incomplete")
 
+    def test_publication_prepare_review_publish_withdraw_and_redaction(self) -> None:
+        from aieb_api import signing
+        from aieb_api.worker import repository
+
+        campaign_id = uuid.UUID(self._create_and_freeze())
+        operator = _auth_header(("operator",))
+        reviewer = _auth_header(("reviewer",), subject="reviewer-only")
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "pub-start-2"})
+        self._drive_campaign_to_terminal(campaign_id, resolve=True)
+        with db.session_factory()() as session:
+            self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
+        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        review_url = f"/v1/publications/preparations/{prepared.json()['id']}/review"
+
+        # Rejection keeps the preparation reviewable state honest.
+        rejected = self.client.post(review_url, headers=reviewer, json={"decision": "reject", "review_kind": "independent", "notes": "not yet"})
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["status"], "rejected")
+
+        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        approved = self.client.post(
+            f"/v1/publications/preparations/{prepared.json()['id']}/review",
+            headers=reviewer, json={"decision": "approve", "review_kind": "independent"},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        publication_id = approved.json()["published_publication_id"]
+
+        signature = self.client.get(f"/v1/publications/{publication_id}/signature")
+        self.assertEqual(signature.status_code, 200, signature.text)
+        self.assertTrue(signing.verify_manifest(
+            signature.json()["signed_manifest"], signature.json()["manifest_signature"], signature.json()["signing_public_key"],
+        ))
+        tampered = dict(signature.json()["signed_manifest"]); tampered["reviewer_id"] = str(uuid.uuid4())
+        self.assertFalse(signing.verify_manifest(
+            tampered, signature.json()["manifest_signature"], signature.json()["signing_public_key"],
+        ))
+
+        export = self.client.get(f"/v1/publications/{publication_id}/export")
+        self.assertEqual(export.status_code, 200, export.text)
+        self.assertEqual(len(export.json()["runs"]), 1)
+        private_keys = {"source", "diff", "diffs", "engineering_stdout", "engineering_stderr", "diagnostics", "artifact_id", "artifact_ref_id", "file_references"}
+
+        def assert_public(value):
+            if isinstance(value, dict):
+                self.assertFalse(private_keys.intersection(value))
+                if "cost_usd" in value:
+                    self.assertIsNone(value["cost_usd"])
+                for child in value.values():
+                    assert_public(child)
+            elif isinstance(value, list):
+                for child in value:
+                    assert_public(child)
+
+        assert_public(export.json())
+        from aieb_api.snapshots import snapshot_digest
+        self.assertEqual(snapshot_digest(export.json()["snapshot"]), export.json()["snapshot_digest"])
+
+        withdrawn = self.client.post(
+            f"/v1/publications/{publication_id}/withdraw", headers=reviewer, json={"reason": "fixture only"},
+        )
+        self.assertEqual(withdrawn.status_code, 200, withdrawn.text)
+        self.assertEqual(withdrawn.json()["status"], "withdrawn")
+        results = self.client.get(f"/v1/publications/{publication_id}/results")
+        self.assertEqual(results.status_code, 200)
+        self.assertEqual(results.json()["status"], "withdrawn")
+        self.assertIn("withdrawn", results.json()["notice"])
+
+    def test_publication_prepare_is_idempotent_and_rejects_self_approval(self) -> None:
+
+
+        from aieb_api.worker import repository
+
+        campaign_id = uuid.UUID(self._create_and_freeze())
+        headers = _auth_header(("operator",))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=headers | {"Idempotency-Key": "pub-start"})
+        self._drive_campaign_to_terminal(campaign_id, resolve=True)
+        with db.session_factory()() as session:
+            self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
+        url = f"/v1/campaigns/{campaign_id}/publications/prepare"
+        prepared = self.client.post(url, headers=headers, json={})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        self.assertEqual(self.client.post(url, headers=headers, json={}).json()["id"], prepared.json()["id"])
+        review_url = f"/v1/publications/preparations/{prepared.json()['id']}/review"
+        rejected = self.client.post(review_url, headers=_auth_header(("reviewer",)), json={"decision": "approve", "review_kind": "single_maintainer"})
+        self.assertEqual(rejected.status_code, 403, rejected.text)
+
+
     def test_corrupt_task_manifest_is_503_not_500(self) -> None:
         with db.session_factory()() as session:
             evaluator_id = self._seed_evaluator(session)
