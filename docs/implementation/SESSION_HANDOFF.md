@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-17
-Current phase: Prompt 13 (ENG-016) and the ENG-015/ENG-011 gates are CLOSED; Prompt 14 (ENG-017 + ENG-018) is unblocked and next.
+Current phase: ENG-015 and ENG-016 remain COMPLETE. ENG-011 is IN_PROGRESS after aggregation review (round 2: frozen-manifest membership guard added and verified); ENG-018 is BLOCKED pending acceptance of the corrections. See `evidence/ENG-011/aggregation-review.md` for PostgreSQL regression and artifact-check evidence. The older closure/unblocked claims below are historical and superseded by this review.
 
 ENG-016 is COMPLETE. Two further independent-review passes were remediated and accepted (see DECISIONS.md ENG016-017): seven findings on the public-evidence path (strict included/excluded published-selection union; snapshot-digest binding of the evidence manifest - swap-proof after publication, with semantic rate-derivation verification explicitly deferred to ENG-018; terminal/scored/completed-campaign publication gating; whitelist-redacted public trace; immutable-evaluation-only public usage; lease-fenced `phase.started`; keyboard-operable ARIA tabs), then one follow-up blocker (terminal_status must be a real scored verdict AND equal the pinned evaluation's verdict). Committed and pushed at `beb4bb4`.
 

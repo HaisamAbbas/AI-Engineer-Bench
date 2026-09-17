@@ -10,7 +10,14 @@ class TrialObservation:
  task_id:str; family_id:str; project_id:str; entrant_id:str; repetition:int
  passed:bool|None; execution_valid:bool; engineer_cost_usd:str|None=None
  dev_application_cost_usd:str|None=None; verifier_cost_usd:str|None=None
- engineer_seconds:int|None=None; deadline:bool=False; category:str|None=None
+ engineer_seconds:int|None=None; deadline:bool|None=None; category:str|None=None
+
+def _deadline_rate(observations)->float|None:
+ # All-attempt rate: incomplete evidence cannot silently become a known zero
+ # or a rate over only the known subset.
+ if not observations or any(v.deadline is None for v in observations):return None
+ return sum(v.deadline for v in observations)/len(observations)
+
 
 def wilson_interval(successes:int,total:int,z:float=1.959963984540054)->tuple[float,float]|None:
  if total<=0:return None
@@ -134,7 +141,7 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
   per_entrant_verifier_cost_usd[entrant]=None if entrant_verifier_costs is None else sum(entrant_verifier_costs)
   entrant_times=sorted(v.engineer_seconds for v in entrant_successes if v.engineer_seconds is not None)
   per_entrant_median_engineering_seconds[entrant]=None if not entrant_times else median(entrant_times)
-  per_entrant_deadline_rate[entrant]=None if not entrant_obs else sum(v.deadline for v in entrant_obs)/len(entrant_obs)
+  per_entrant_deadline_rate[entrant]=_deadline_rate(entrant_obs)
   per_entrant_infrastructure_attrition[entrant]=None if not entrant_obs else 1-len(entrant_valid)/len(entrant_obs)
 
  task_category={}
@@ -150,7 +157,7 @@ def summarize(observations:tuple[TrialObservation,...], *, required_repetitions:
     for entrant in entrants
    }
 
- return {"schema_version":"aieb.analysis/v1","required_repetitions":required_repetitions,"per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"total_campaign_cost_usd":total_campaign_cost,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else median(times),"deadline_rate":None if not observations else sum(v.deadline for v in observations)/len(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"per_entrant_valid_trials":per_entrant_valid_trials,"per_entrant_resolved_tasks":per_entrant_resolved_tasks,"per_entrant_total_tasks":per_entrant_total_tasks,"per_entrant_cost_per_resolution":per_entrant_cost_per_resolution,"per_entrant_verifier_cost_usd":per_entrant_verifier_cost_usd,"per_entrant_median_engineering_seconds":per_entrant_median_engineering_seconds,"per_entrant_deadline_rate":per_entrant_deadline_rate,"per_entrant_infrastructure_attrition":per_entrant_infrastructure_attrition,"limitations":["project/family paired resampling is exploratory with fewer than six projects","campaign-level completeness checks the frozen planned cells when the caller supplies planned_cells (aggregate_campaign_snapshot wires it from the frozen manifest); a per-entrant valid-vs-planned coverage COUNT is still not broken out as its own field","per-entrant aggregate Wilson uncertainty is not computed - only per-task intervals (per_task[...].wilson_95) are available, since pooling per-task confidence intervals into one entrant-level interval is not statistically valid without a declared hierarchical model"]}
+ return {"schema_version":"aieb.analysis/v1","required_repetitions":required_repetitions,"per_task":per_task,"per_entrant":per_entrant,"per_category":per_category,"complete_for_rank":not incomplete,"suite_rate":None if incomplete else weighted,"cost_per_resolution":cost_resolution,"total_campaign_cost_usd":total_campaign_cost,"verifier_cost_total_usd":verifier_cost_total,"successful_engineering_median_seconds":None if not times else median(times),"deadline_rate":_deadline_rate(observations),"infrastructure_attrition":None if not observations else 1-len(valid)/len(observations),"per_entrant_valid_trials":per_entrant_valid_trials,"per_entrant_resolved_tasks":per_entrant_resolved_tasks,"per_entrant_total_tasks":per_entrant_total_tasks,"per_entrant_cost_per_resolution":per_entrant_cost_per_resolution,"per_entrant_verifier_cost_usd":per_entrant_verifier_cost_usd,"per_entrant_median_engineering_seconds":per_entrant_median_engineering_seconds,"per_entrant_deadline_rate":per_entrant_deadline_rate,"per_entrant_infrastructure_attrition":per_entrant_infrastructure_attrition,"limitations":["project/family paired resampling is exploratory with fewer than six projects","campaign-level completeness checks the frozen planned cells when the caller supplies planned_cells (aggregate_campaign_snapshot wires it from the frozen manifest); a per-entrant valid-vs-planned coverage COUNT is still not broken out as its own field","per-entrant aggregate Wilson uncertainty is not computed - only per-task intervals (per_task[...].wilson_95) are available, since pooling per-task confidence intervals into one entrant-level interval is not statistically valid without a declared hierarchical model"]}
 
 def paired_project_difference(observations:tuple[TrialObservation,...], left:str, right:str)->dict[str,object]:
  """Paired task-cell difference, grouped by underlying project (not fake IID runs)."""

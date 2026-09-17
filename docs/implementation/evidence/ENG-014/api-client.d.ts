@@ -383,6 +383,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/trials/{trial_id}/artifacts/{artifact_ref_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Candidate Artifact */
+        get: operations["download_candidate_artifact_v1_trials__trial_id__artifacts__artifact_ref_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -906,14 +923,28 @@ export interface components {
          */
         PrivateRunEvidence: {
             /**
+             * Artifacts
+             * @default []
+             */
+            artifacts: components["schemas"]["RunArtifact"][];
+            /**
              * Campaign Id
              * Format: uuid
              */
             campaign_id: string;
+            /** Candidate Id */
+            candidate_id?: string | null;
             /** Checks */
             checks?: {
                 [key: string]: boolean;
             } | null;
+            /**
+             * Configuration
+             * @default {}
+             */
+            configuration: {
+                [key: string]: string | string[] | null;
+            };
             /** Diagnostics */
             diagnostics?: {
                 [key: string]: string;
@@ -934,6 +965,14 @@ export interface components {
              * Format: uuid
              */
             entrant_revision_id: string;
+            /** Evaluation Id */
+            evaluation_id?: string | null;
+            /**
+             * Evaluation State
+             * @default unscored
+             * @enum {string}
+             */
+            evaluation_state: "current" | "superseded" | "invalid" | "unscored";
             /**
              * Id
              * Format: uuid
@@ -943,10 +982,27 @@ export interface components {
             /** Repetition */
             repetition: number;
             /**
+             * Superseded Evaluation Count
+             * @default 0
+             */
+            superseded_evaluation_count: number;
+            /**
              * Task Revision Id
              * Format: uuid
              */
             task_revision_id: string;
+            /**
+             * Trace
+             * @default []
+             */
+            trace: components["schemas"]["RunTraceEvent"][];
+            /**
+             * Trace State
+             * @default unavailable
+             * @enum {string}
+             */
+            trace_state: "complete" | "partial" | "unavailable";
+            usage?: components["schemas"]["RunUsage"] | null;
             /** Verdict */
             verdict?: string | null;
         };
@@ -984,10 +1040,25 @@ export interface components {
             attempt: components["schemas"]["RunAttemptSummary"] | null;
             /** Checks */
             checks: components["schemas"]["PublicRequirementCheck"][];
+            /**
+             * Configuration
+             * @default {}
+             */
+            configuration: {
+                [key: string]: string | string[] | null;
+            };
             /** Entrant Id */
             entrant_id: string;
             /** Entrant Version */
             entrant_version: string;
+            /** Evaluation Id */
+            evaluation_id?: string | null;
+            /**
+             * Evaluation State
+             * @default unscored
+             * @enum {string}
+             */
+            evaluation_state: "current" | "invalid" | "unscored";
             /**
              * Publication Id
              * Format: uuid
@@ -1000,10 +1071,22 @@ export interface components {
             /** Task Version */
             task_version: string;
             /**
+             * Trace
+             * @default []
+             */
+            trace: components["schemas"]["RunTraceEvent"][];
+            /**
+             * Trace State
+             * @default unavailable
+             * @enum {string}
+             */
+            trace_state: "complete" | "partial" | "unavailable";
+            /**
              * Trial Id
              * Format: uuid
              */
             trial_id: string;
+            usage?: components["schemas"]["RunUsage"] | null;
             /** Verdict */
             verdict: ("pass" | "fail" | "contract_violation" | "indeterminate") | null;
         };
@@ -1096,6 +1179,20 @@ export interface components {
             limit_usd?: string | null;
             role: components["schemas"]["BudgetRole"];
         };
+        /** RunArtifact */
+        RunArtifact: {
+            /**
+             * Artifact Ref Id
+             * Format: uuid
+             */
+            artifact_ref_id: string;
+            /** Content Digest */
+            content_digest: string;
+            /** Path */
+            path: string;
+            /** Size */
+            size: number;
+        };
         /** RunAttemptSummary */
         RunAttemptSummary: {
             /** Number */
@@ -1131,6 +1228,28 @@ export interface components {
             truncated: boolean;
             /** Unified Diff */
             unified_diff: string | null;
+        };
+        /** RunTraceEvent */
+        RunTraceEvent: {
+            /** Created At */
+            created_at?: string | null;
+            /** Event Type */
+            event_type: string;
+            /** Payload */
+            payload: {
+                [key: string]: string | number | boolean | null;
+            };
+            /** Sequence */
+            sequence: number;
+        };
+        /** RunUsage */
+        RunUsage: {
+            /** Cost Usd */
+            cost_usd?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
         };
         /** SourceRef */
         SourceRef: {
@@ -1262,6 +1381,10 @@ export interface components {
              */
             id: string;
             manifest: components["schemas"]["TaskRevision"];
+            /** Revision Digest */
+            revision_digest: string;
+            /** Ticket Digest */
+            ticket_digest?: string | null;
             /** Ticket Text */
             ticket_text?: string | null;
         };
@@ -1852,6 +1975,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PrivateRunEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_candidate_artifact_v1_trials__trial_id__artifacts__artifact_ref_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trial_id: string;
+                artifact_ref_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

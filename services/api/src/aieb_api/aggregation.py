@@ -14,11 +14,11 @@ function.
 
 from __future__ import annotations
 
-from collections import defaultdict
 from decimal import Decimal
 from uuid import UUID
 
-from aieb_core.models import EntrantRevision, TaskRevision
+from aieb_core.models import EntrantRevision, TaskRevision, Trial
+from pydantic import ValidationError
 from aieb_analysis import TrialObservation, summarize
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -45,7 +45,7 @@ _VERDICT_TO_PASSED: dict[str, bool | None] = {
     "contract_violation": False,
     "indeterminate": None,
 }
-_NONTERMINAL_INVALID = {"infrastructure_invalid", "cancelled"}
+_VALID_TERMINAL_STATUSES = frozenset(_VERDICT_TO_PASSED)
 # UsageRequestRow.actor_role groupings (per the budget-role model).
 _ENGINEER_ROLES = {"engineer"}
 _DEV_APPLICATION_ROLES = {"dev_application"}
@@ -53,21 +53,21 @@ _VERIFIER_ROLES = {"verifier_application", "verifier_judge"}
 
 
 class CampaignNotAggregatable(ValueError):
-    """The campaign does not exist or has no frozen resolved manifest, so there
-    is no authoritative plan to aggregate against."""
+    """The campaign lacks an authoritative plan or persisted trial identities
+    do not exactly match that frozen plan."""
 
 
 def _role_cost(session: Session, attempt_id: UUID, roles: set[str]) -> str | None:
     """Sum receipts for one attempt restricted to the given actor roles.
 
-    Returns a decimal string, or None when NO usage row exists for those roles
-    on this attempt - "unknown", not "zero". summarize() treats a None cost as
-    missing accounting (so cost-per-resolution reports unavailable rather than a
-    fabricated number), which is the honest outcome when a role's spend was
-    never recorded."""
+    Returns None if the role has no requests, a request has no receipt yet,
+    or any physical retry has neither reported nor estimated cost. Partial
+    accounting is not a complete total; an explicit zero remains zero.
+    """
     rows = session.execute(
         select(UsageReceiptRow.reported_cost_usd, UsageReceiptRow.estimated_cost_usd)
-        .join(UsageRequestRow, UsageRequestRow.id == UsageReceiptRow.usage_request_id)
+        .select_from(UsageRequestRow)
+        .outerjoin(UsageReceiptRow, UsageRequestRow.id == UsageReceiptRow.usage_request_id)
         .where(UsageRequestRow.attempt_id == attempt_id, UsageRequestRow.actor_role.in_(roles))
     ).all()
     if not rows:
@@ -75,8 +75,9 @@ def _role_cost(session: Session, attempt_id: UUID, roles: set[str]) -> str | Non
     total = Decimal("0")
     for reported, estimated in rows:
         cost = reported if reported is not None else estimated
-        if cost is not None:
-            total += cost
+        if cost is None:
+            return None
+        total += cost
     return format(total, "f")
 
 
@@ -112,10 +113,60 @@ def _planned_cells_and_categories(
     return frozenset(planned), category_by_task, family_by_task
 
 
-def _latest_attempt(session: Session, trial_id: UUID) -> AttemptRow | None:
-    return session.execute(
-        select(AttemptRow).where(AttemptRow.trial_id == trial_id).order_by(AttemptRow.number.desc()).limit(1)
-    ).scalar_one_or_none()
+def _validated_campaign_trials(session: Session, campaign_id: UUID) -> tuple[dict, list[TrialRow]]:
+    """Require a bijection with the frozen matrix before reading any outcomes.
+
+    Revision UUIDs are not stored in the frozen contract: the enqueuer resolves
+    them by slug/version. Check those keys AND canonical manifest digests, not
+    just the mutable trial foreign keys or denormalized digest columns.
+    """
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None or not isinstance(campaign.resolved, dict):
+        raise CampaignNotAggregatable("campaign has no frozen resolved manifest to aggregate")
+    resolved = campaign.resolved
+    try:
+        if any(not isinstance(resolved.get(key), list) or not resolved[key] for key in ("tasks", "entrants", "trials")):
+            raise ValueError("missing frozen matrix")
+        tasks = [TaskRevision.model_validate(value) for value in resolved["tasks"]]
+        entrants = [EntrantRevision.model_validate(value) for value in resolved["entrants"]]
+        planned = [Trial.model_validate(value) for value in resolved["trials"]]
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise CampaignNotAggregatable("invalid or missing frozen trial matrix") from exc
+    task_by_digest = {task.digest(): task for task in tasks}
+    entrant_by_digest = {entrant.digest(): entrant for entrant in entrants}
+    planned_by_id = {trial.id: trial for trial in planned}
+    cells = {(trial.task_digest, trial.entrant_digest, trial.repetition_index) for trial in planned}
+    if (len(planned_by_id) != len(planned) or len(cells) != len(planned)
+            or len({task.id for task in tasks}) != len(tasks)
+            or len({entrant.id for entrant in entrants}) != len(entrants)):
+        raise CampaignNotAggregatable("duplicate identities in frozen trial matrix")
+    if any(trial.task_digest not in task_by_digest or trial.entrant_digest not in entrant_by_digest for trial in planned):
+        raise CampaignNotAggregatable("frozen trial references an unplanned revision")
+
+    rows = session.execute(select(TrialRow).where(TrialRow.campaign_id == campaign_id)).scalars().all()
+    if len(rows) != len(planned) or {row.id for row in rows} != set(planned_by_id):
+        raise CampaignNotAggregatable("persisted trials do not match frozen matrix: missing or extra trial IDs")
+    for row in rows:
+        frozen = planned_by_id[row.id]
+        if row.repetition != frozen.repetition_index or row.cell_digest != frozen.digest():
+            raise CampaignNotAggregatable(f"trial {row.id} repetition or cell digest differs from frozen identity")
+        task = task_by_digest[frozen.task_digest]
+        entrant = entrant_by_digest[frozen.entrant_digest]
+        task_row = session.get(TaskRevisionRow, row.task_revision_id)
+        entrant_row = session.get(EntrantRevisionRow, row.entrant_revision_id)
+        if (task_row is None or entrant_row is None
+                or (task_row.slug, task_row.version) != (task.id, task.version)
+                or (entrant_row.slug, entrant_row.version) != (entrant.id, entrant.agent_version)):
+            raise CampaignNotAggregatable(f"trial {row.id} revision differs from frozen identity")
+        try:
+            task_digest = TaskRevision.model_validate(task_row.manifest).digest()
+            entrant_digest = EntrantRevision.model_validate(entrant_row.manifest).digest()
+        except (ValidationError, TypeError) as exc:
+            raise CampaignNotAggregatable(f"trial {row.id} has an invalid persisted revision") from exc
+        if task_digest != frozen.task_digest or entrant_digest != frozen.entrant_digest:
+            raise CampaignNotAggregatable(f"trial {row.id} revision digest differs from frozen identity")
+    return resolved, rows
+
 
 
 def _latest_evaluation(session: Session, attempt_id: UUID) -> EvaluationRow | None:
@@ -129,15 +180,15 @@ def _latest_evaluation(session: Session, attempt_id: UUID) -> EvaluationRow | No
 
 
 def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObservation, ...]:
-    """One TrialObservation per persisted trial (task, entrant, repetition),
-    built from that trial's latest attempt and its evaluation."""
-    resolved = None
-    campaign = session.get(CampaignRow, campaign_id)
-    if campaign is not None:
-        resolved = campaign.resolved
-    _, category_by_task, family_by_task = _planned_cells_and_categories(resolved or {})
+    """One observation per persisted attempt, retaining replacement spend.
 
-    trials = session.execute(select(TrialRow).where(TrialRow.campaign_id == campaign_id)).scalars().all()
+    Only the first valid scored attempt resolves a trial (never the best or
+    latest attempt). Later attempts remain in accounting/attrition but have
+    no scored verdict. A trial with no attempts is checked by planned_cells,
+    not invented as an infrastructure failure or unknown-cost execution.
+    """
+    resolved, trials = _validated_campaign_trials(session, campaign_id)
+    _, category_by_task, family_by_task = _planned_cells_and_categories(resolved)
     observations: list[TrialObservation] = []
     for trial in trials:
         task_row = session.get(TaskRevisionRow, trial.task_revision_id)
@@ -147,43 +198,39 @@ def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObs
         category = category_by_task.get(task_id)
         family_id = family_by_task.get(task_id, task_id)
 
-        attempt = _latest_attempt(session, trial.id)
-        passed: bool | None = None
-        execution_valid = False
-        engineer_cost = dev_cost = verifier_cost = None
-        if attempt is not None:
-            execution_valid = attempt.phase == "terminal" and attempt.terminal_status not in _NONTERMINAL_INVALID
-            if execution_valid:
+        attempts = session.execute(
+            select(AttemptRow).where(AttemptRow.trial_id == trial.id).order_by(AttemptRow.number)
+        ).scalars().all()
+        resolved_trial = False
+        for attempt in attempts:
+            execution_valid = attempt.phase == "terminal" and attempt.terminal_status in _VALID_TERMINAL_STATUSES
+            passed: bool | None = None
+            if execution_valid and not resolved_trial:
                 evaluation = _latest_evaluation(session, attempt.id)
-                if evaluation is not None and evaluation.verdict is not None:
+                # A mismatched or absent evaluation is unresolved, never a
+                # license to fabricate a scientific result from status alone.
+                if evaluation is not None and evaluation.verdict == attempt.terminal_status:
                     passed = _VERDICT_TO_PASSED.get(evaluation.verdict)
-                else:
-                    # A terminal, non-invalid attempt without a recorded verdict
-                    # is a valid execution that is not (yet) resolved - counted
-                    # in coverage/attrition, excluded from scored populations.
-                    passed = None
-            engineer_cost = _role_cost(session, attempt.id, _ENGINEER_ROLES)
-            dev_cost = _role_cost(session, attempt.id, _DEV_APPLICATION_ROLES)
-            verifier_cost = _role_cost(session, attempt.id, _VERIFIER_ROLES)
-        observations.append(
-            TrialObservation(
-                task_id=task_id,
-                family_id=family_id,
-                # No project concept exists in the hosted schema yet; family_id
-                # is the best available clustering unit. project_id is unused by
-                # summarize() (only paired_project_difference reads it), so this
-                # does not affect the published snapshot.
-                project_id=family_id,
-                entrant_id=entrant_id,
-                repetition=trial.repetition,
-                passed=passed,
-                execution_valid=execution_valid,
-                engineer_cost_usd=engineer_cost,
-                dev_application_cost_usd=dev_cost,
-                verifier_cost_usd=verifier_cost,
-                category=category,
+                resolved_trial = passed is not None
+            observations.append(
+                TrialObservation(
+                    task_id=task_id,
+                    family_id=family_id,
+                    # The hosted schema has no project identity; family is the
+                    # available clustering unit (unused by summarize itself).
+                    project_id=family_id,
+                    entrant_id=entrant_id,
+                    repetition=trial.repetition,
+                    passed=passed,
+                    execution_valid=execution_valid,
+                    engineer_cost_usd=_role_cost(session, attempt.id, _ENGINEER_ROLES),
+                    dev_application_cost_usd=_role_cost(session, attempt.id, _DEV_APPLICATION_ROLES),
+                    verifier_cost_usd=_role_cost(session, attempt.id, _VERIFIER_ROLES),
+                    # Hosted persistence has no authoritative deadline flag.
+                    deadline=None,
+                    category=category,
+                )
             )
-        )
     return tuple(observations)
 
 
@@ -198,6 +245,7 @@ def aggregate_campaign_snapshot(session: Session, campaign_id: UUID) -> dict:
     campaign = session.get(CampaignRow, campaign_id)
     if campaign is None or not campaign.resolved:
         raise CampaignNotAggregatable("campaign has no frozen resolved manifest to aggregate")
+    observations = campaign_observations(session, campaign_id)
     resolved = campaign.resolved
     planned_cells, _, _ = _planned_cells_and_categories(resolved)
     # required_repetitions comes from the frozen CampaignDraft (the planner
@@ -208,5 +256,4 @@ def aggregate_campaign_snapshot(session: Session, campaign_id: UUID) -> dict:
     if isinstance(draft.get("repetitions"), int):
         required_repetitions = draft["repetitions"]
 
-    observations = campaign_observations(session, campaign_id)
     return summarize(observations, required_repetitions=required_repetitions, planned_cells=planned_cells)

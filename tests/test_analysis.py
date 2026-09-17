@@ -2,6 +2,21 @@ from __future__ import annotations
 import unittest
 from aieb_analysis import TrialObservation,summarize,wilson_interval,paired_project_difference
 class AnalysisTests(unittest.TestCase):
+ def test_deadline_unknown_propagates_without_hiding_known_entrant_rates(self):
+  rows=(
+   TrialObservation("a","f","p","known",0,True,True,deadline=False),
+   TrialObservation("a","f","p","known",1,True,True,deadline=True),
+   TrialObservation("a","f","p","unknown",0,True,True),
+  )
+  result=summarize(rows)
+  self.assertIsNone(result["deadline_rate"])
+  self.assertEqual(result["per_entrant_deadline_rate"],{"known":0.5,"unknown":None})
+  self.assertIsNone(summarize(())["deadline_rate"])
+  self.assertEqual(summarize(rows[:1])["deadline_rate"],0.0)
+  mixed=(rows[0],TrialObservation("b","f","p","known",0,True,True,deadline=None))
+  self.assertIsNone(summarize(mixed)["per_entrant_deadline_rate"]["known"])
+
+
  def test_zero_success_unknown_cost_and_missing_cells_block_rank(self):
   rows=(TrialObservation("a","f","p","e",0,False,True,None,None),TrialObservation("a","f","p","e",1,False,True,None,None))
   result=summarize(rows,required_repetitions=3)
@@ -57,10 +72,10 @@ class AnalysisTests(unittest.TestCase):
   # suite-wide number would report identical, uninformative figures for
   # both; the correct output tells them apart.
   rows=(
-   TrialObservation("a","f","p","left",0,True,True,"1","1",engineer_seconds=10),
-   TrialObservation("b","f","p","left",0,True,True,"1","1",engineer_seconds=20),
+   TrialObservation("a","f","p","left",0,True,True,"1","1",engineer_seconds=10,deadline=False),
+   TrialObservation("b","f","p","left",0,True,True,"1","1",engineer_seconds=20,deadline=False),
    TrialObservation("a","f","p","right",0,True,True,"50","50",engineer_seconds=1000,deadline=True),
-   TrialObservation("b","f","p","right",0,None,False),  # infrastructure-invalid attempt
+   TrialObservation("b","f","p","right",0,None,False,deadline=False),  # infrastructure-invalid attempt
   )
   result=summarize(rows)
   self.assertEqual(result["per_entrant_cost_per_resolution"]["left"],2.0)
