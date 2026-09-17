@@ -6,6 +6,7 @@ import {
   type PublicationPreparation, type PublicationReviewInput, type PublicationRegradeInput,
   type PublicationExportData,
 } from "../api/publicationHooks";
+import { PreparationEvidence } from "./PreparationEvidence";
 import { ErrorState, Loading } from "../components/QueryStates";
 
 export function PublicationReview() {
@@ -22,6 +23,7 @@ function PublicationWorkspace({ campaignId }: { campaignId: string }) {
     <p><strong>Staging / fixture use only. Real public publication is not authorized.</strong></p>
     <p>The server enforces roles and campaign eligibility. Preparing requires an operator; reviewing, withdrawing,
       and regrading require a reviewer or administrator.</p>
+    <PreparationEvidence campaignId={campaignId} />
     <PreparationReview campaignId={campaignId} />
     <Regrade campaignId={campaignId} />
     <WithdrawAndExport campaignId={campaignId} />
@@ -118,10 +120,9 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
     </form>
     <MutationFeedback pending={prepare.isPending} error={prepare.error} reset={prepare.reset} label="preparation" />
     {last && <PreparationSummary data={last} />}
-    <p>No preparation GET or list endpoint is available. Enter an ID supplied by the preparing operator and review
-      its digests through your out-of-band review process. The server checks its current state.</p>
-    <p>Identity IDs are not exposed by this API, so this page cannot verify who prepared a manually entered ID
-      or created the campaign. Approval of IDs prepared in this page session is blocked; the server enforces self-approval rules.</p>
+    <p>Use Inspect prepared materials above to retrieve the proposed snapshot, coverage, and pinned evaluation selections.
+      The lookup reports approval eligibility for your server-authenticated identity. Review those materials before submitting a decision.</p>
+    <p>Approval of IDs prepared in this page session is blocked; the server also blocks the preparer and campaign creator.</p>
     <form onSubmit={submitReview} aria-label="Review preparation">
       <fieldset disabled={busy}>
         <legend>Review an existing preparation</legend>

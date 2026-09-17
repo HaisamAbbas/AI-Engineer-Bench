@@ -112,6 +112,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/campaigns/{campaign_id}/invalid-attempts/{attempt_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Invalid Attempt Evidence */
+        get: operations["invalid_attempt_evidence_v1_campaigns__campaign_id__invalid_attempts__attempt_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/invalid-attempts/{attempt_id}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Invalid Attempt */
+        post: operations["review_invalid_attempt_v1_campaigns__campaign_id__invalid_attempts__attempt_id__reviews_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/campaigns/{campaign_id}/pause": {
         parameters: {
             query?: never;
@@ -466,6 +500,23 @@ export interface paths {
          *     text, raw evaluator diagnostics, fixture data, billing, or artifact IDs.
          */
         get: operations["get_public_trial_v1_public_trials__trial_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/publications/preparations/{preparation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Preparation */
+        get: operations["get_preparation_v1_publications_preparations__preparation_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -883,6 +934,7 @@ export interface components {
          */
         CampaignStateResponse: {
             campaign: components["schemas"]["CampaignSummary"];
+            draft?: components["schemas"]["CampaignDraft"] | null;
             /** Notice */
             notice?: string | null;
             reservation?: components["schemas"]["BudgetReservationSummary"] | null;
@@ -1144,6 +1196,25 @@ export interface components {
             official_fixture_ref: string;
         };
         /**
+         * ExcludedEvidenceSelection
+         * @description A trial explicitly excluded from a publication. It carries no pinned
+         *     identity, and `extra="forbid"` with only these two fields means an
+         *     excluded selection can never smuggle a half-populated (attempt/candidate/
+         *     evaluation) identity past validation.
+         */
+        ExcludedEvidenceSelection: {
+            /**
+             * Included
+             * @constant
+             */
+            included: false;
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
+        };
+        /**
          * FreezeRegistry
          * @description Cohort/protocol/budget are versioned configuration, not yet persisted hosted tables
          *     in this ticket's schema (section 30 lists task/entrant/campaign/etc. only); the operator
@@ -1196,6 +1267,50 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * IncludedEvidenceSelection
+         * @description A trial pinned INTO a publication. Every identifying id AND digest is
+         *     required and non-null: "this trial is included" and "this trial carries a
+         *     complete, verifiable pinned identity" are made the same fact (review
+         *     finding #1). A prior single flat model let `included=True` coexist with
+         *     attempt/candidate/evaluation and all digests `None`, so the public route
+         *     could serve a legitimate-looking published run that pinned nothing at all;
+         *     Pydantic accepted that shape. The `Literal[True]` tag and the required
+         *     fields together make that shape unrepresentable.
+         */
+        IncludedEvidenceSelection: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Candidate Digest */
+            candidate_digest: string;
+            /**
+             * Candidate Id
+             * Format: uuid
+             */
+            candidate_id: string;
+            /** Evaluation Digest */
+            evaluation_digest: string;
+            /**
+             * Evaluation Id
+             * Format: uuid
+             */
+            evaluation_id: string;
+            /**
+             * Included
+             * @constant
+             */
+            included: true;
+            /** Trace Digest */
+            trace_digest: string;
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
+        };
+        /**
          * IneligibleEntrantPanel
          * @description `eligible=False` variant: this entrant slug was not present in its
          *     publication's snapshot, so it carries a `reason` and never a fabricated
@@ -1233,6 +1348,102 @@ export interface components {
              * Format: uuid
              */
             trial_id: string;
+        };
+        /** InvalidAttemptEvidence */
+        InvalidAttemptEvidence: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Can Review */
+            can_review: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Events */
+            events: components["schemas"]["InvalidityEventSummary"][];
+            /**
+             * Phase
+             * @constant
+             */
+            phase: "terminal";
+            /** Reviews */
+            reviews: components["schemas"]["InvalidityReviewSummary"][];
+            /**
+             * Terminal Status
+             * @enum {string}
+             */
+            terminal_status: "infrastructure_invalid" | "cancelled";
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
+        };
+        /** InvalidityEventSummary */
+        InvalidityEventSummary: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Event Type
+             * @enum {string}
+             */
+            event_type: "phase.started" | "candidate.collected" | "evaluation.recorded" | "attempt.terminal" | "regrade.requested";
+            /** Sequence */
+            sequence: number;
+        };
+        /** InvalidityReviewRequest */
+        InvalidityReviewRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Rationale */
+            rationale: string;
+        };
+        /** InvalidityReviewSummary */
+        InvalidityReviewSummary: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Rationale */
+            rationale: string;
+            /**
+             * Reviewer Id
+             * Format: uuid
+             */
+            reviewer_id: string;
         };
         /** MatrixPreview */
         MatrixPreview: {
@@ -1543,6 +1754,21 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** PublicationPreparationDetail */
+        PublicationPreparationDetail: {
+            /** Approval Blocked Reason */
+            approval_blocked_reason: string | null;
+            /** Can Approve */
+            can_approve: boolean;
+            /** Correction Reason */
+            correction_reason: string | null;
+            evidence_manifest: components["schemas"]["PublishedEvidenceManifest"];
+            preparation: components["schemas"]["PublicationPreparationSummary"];
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+        };
         /** PublicationPreparationSummary */
         PublicationPreparationSummary: {
             /**
@@ -1679,6 +1905,23 @@ export interface components {
         PublicationWithdrawRequest: {
             /** Reason */
             reason: string;
+        };
+        /** PublishedEvidenceManifest */
+        PublishedEvidenceManifest: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "aieb.published-evidence/v1";
+            /** Selections */
+            selections: (components["schemas"]["IncludedEvidenceSelection"] | components["schemas"]["ExcludedEvidenceSelection"])[];
+            /** Snapshot Digest */
+            snapshot_digest: string;
         };
         /** RegradeRequest */
         RegradeRequest: {
@@ -2162,6 +2405,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InvalidAttemptEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    invalid_attempt_evidence_v1_campaigns__campaign_id__invalid_attempts__attempt_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvalidAttemptEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_invalid_attempt_v1_campaigns__campaign_id__invalid_attempts__attempt_id__reviews_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvalidityReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvalidityReviewSummary"];
                 };
             };
             /** @description Validation Error */
@@ -2697,6 +3010,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicRunEvidence"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_preparation_v1_publications_preparations__preparation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationPreparationDetail"];
                 };
             };
             /** @description Validation Error */

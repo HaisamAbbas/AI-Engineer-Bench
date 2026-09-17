@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import aggregation, signing
-from ..auth import Identity, require_role
+from ..auth import Identity, require_role, resolve_roles
 from ..db import get_session
 from ..errors import conflict, forbidden, invalid_request, not_found
 from ..evidence_integrity import evidence_digest
@@ -21,7 +21,7 @@ from ..models import (
 from ..publication_evidence import build_evidence_manifest
 from ..publication_export import build_publication_export
 from ..schemas import (
-    PublicationExport, PublicationPreparationSummary, PublicationPrepareRequest,
+    PublicationExport, PublicationPreparationDetail, PublicationPreparationSummary, PublicationPrepareRequest,
     PublicationReviewRequest, PublicationSignature, PublicationWithdrawRequest,
 )
 from ..snapshots import snapshot_digest
@@ -120,6 +120,31 @@ def prepare_publication(
         session.add(row)
     session.commit()
     return _summary(row)
+
+
+@router.get("/publications/preparations/{preparation_id}", response_model=PublicationPreparationDetail)
+def get_preparation(
+    preparation_id: UUID,
+    identity: Identity = Depends(require_role("operator", "reviewer", "administrator")),
+    session: Session = Depends(get_session),
+) -> PublicationPreparationDetail:
+    row = session.get(PublicationPreparationRow, preparation_id)
+    if row is None:
+        raise not_found()
+    if snapshot_digest(row.snapshot) != row.snapshot_digest or evidence_digest(row.evidence_manifest) != row.evidence_manifest_digest:
+        raise conflict("prepared evidence failed its integrity check")
+    campaign = session.get(CampaignRow, row.campaign_id)
+    user_id = _current_user_id(session, identity)
+    reason = None
+    if row.status != "prepared":
+        reason = "This preparation has already been reviewed."
+    elif user_id in {row.prepared_by_user_id, campaign.created_by_user_id}:
+        reason = "The preparer and campaign creator cannot approve their own publication."
+    elif not set(resolve_roles(session, identity)) & {"reviewer", "administrator"}:
+        reason = "A reviewer or administrator role is required."
+    return PublicationPreparationDetail(preparation=_summary(row), snapshot=row.snapshot,
+        evidence_manifest=row.evidence_manifest, correction_reason=row.correction_reason,
+        can_approve=reason is None, approval_blocked_reason=reason)
 
 
 @router.post("/publications/preparations/{preparation_id}/review", response_model=PublicationPreparationSummary)
