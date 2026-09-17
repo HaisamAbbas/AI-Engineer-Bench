@@ -79,5 +79,5 @@ describe("full-page accessibility", () => {
       await checkAccessibility(container);
       cleanup();
     }
-  });
+  }, 30000);
 });

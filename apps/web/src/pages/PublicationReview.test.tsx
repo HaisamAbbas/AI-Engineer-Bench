@@ -48,8 +48,8 @@ describe("PublicationReview", () => {
     const get = mockApi({});
     renderPage();
     expect(screen.getByText(/Real public publication is not authorized/)).toBeInTheDocument();
-    expect(screen.getByText(/No preparation GET or list endpoint/)).toBeInTheDocument();
-    expect(screen.getByText(/Identity IDs are not exposed/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Load preparation evidence" })).toBeDisabled();
+    expect(screen.getByText(/server-authenticated identity/)).toBeInTheDocument();
     expect(screen.getByText(/frozen registry is not exposed/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject preparation" })).toBeDisabled();
     expect(get).not.toHaveBeenCalled();
@@ -100,6 +100,25 @@ describe("PublicationReview", () => {
     expect(post).toHaveBeenCalledWith(reviewPath, { params: { path: { preparation_id: "prep-1" } },
       body: { decision: "approve", review_kind: "independent", notes: "Evidence reviewed" } });
     expect(approve).toBeDisabled();
+  });
+
+  it("loads prepared materials without publishing and reports server identity restrictions", async () => {
+    const get = mockApi({ "/v1/publications/preparations/{preparation_id}": { data: {
+      preparation: prepared, snapshot: { coverage: "fixture coverage" },
+      evidence_manifest: { selections: [{ trial_id: "trial-pinned", included: true, evaluation_id: "eval-pinned" }] },
+      can_approve: false, approval_blocked_reason: "Campaign creator cannot approve", correction_reason: null,
+    } } });
+    const post = mockPost({});
+    renderPage();
+    fill("Preparation ID to inspect", "prep-1");
+    fireEvent.click(screen.getByRole("button", { name: "Load preparation evidence" }));
+    expect(await screen.findByText("Campaign creator cannot approve")).toBeInTheDocument();
+    expect(screen.getByText(/fixture coverage/)).toBeInTheDocument();
+    expect(screen.getByText(/eval-pinned/)).toBeInTheDocument();
+    expect(get).toHaveBeenCalledWith("/v1/publications/preparations/{preparation_id}", {
+      params: { path: { preparation_id: "prep-1" } },
+    });
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("requires correction information before a superseding preparation", async () => {

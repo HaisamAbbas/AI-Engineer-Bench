@@ -89,6 +89,17 @@ export function usePublicationCorrectionRun(runId: string | undefined) {
   });
 }
 
+export function usePublicationPreparation(preparationId: string | undefined) {
+  return useQuery({
+    queryKey: ["publication-preparation", preparationId],
+    queryFn: () => unwrap(api.GET("/v1/publications/preparations/{preparation_id}", {
+      params: { path: { preparation_id: preparationId! } },
+    })),
+    enabled: Boolean(preparationId),
+    retry: false,
+  });
+}
+
 export function usePublicationExport(publicationId: string | undefined) {
   return useQuery({
     queryKey: ["publication-export", publicationId],

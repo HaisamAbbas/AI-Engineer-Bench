@@ -641,6 +641,7 @@ class CampaignStateResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     campaign: CampaignSummary
+    draft: CampaignDraft | None = None
     reservation: BudgetReservationSummary | None = None
     notice: str | None = None
 
@@ -696,6 +697,17 @@ class PublicationPreparationSummary(BaseModel):
     supersedes_publication_id: UUID | None
     published_publication_id: UUID | None
     created_at: str
+
+
+class PublicationPreparationDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preparation: PublicationPreparationSummary
+    snapshot: dict
+    evidence_manifest: PublishedEvidenceManifest
+    correction_reason: str | None
+    can_approve: bool
+    approval_blocked_reason: str | None
 
 
 class PublicationReviewRequest(BaseModel):
