@@ -200,6 +200,11 @@ class ApiServiceTests(unittest.TestCase):
             "/v1/campaigns", json={"name": "a", "draft": draft}, headers=_auth_header(("operator",)) | {"Idempotency-Key": "key-3"},
         )
         campaign_id = create.json()["id"]
+        # The saved draft is retrievable so editors can load it instead of
+        # requiring operators to keep their own manifest copy.
+        stored = self.client.get(f"/v1/campaigns/{campaign_id}", headers=_auth_header(("operator",)))
+        self.assertEqual(stored.status_code, 200, stored.text)
+        self.assertEqual(stored.json()["draft"], draft)
         response = self.client.patch(
             f"/v1/campaigns/{campaign_id}", json={"draft": draft}, headers=_auth_header(("operator",)) | {"If-Match": "999"}
         )
@@ -691,6 +696,19 @@ class ApiServiceTests(unittest.TestCase):
         prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
         self.assertEqual(prepared.status_code, 200, prepared.text)
         review_url = f"/v1/publications/preparations/{prepared.json()['id']}/review"
+
+        # Read the exact prepared materials before deciding, with identity-aware eligibility.
+        detail_url = f"/v1/publications/preparations/{prepared.json()['id']}"
+        self.assertEqual(self.client.get(detail_url).status_code, 401)
+        detail = self.client.get(detail_url, headers=reviewer)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["preparation"], prepared.json())
+        self.assertTrue(detail.json()["can_approve"])
+        self.assertIn("selections", detail.json()["evidence_manifest"])
+        self.assertTrue(detail.json()["snapshot"])
+        own = self.client.get(detail_url, headers=operator)
+        self.assertFalse(own.json()["can_approve"])
+        self.assertIn("cannot approve", own.json()["approval_blocked_reason"])
 
         # Rejection keeps the preparation reviewable state honest.
         rejected = self.client.post(review_url, headers=reviewer, json={"decision": "reject", "review_kind": "independent", "notes": "not yet"})

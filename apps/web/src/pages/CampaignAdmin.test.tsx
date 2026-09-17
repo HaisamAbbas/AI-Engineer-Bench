@@ -16,6 +16,20 @@ describe("CampaignAdmin", () => {
     expect(screen.getByRole("button", { name: "Create campaign" })).toBeDisabled();
     expect(get).not.toHaveBeenCalled();
   });
+  it("prefills the saved draft and saves edits with its revision", async () => {
+    const draft = { id: "saved-draft", repetitions: 2 };
+    mockApi({ "/v1/campaigns/{campaign_id}": { data: { campaign: summary("draft"), draft } } });
+    const patch = vi.spyOn(api, "PATCH").mockResolvedValue(result(summary("draft")) as never);
+    renderDetail();
+    const editor = await screen.findByLabelText("Replacement draft JSON");
+    expect(editor).toHaveValue(JSON.stringify(draft, null, 2));
+    const edited = { ...draft, repetitions: 3 };
+    fireEvent.change(editor, { target: { value: JSON.stringify(edited) } });
+    fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}", {
+      params: { path: { campaign_id: "camp" } }, body: { draft: edited }, headers: { "If-Match": "4" },
+    }));
+  });
   it("never edits frozen plans and displays honest reservation enforcement", async () => {
     mockApi({ "/v1/campaigns/{campaign_id}": { data: { campaign: summary("frozen"), reservation: { reservation_id: "r", enforcement: "estimated_time_limited", reserved_usd: "12.50", status: "active" } } } });
     renderDetail();

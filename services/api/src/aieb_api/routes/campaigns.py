@@ -293,6 +293,7 @@ def preview_matrix(
 def _state_response(session: Session, campaign: CampaignRow, *, notice: str | None = None) -> CampaignStateResponse:
     return CampaignStateResponse(
         campaign=_summary(campaign), reservation=_reservation_summary(session, campaign.id), notice=notice,
+        draft=validate_stored_manifest(CampaignDraft, campaign.draft, kind="campaign draft", row_id=campaign.id) if campaign.state == "draft" else None,
     )
 
 

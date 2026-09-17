@@ -66,7 +66,7 @@ function CampaignDetail({ id }: { id: string }) {
     <h3>Budget reservation</h3>
     {reservation ? <dl><dt>Reservation ID</dt><dd>{reservation.reservation_id}</dd><dt>Status</dt><dd>{reservation.status}</dd>
       <dt>Reserved USD</dt><dd>{reservation.reserved_usd ?? "Unknown"}</dd><dt>Enforcement</dt><dd>{reservation.enforcement === "estimated_time_limited" ? "Estimated / time-limited — not a hard provider cap or hold" : reservation.enforcement}</dd></dl> : <p>No reservation recorded.</p>}
-    {campaign.state === "draft" ? <DraftEditor key={`${id}:${campaign.revision}`} id={id} revision={campaign.revision} disabled={busy} /> : <p>The frozen plan is immutable. To change it, create a new campaign.</p>}
+    {campaign.state === "draft" ? <DraftEditor key={`${id}:${campaign.revision}`} id={id} revision={campaign.revision} disabled={busy} saved={query.data.draft} /> : <p>The frozen plan is immutable. To change it, create a new campaign.</p>}
     {actions.map(action => <button key={action} disabled={busy} onClick={() => write.mutate({ action, id })}>{action === "start" ? "Start campaign" : action === "pause" ? "Pause campaign" : "Resume campaign"}</button>)}
     {campaign.state === "running" && <p>Pausing stops new dispatch; already leased work can finish.</p>}
     {canCancel && <fieldset disabled={busy}><legend>Cancel campaign</legend>
@@ -79,8 +79,8 @@ function CampaignDetail({ id }: { id: string }) {
   </>;
 }
 
-function DraftEditor({ id, revision, disabled }: { id: string; revision: number; disabled: boolean }) {
-  const [draft, setDraft] = useState("");
+function DraftEditor({ id, revision, disabled, saved }: { id: string; revision: number; disabled: boolean; saved?: Schema["CampaignDraft"] | null }) {
+  const [draft, setDraft] = useState(() => saved ? JSON.stringify(saved, null, 2) : "");
   const [registry, setRegistry] = useState("");
   const [error, setError] = useState<unknown>();
   const [freezeConfirmed, setFreezeConfirmed] = useState(false);
@@ -102,7 +102,7 @@ function DraftEditor({ id, revision, disabled }: { id: string; revision: number;
     } catch (err) { setError(err); }
   }
   return <section><h3>Edit draft</h3>
-    <p>The API does not return the saved draft. Paste the complete replacement manifest; this is not a prefilled copy. Saving uses revision {revision} via If-Match. A conflict requires reloading and reconciling your source manifest.</p>
+    <p>{saved ? "Loaded the saved server draft." : "Saved draft unavailable; supply the complete manifest."} Saving uses revision {revision} via If-Match. A conflict requires reloading and reconciling your source manifest.</p>
     <fieldset disabled={busy}><legend>Replace saved draft</legend>
       <label>Replacement draft JSON<textarea rows={10} value={draft} onChange={e => { setDraft(e.target.value); preview.reset(); setFreezeConfirmed(false); }} /></label>
       <button disabled={!draft.trim()} onClick={() => submit("patch")}>Save draft</button>
