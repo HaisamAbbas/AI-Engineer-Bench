@@ -897,16 +897,33 @@ class LocalAttemptRunner:
                     return VerifyRun(cancelled=False, kind=kind, error=value)
 
                 if wait_for_process([process.sentinel], timeout=0):
-                    if cancel_event is not None and cancel_event.is_set():
+                    # The child has exited. Bytes it wrote before exiting can
+                    # still be buffered in the channel: a large result is
+                    # fully written and then the child exits while the parent
+                    # has not yet read the tail - especially on a Unix
+                    # socketpair, whose send buffer holds only a few hundred KB,
+                    # so a multi-MiB result is drained across several reads and
+                    # the last chunk routinely remains buffered at exit. Drain
+                    # what is left before concluding there is no result;
+                    # _poll_worker_result returns the assembled result, or the
+                    # "closed" error once the channel reaches EOF, so this
+                    # cannot loop forever.
+                    while True:
+                        drained = LocalAttemptRunner._poll_worker_result(result_receiver, received)
+                        if drained is None:
+                            continue
                         LocalAttemptRunner._stop_isolated_process_tree(process)
                         tree_stopped = True
-                        return VerifyRun(cancelled=True, kind="cancelled")
-                    LocalAttemptRunner._stop_isolated_process_tree(process)
-                    tree_stopped = True
-                    return VerifyRun(
-                        cancelled=False, kind="crashed",
-                        error=f"evaluator subprocess exited (code {process.exitcode}) without reporting a result",
-                    )
+                        if cancel_event is not None and cancel_event.is_set():
+                            return VerifyRun(cancelled=True, kind="cancelled")
+                        if isinstance(drained, str):
+                            return VerifyRun(cancelled=False, kind="crashed", error=drained)
+                        kind, value = drained
+                        if kind == "ok":
+                            return VerifyRun(cancelled=False, kind="ok", evaluation=value)
+                        if kind == "cancelled":
+                            return VerifyRun(cancelled=True, kind="cancelled")
+                        return VerifyRun(cancelled=False, kind=kind, error=value)
                 time.sleep(0.1)
         finally:
             if started and not tree_stopped:

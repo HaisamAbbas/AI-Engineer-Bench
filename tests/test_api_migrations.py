@@ -24,9 +24,13 @@ DATABASE_URL = os.environ.get("AIEB_DATABASE_URL")
 def _alembic(*args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["AIEB_DATABASE_URL"] = DATABASE_URL or ""
-    python = ROOT / ".venv/Scripts/python.exe"
+    # The interpreter running these tests is the project venv's own Python
+    # (invoked as `.venv/Scripts/python.exe` on Windows or `.venv/bin/python`
+    # on Unix, or via `uv run python`); `sys.executable` resolves to it on
+    # every platform. A hardcoded `.venv/Scripts/python.exe` only exists on
+    # Windows and made this test fail with FileNotFoundError on the Ubuntu CI.
     return subprocess.run(
-        [str(python), "-m", "alembic", *args], cwd=API_DIR, env=env, capture_output=True, text=True,
+        [sys.executable, "-m", "alembic", *args], cwd=API_DIR, env=env, capture_output=True, text=True,
     )
 
 
