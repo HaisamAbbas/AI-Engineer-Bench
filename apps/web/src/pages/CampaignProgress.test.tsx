@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { CampaignProgress } from "./CampaignProgress";
 import { api } from "../api/client";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { mockApi } from "../test/mockApi";
+import { mockAuthenticatedApi as mockApi } from "../test/mockApi";
 const progress = { campaign_id: "camp", state: "running", planned_trials: 9, observed_trials: 5, attempts_by_phase: [{ state: "engineering", count: 3 }], attempts_by_terminal_status: [{ state: "pass", count: 2 }], work_items_by_state: [{ state: "leased", count: 3 }] };
 function renderPage() { return renderWithProviders(<CampaignProgress />, { route: "/admin/campaigns/camp/progress", path: "/admin/campaigns/:campaignId/progress" }); }
 

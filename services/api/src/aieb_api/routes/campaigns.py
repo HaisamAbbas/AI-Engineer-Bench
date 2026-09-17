@@ -20,7 +20,7 @@ from .. import budgets
 from ..auth import Identity, require_role
 from ..db import get_session
 from ..errors import conflict, invalid_request, not_found, stale_revision
-from ..idempotency import check_or_reserve, finalize
+from ..idempotency import check_or_reserve, finalize, principal_scope
 from ..models import (
     AttemptRow,
     BudgetReservationRow,
@@ -46,6 +46,7 @@ from ..schemas import (
     InvalidAttemptEntry,
     MatrixPreview,
     MatrixPreviewCell,
+    MatrixPreviewTrial,
 )
 from ..worker import repository
 
@@ -84,7 +85,8 @@ def create_campaign(
     session: Session = Depends(get_session),
 ) -> CampaignSummary:
     request_body = body.model_dump(mode="json")
-    cached = check_or_reserve(session, scope="POST /v1/campaigns", key=idempotency_key, body=request_body)
+    scope = principal_scope("POST /v1/campaigns", str(_current_user_id(session, identity)))
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
     if cached is not None:
         return CampaignSummary.model_validate(cached)
 
@@ -96,7 +98,7 @@ def create_campaign(
     session.flush()
     summary = _summary(row)
     replay = finalize(
-        session, scope="POST /v1/campaigns", key=idempotency_key, body=request_body,
+        session, scope=scope, key=idempotency_key, body=request_body,
         status_code=201, response_body=summary.model_dump(mode="json"),
     )
     return summary if replay is None else CampaignSummary.model_validate(replay)
@@ -107,6 +109,7 @@ def patch_campaign(
     campaign_id: UUID,
     body: CampaignPatchRequest,
     if_match: str | None = Header(default=None, alias="If-Match"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignSummary:
@@ -116,6 +119,17 @@ def patch_campaign(
         expected_revision = int(if_match.strip('"'))
     except ValueError as exc:
         raise invalid_request("If-Match must be an integer revision") from exc
+
+    # PATCH is a mutation like any other (spec section 22): a network-lost
+    # response must be replayable with the same key instead of risking a
+    # double edit. Optimistic concurrency (If-Match) and the idempotency
+    # record commit in ONE transaction below, so a replayed draft edit and
+    # its stored response are atomic with the business write.
+    request_body = {"draft": body.draft.model_dump(mode="json"), "if_match": expected_revision}
+    scope = principal_scope(f"PATCH /v1/campaigns/{campaign_id}", str(_current_user_id(session, identity)))
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+    if cached is not None:
+        return CampaignSummary.model_validate(cached)
 
     # Atomic conditional UPDATE: the state/revision guard is enforced by the database in the
     # same statement that writes the new draft, so two concurrent PATCH requests with the same
@@ -137,8 +151,12 @@ def patch_campaign(
         if row.state != "draft":
             raise conflict("only a draft campaign can be edited")
         raise stale_revision()
-    session.commit()
-    return _summary(updated)
+    summary = _summary(updated)
+    replay = finalize(
+        session, scope=scope, key=idempotency_key, body=request_body,
+        status_code=200, response_body=summary.model_dump(mode="json"),
+    )
+    return summary if replay is None else CampaignSummary.model_validate(replay)
 
 
 @router.post("/{campaign_id}/freeze", response_model=CampaignSummary)
@@ -154,7 +172,7 @@ def freeze(
         raise not_found()
 
     request_body = registry_body.model_dump(mode="json")
-    scope = f"POST /v1/campaigns/{campaign_id}/freeze"
+    scope = principal_scope(f"POST /v1/campaigns/{campaign_id}/freeze", str(_current_user_id(session, identity)))
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
     if cached is not None:
         return CampaignSummary.model_validate(cached)
@@ -168,16 +186,7 @@ def freeze(
     # alone and lock in a snapshot of a draft that is no longer current.
     observed_revision = row.revision
     draft = CampaignDraft.model_validate(row.draft)
-    task_rows = session.execute(select(TaskRevisionRow).where(TaskRevisionRow.slug.in_(draft.task_ids))).scalars().all()
-    entrant_rows = session.execute(select(EntrantRevisionRow).where(EntrantRevisionRow.slug.in_(draft.entrant_ids))).scalars().all()
-    tasks = {r.slug: validate_stored_manifest(TaskRevision, r.manifest, kind="task", row_id=r.id) for r in task_rows}
-    entrants = {r.slug: validate_stored_manifest(EntrantRevision, r.manifest, kind="entrant", row_id=r.id) for r in entrant_rows}
-    registry = Registry(
-        tasks=tasks, entrants=entrants,
-        cohorts={registry_body.cohort.id: registry_body.cohort},
-        protocols={registry_body.protocol.id: registry_body.protocol},
-        budgets={registry_body.budget.id: registry_body.budget},
-    )
+    registry = _registry_for(session, draft, registry_body)
     try:
         resolved = freeze_campaign(draft, registry)
     except PlanningError as exc:
@@ -239,12 +248,37 @@ def freeze(
 
 
 def _registry_for(session: Session, draft: CampaignDraft, registry_body: FreezeRegistry) -> Registry:
-    task_rows = session.execute(select(TaskRevisionRow).where(TaskRevisionRow.slug.in_(draft.task_ids))).scalars().all()
-    entrant_rows = session.execute(select(EntrantRevisionRow).where(EntrantRevisionRow.slug.in_(draft.entrant_ids))).scalars().all()
-    tasks = {r.slug: validate_stored_manifest(TaskRevision, r.manifest, kind="task", row_id=r.id) for r in task_rows}
-    entrants = {r.slug: validate_stored_manifest(EntrantRevision, r.manifest, kind="entrant", row_id=r.id) for r in entrant_rows}
+    """Resolve explicit stored-version pins without discarding historical rows.
+
+    Legacy unpinned requests fail closed when a slug is ambiguous. Preview and
+    freeze use the same pins; the resolved manifests retain the chosen versions.
+    """
+    def _unique_revision(model, slugs, kind, pins):
+        if set(pins) - set(slugs):
+            raise invalid_request(f"{kind} version pins include references outside the draft")
+        rows = session.execute(select(model).where(model.slug.in_(slugs))).scalars().all()
+        by_slug: dict[str, list] = {}
+        for row in rows:
+            by_slug.setdefault(row.slug, []).append(row)
+        resolved = {}
+        for slug in slugs:
+            versions = by_slug.get(slug, [])
+            if slug in pins:
+                versions = [row for row in versions if row.version == pins[slug]]
+            if not versions:
+                raise invalid_request(f"unresolved {kind} reference: {slug}")
+            if len(versions) > 1:
+                raise conflict(
+                    f"{kind} {slug} has {len(versions)} stored revisions; "
+                    f"supply an explicit {kind} version pin"
+                )
+            contract = TaskRevision if model is TaskRevisionRow else EntrantRevision
+            resolved[slug] = validate_stored_manifest(contract, versions[0].manifest, kind=kind, row_id=versions[0].id)
+        return resolved
+
     return Registry(
-        tasks=tasks, entrants=entrants,
+        tasks=_unique_revision(TaskRevisionRow, draft.task_ids, "task", registry_body.task_versions),
+        entrants=_unique_revision(EntrantRevisionRow, draft.entrant_ids, "entrant", registry_body.entrant_versions),
         cohorts={registry_body.cohort.id: registry_body.cohort},
         protocols={registry_body.protocol.id: registry_body.protocol},
         budgets={registry_body.budget.id: registry_body.budget},
@@ -260,7 +294,11 @@ def preview_matrix(
 ) -> MatrixPreview:
     """Exact trial matrix a freeze WOULD produce for this draft + registry,
     computed by the pure planner and NEVER persisted. Works on a draft campaign
-    so an operator can preview coverage/cost before committing to a freeze."""
+    so an operator can preview coverage/cost before committing to a freeze.
+
+    Deliberately NOT idempotency-keyed: this POST writes nothing, so it is a
+    read in disguise (the OpenAPI mutation audit lists it as non-persisting)
+    and there is no response to replay."""
     row = session.get(CampaignRow, campaign_id)
     if row is None:
         raise not_found()
@@ -273,6 +311,14 @@ def preview_matrix(
         raise invalid_request(f"campaign cannot be planned: {exc}") from exc
     task_id_by_digest = {task.digest(): task.id for task in resolved.tasks}
     entrant_id_by_digest = {entrant.digest(): entrant.id for entrant in resolved.entrants}
+    trials = [
+        MatrixPreviewTrial(
+            trial_id=trial.id, task_id=task_id_by_digest[trial.task_digest],
+            entrant_id=entrant_id_by_digest[trial.entrant_digest],
+            repetition_index=trial.repetition_index, order_index=trial.order_index,
+        )
+        for trial in resolved.trials
+    ]
     counts: dict[tuple[str, str], int] = {}
     for trial in resolved.trials:
         key = (task_id_by_digest[trial.task_digest], entrant_id_by_digest[trial.entrant_digest])
@@ -286,7 +332,7 @@ def preview_matrix(
         cohort_id=resolved.cohort.id, protocol_id=resolved.protocol.id,
         budget_profile_id=resolved.budget.id,
         reserved_budget_usd=budgets.reserved_amount_from_resolved(resolved.model_dump(mode="json")),
-        cells=cells,
+        cells=cells, trials=trials,
     )
 
 
@@ -305,18 +351,21 @@ def start_campaign(
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
     """frozen -> running: reserve the declared budget (estimated, not a hard
-    provider hold), enqueue the frozen trial matrix, then flip to running."""
-    row = session.get(CampaignRow, campaign_id)
+    provider hold), enqueue the frozen trial matrix, then flip to running.
+    All writes, including the idempotent response, share one transaction."""
+    row = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+    ).scalar_one_or_none()
     if row is None:
         raise not_found()
-    scope = f"POST /v1/campaigns/{campaign_id}/start"
+    scope = principal_scope(f"POST /v1/campaigns/{campaign_id}/start", str(_current_user_id(session, identity)))
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body={})
     if cached is not None:
         return CampaignStateResponse.model_validate(cached)
     if row.state != "frozen":
         raise conflict(f"only a frozen campaign can be started, not one in state {row.state}")
     budgets.reserve_campaign_budget(session, row)
-    repository.enqueue_frozen_campaign(session, campaign_id)  # commits the reservation + trial rows
+    repository.enqueue_frozen_campaign(session, campaign_id)  # flushed, not committed
     updated = session.execute(
         update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "frozen")
         .values(state="running").returning(CampaignRow)
@@ -327,7 +376,7 @@ def start_campaign(
             return CampaignStateResponse.model_validate(replay)
         current = session.get(CampaignRow, campaign_id)
         raise conflict(f"cannot start a campaign in state {current.state}")
-    session.commit()
+    session.flush()
     response = _state_response(
         session, updated,
         notice="Trials are enqueued and dispatching. Budget is reserved as an estimate, not a hard provider cap.",
@@ -336,7 +385,19 @@ def start_campaign(
     return response if replay is None else CampaignStateResponse.model_validate(replay)
 
 
-def _transition(session: Session, campaign_id: UUID, *, frm: tuple[str, ...], to: str, notice: str) -> CampaignStateResponse:
+def _transition(
+    session: Session, campaign_id: UUID, *, frm: tuple[str, ...], to: str, notice: str,
+    idempotency_scope: str, idempotency_key: str | None,
+) -> CampaignStateResponse:
+    """A replay-safe campaign state transition: the state write and the
+    idempotency record commit together, so a network-lost response can be
+    retried with the SAME key and receive the stored result (spec section
+    33/API-01 - every mutation, not only create/freeze/start, is replay-safe).
+    """
+    request_body: dict[str, str] = {"action": to}
+    cached = check_or_reserve(session, scope=idempotency_scope, key=idempotency_key, body=request_body)
+    if cached is not None:
+        return CampaignStateResponse.model_validate(cached)
     updated = session.execute(
         update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(frm))
         .values(state=to).returning(CampaignRow)
@@ -346,16 +407,23 @@ def _transition(session: Session, campaign_id: UUID, *, frm: tuple[str, ...], to
         if current is None:
             raise not_found()
         if current.state == to:
-            session.commit()
-            return _state_response(session, current, notice="Already in the requested state.")
+            session.flush()
+            response = _state_response(session, current, notice="Already in the requested state.")
+            replay = finalize(session, scope=idempotency_scope, key=idempotency_key, body=request_body,
+                status_code=200, response_body=response.model_dump(mode="json"))
+            return response if replay is None else CampaignStateResponse.model_validate(replay)
         raise conflict(f"cannot transition a campaign in state {current.state}")
-    session.commit()
-    return _state_response(session, updated, notice=notice)
+    session.flush()
+    response = _state_response(session, updated, notice=notice)
+    replay = finalize(session, scope=idempotency_scope, key=idempotency_key, body=request_body,
+        status_code=200, response_body=response.model_dump(mode="json"))
+    return response if replay is None else CampaignStateResponse.model_validate(replay)
 
 
 @router.post("/{campaign_id}/pause", response_model=CampaignStateResponse)
 def pause_campaign(
     campaign_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
@@ -364,34 +432,74 @@ def pause_campaign(
     return _transition(
         session, campaign_id, frm=("running",), to="paused",
         notice="Paused: in-flight leased work will finish; no new trials will be dispatched until resumed.",
+        idempotency_scope=principal_scope(
+            f"POST /v1/campaigns/{campaign_id}/pause", str(_current_user_id(session, identity))),
+        idempotency_key=idempotency_key,
     )
 
 
 @router.post("/{campaign_id}/resume", response_model=CampaignStateResponse)
 def resume_campaign(
     campaign_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
     return _transition(
         session, campaign_id, frm=("paused",), to="running", notice="Resumed: trial dispatch continues.",
+        idempotency_scope=principal_scope(
+            f"POST /v1/campaigns/{campaign_id}/resume", str(_current_user_id(session, identity))),
+        idempotency_key=idempotency_key,
     )
 
 
 @router.post("/{campaign_id}/cancel", response_model=CampaignStateResponse)
 def cancel_campaign_route(
     campaign_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
-    """frozen/running/paused -> cancelling: stop new dispatch and release the
-    budget reservation. Already-leased work finishes or expires naturally; the
-    worker finalizes the campaign to `cancelled` once nothing remains."""
-    row = session.get(CampaignRow, campaign_id)
+    """frozen/running/paused -> cancelling: stop new dispatch, keep the
+    budget reservation ACTIVE until the drain completes. Releasing at request
+    time would book the estimate back as available while leased work was
+    still capable of billing spend; the reservation is released only when no
+    ready/leased work remains. Already-leased work finishes or expires
+    naturally; the worker (or the idle sweep) finalizes the campaign to
+    `cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.
+    cancelling a frozen campaign that was never enqueued, or one whose last
+    item just finished - is finalized to `cancelled` directly in THIS
+    transaction, so it can never sit stuck in `cancelling` with no work item
+    left to trigger the worker's completion path."""
+    scope = principal_scope(f"POST /v1/campaigns/{campaign_id}/cancel", str(_current_user_id(session, identity)))
+    request_body = {"action": "cancelling"}
+    # Reserve/validate the key FIRST for every path below: a keyless mutation is
+    # rejected before any state change, and every branch commits its stored
+    # replay response with the business write.
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+    if cached is not None:
+        return CampaignStateResponse.model_validate(cached)
+    row = session.execute(select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()).scalar_one_or_none()
     if row is None:
         raise not_found()
     if row.state in ("cancelling", "cancelled"):
-        return _state_response(session, row, notice="Cancellation already in progress or complete.")
+        # A cancel arriving after the transition (or after the drain finished) is
+        # an idempotent success, not a conflict. If the campaign is still
+        # cancelling, this is also the checkpoint that finalizes a drain whose
+        # last item already completed.
+        if row.state == "cancelling":
+            repository.maybe_complete_cancellation(session, campaign_id, commit=False)
+        current = session.get(CampaignRow, campaign_id)
+        response = _state_response(
+            session, current,
+            notice=("Cancellation complete: nothing remained to drain; the reservation is released."
+                    if current.state == "cancelled" else
+                    "Cancellation already in progress: no new trials dispatch; the reservation is released "
+                    "once leased work finishes or expires."),
+        )
+        replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
+            status_code=200, response_body=response.model_dump(mode="json"))
+        return response if replay is None else CampaignStateResponse.model_validate(replay)
     updated = session.execute(
         update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused")))
         .values(state="cancelling").returning(CampaignRow)
@@ -399,12 +507,23 @@ def cancel_campaign_route(
     if updated is None:
         current = session.get(CampaignRow, campaign_id)
         raise conflict(f"cannot cancel a campaign in state {current.state}")
-    budgets.set_reservation_status(session, campaign_id, "released")
-    session.commit()
-    return _state_response(
-        session, updated,
-        notice="Cancelling: no new trials dispatch; leased work finishes or expires; the reservation is released and the campaign becomes cancelled once no work remains.",
-    )
+    # A drain with NOTHING outstanding completes in the SAME transaction as the
+    # transition: no work item will ever trigger the worker's completion path
+    # for it (a frozen campaign was never enqueued; a drained one has no items
+    # left), so leaving it `cancelling` would strand it forever.
+    if not repository.has_outstanding_work(session, campaign_id):
+        updated.state = "cancelled"
+        budgets.set_reservation_status(session, campaign_id, "released")
+        session.flush()
+        notice = "Cancelled immediately: the campaign had no ready or leased work to drain; the reservation is released."
+    else:
+        session.flush()
+        notice = ("Cancelling: no new trials dispatch; leased work finishes or expires; the reservation is released "
+                  "only after the drain completes.")
+    response = _state_response(session, updated, notice=notice)
+    replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
+        status_code=200, response_body=response.model_dump(mode="json"))
+    return response if replay is None else CampaignStateResponse.model_validate(replay)
 
 
 @router.get("/{campaign_id}", response_model=CampaignStateResponse)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .canonical import content_hash
-from .models import BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, ResolvedCampaign, TaskRevision, Trial
+from .models import AnyBudgetProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, ResolvedCampaign, TaskRevision, Trial
 
 
 class PlanningError(ValueError):
@@ -20,7 +20,7 @@ class Registry:
     entrants: dict[str, EntrantRevision]
     cohorts: dict[str, Cohort]
     protocols: dict[str, ProtocolRevision]
-    budgets: dict[str, BudgetProfile]
+    budgets: dict[str, AnyBudgetProfile]
 
 
 def _resolve(mapping: dict[str, object], identifier: str, kind: str) -> object:

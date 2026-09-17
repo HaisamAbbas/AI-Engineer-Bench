@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api, unwrap } from "../api/client";
 import { accessToken, beginSignIn, clearSession, configuredOidc } from "../api/oidc";
 
 // Admin access is enforced by the API; navigation does not imply authorization.
@@ -23,6 +25,16 @@ export function Layout() {
   const signedIn = accessToken() !== undefined;
   const [authError, setAuthError] = useState<string>();
   const [signingIn, setSigningIn] = useState(false);
+  // The server's view of WHO we are and WHAT it will authorize - never token
+  // claims decoded in the browser. A signed-in user with no provisioned roles
+  // is surfaced honestly ("No roles assigned"), not hidden.
+  const identity = useQuery({
+    queryKey: ["me"],
+    queryFn: () => unwrap(api.GET("/v1/me")),
+    enabled: signedIn,
+    retry: false,
+    staleTime: 60_000,
+  });
   async function signIn() {
     setAuthError(undefined);
     setSigningIn(true);
@@ -45,9 +57,18 @@ export function Layout() {
         </NavLink>
         {oidc !== undefined &&
           (signedIn ? (
-            <button type="button" onClick={() => { clearSession(); window.location.reload(); }}>
-              Sign out
-            </button>
+            <>
+              <button type="button" onClick={() => { clearSession(); window.location.reload(); }}>
+                Sign out
+              </button>
+              {identity.data && (
+                <p className="identity-status">
+                  Signed in as {identity.data.subject} —{" "}
+                  {identity.data.roles.length ? `Roles: ${identity.data.roles.join(", ")}` : "No roles assigned"}
+                </p>
+              )}
+              {identity.isError && <p role="status">Server identity lookup failed; role display may be stale.</p>}
+            </>
           ) : (
             <button type="button" disabled={signingIn} onClick={() => void signIn()}>
               Sign in
@@ -65,7 +86,9 @@ export function Layout() {
         </nav>
         <nav aria-label="Secondary">
           <ul>
-            {SECONDARY_NAV.map((item) => (
+            {SECONDARY_NAV.filter(item => item.to !== "/admin/campaigns" ||
+              (signedIn && !identity.isError && identity.data?.roles.some(role =>
+                ["operator", "reviewer", "administrator"].includes(role)))).map((item) => (
               <li key={item.to}>
                 <NavLink to={item.to}>{item.label}</NavLink>
               </li>

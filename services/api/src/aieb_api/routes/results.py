@@ -68,7 +68,9 @@ def list_releases(cursor: str | None = None, limit: int | None = None, session: 
     # spec section 4: "Default page selects the newest non-withdrawn
     # publication." The cursor comparison is flipped to match (each next
     # page is strictly OLDER than the last row already returned).
-    query = select(PublicationRow).where(PublicationRow.status == "published").order_by(
+    query = select(PublicationRow).where(
+        PublicationRow.status == "published", PublicationRow.publication_class == "ranked",
+    ).order_by(
         PublicationRow.created_at.desc(), PublicationRow.id.desc()
     ).limit(effective_limit + 1)
     if decoded is not None:
@@ -211,11 +213,14 @@ def get_publication_entrant_configuration(
 
 @router.get("/corrections", response_model=Page[CorrectionEntry])
 def list_corrections(cursor: str | None = None, limit: int | None = None, session: Session = Depends(get_session)) -> Page[CorrectionEntry]:
-    """Append-only corrections: a publication that supersedes an earlier one, or a
-    withdrawal - both are visible as a real query over `publication`, not fabricated
-    content. There is no free-text "reason" field on `publication` yet, so this cannot
-    yet show why a correction happened, only that one did (which publication superseded
-    which, and any withdrawal) - a disclosed gap, not an invented reason."""
+    """Append-only corrections and reasons: a publication that supersedes an
+    earlier one, or a withdrawal - both are visible as a real query over
+    `publication`, not fabricated content. Each entry carries the RECORDED
+    reasons (the correction/supersession rationale frozen at publish time and,
+    for a withdrawal, the withdrawal rationale - two distinct fields, never
+    one mutated reason), the before/after publication IDs (`supersedes_id` ->
+    `id`), and the publication class so a non-ranking publication is visibly
+    labelled here too."""
     effective_limit = clamp_limit(limit)
     decoded = decode_cursor(cursor)
     query = select(PublicationRow).where(
@@ -227,7 +232,11 @@ def list_corrections(cursor: str | None = None, limit: int | None = None, sessio
     rows = list(session.execute(query).scalars())
     page_rows, next_cursor = page(rows, effective_limit)
     items = [
-        CorrectionEntry(id=row.id, campaign_id=row.campaign_id, status=row.status, supersedes_id=row.supersedes_id, created_at=row.created_at.isoformat())
+        CorrectionEntry(
+            id=row.id, campaign_id=row.campaign_id, status=row.status, supersedes_id=row.supersedes_id,
+            created_at=row.created_at.isoformat(), reason=row.reason,
+            withdrawal_reason=row.withdrawal_reason, publication_class=row.publication_class,
+        )
         for row in page_rows
     ]
     return Page(items=items, next_cursor=next_cursor)

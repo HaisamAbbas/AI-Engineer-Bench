@@ -177,3 +177,17 @@ def require_role(*allowed_roles: str, scope: str = GLOBAL_SCOPE):
         return identity
 
     return dependency
+
+
+def current_principal_id(session: Session, identity: Identity) -> str | None:
+    """The server-resolved user id for an identity, or None if the identity has
+    no provisioned `users` row. This is the string idempotency scopes are
+    keyed on: resolved against the local users/role_bindings tables, never
+    taken from a bearer-token claim, so two identities cannot collide by
+    asserting the same claim."""
+    from .models import User
+
+    user_id = session.execute(
+        select(User.id).where(User.oidc_issuer == identity.issuer, User.oidc_subject == identity.subject)
+    ).scalar_one_or_none()
+    return str(user_id) if user_id is not None else None

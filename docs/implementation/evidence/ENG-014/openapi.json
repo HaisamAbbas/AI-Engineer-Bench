@@ -27,6 +27,16 @@
             ],
             "title": "Cost Per Resolution"
           },
+          "coverage_disclosure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CoverageDisclosure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deadline_rate": {
             "anyOf": [
               {
@@ -362,8 +372,54 @@
         "title": "ApplicationProfile",
         "type": "object"
       },
+      "AttemptCoverageDisclosure": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "cost_by_role": {
+            "additionalProperties": {
+              "enum": [
+                "reported",
+                "estimated",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "propertyNames": {
+              "enum": [
+                "engineer",
+                "dev_application",
+                "verifier_application",
+                "verifier_judge"
+              ]
+            },
+            "title": "Cost By Role",
+            "type": "object"
+          },
+          "trace": {
+            "enum": [
+              "present",
+              "missing"
+            ],
+            "title": "Trace",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "trace",
+          "cost_by_role"
+        ],
+        "title": "AttemptCoverageDisclosure",
+        "type": "object"
+      },
       "BudgetProfile": {
         "additionalProperties": false,
+        "description": "`aieb.budget/v1` - UNCHANGED byte-compatible contract.\n\nDo not add fields here: canonical digests hash explicit nulls\n(`canonical._normalise`), so any new field - even one defaulted to null -\nwould change the digest of every existing frozen `aieb.budget/v1`\nmanifest and invalidate stored campaign identities. Environment cost\nbounds arrived with `aieb.budget/v2` (see `BudgetProfileV2`).",
         "properties": {
           "engineer_cpu": {
             "exclusiveMinimum": 0.0,
@@ -417,6 +473,69 @@
           "per_role_budget_usd"
         ],
         "title": "BudgetProfile",
+        "type": "object"
+      },
+      "BudgetProfileV2": {
+        "additionalProperties": false,
+        "description": "`aieb.budget/v2` - adds the environment upper bound the architecture's\nupper-bound reservation formula requires (planned trials x (engineer cap +\ndevelopment application cap + verifier cap + environment upper bound),\nwith an explicit infrastructure replacement reserve). A new schema version,\nnot an optional field on v1, preserves digest compatibility for every\nexisting frozen v1 manifest. The bound is REQUIRED: a reservation computed\nwithout it would understate the declared upper bound.",
+        "properties": {
+          "engineer_cpu": {
+            "exclusiveMinimum": 0.0,
+            "title": "Engineer Cpu",
+            "type": "integer"
+          },
+          "engineer_memory_mb": {
+            "exclusiveMinimum": 0.0,
+            "title": "Engineer Memory Mb",
+            "type": "integer"
+          },
+          "engineer_wall_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Engineer Wall Seconds",
+            "type": "integer"
+          },
+          "environment_upper_bound_usd": {
+            "title": "Environment Upper Bound Usd",
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[a-z0-9][a-z0-9._-]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "per_role_budget_usd": {
+            "items": {
+              "$ref": "#/components/schemas/RoleBudget"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Per Role Budget Usd",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "aieb.budget/v2",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "verification_wall_seconds": {
+            "exclusiveMinimum": 0.0,
+            "title": "Verification Wall Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "engineer_wall_seconds",
+          "verification_wall_seconds",
+          "engineer_cpu",
+          "engineer_memory_mb",
+          "per_role_budget_usd",
+          "environment_upper_bound_usd"
+        ],
+        "title": "BudgetProfileV2",
         "type": "object"
       },
       "BudgetReservationSummary": {
@@ -975,6 +1094,32 @@
             "title": "Id",
             "type": "string"
           },
+          "publication_class": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ranked",
+                  "non_ranked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Class"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -990,6 +1135,17 @@
               }
             ],
             "title": "Supersedes Id"
+          },
+          "withdrawal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawal Reason"
           }
         },
         "required": [
@@ -1041,6 +1197,87 @@
           "created_at"
         ],
         "title": "CorrectionRunSummary",
+        "type": "object"
+      },
+      "CoverageDisclosure": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptCoverageDisclosure"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "hard_cost_eligible": {
+            "title": "Hard Cost Eligible",
+            "type": "boolean"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "aieb.coverage-disclosure/v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "attempts",
+          "hard_cost_eligible",
+          "limitations"
+        ],
+        "title": "CoverageDisclosure",
+        "type": "object"
+      },
+      "CurrentIdentity": {
+        "additionalProperties": false,
+        "properties": {
+          "authenticated": {
+            "const": true,
+            "title": "Authenticated",
+            "type": "boolean"
+          },
+          "issuer": {
+            "title": "Issuer",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Id"
+          }
+        },
+        "required": [
+          "authenticated",
+          "subject",
+          "issuer",
+          "user_id",
+          "roles"
+        ],
+        "title": "CurrentIdentity",
         "type": "object"
       },
       "DependencyMode": {
@@ -1339,13 +1576,37 @@
         "description": "Cohort/protocol/budget are versioned configuration, not yet persisted hosted tables\nin this ticket's schema (section 30 lists task/entrant/campaign/etc. only); the operator\nclient supplies the exact revisions to resolve against, mirroring the local CLI planner.",
         "properties": {
           "budget": {
-            "$ref": "#/components/schemas/BudgetProfile"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetProfile"
+              },
+              {
+                "$ref": "#/components/schemas/BudgetProfileV2"
+              }
+            ],
+            "title": "Budget"
           },
           "cohort": {
             "$ref": "#/components/schemas/Cohort"
           },
+          "entrant_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Entrant Versions",
+            "type": "object"
+          },
           "protocol": {
             "$ref": "#/components/schemas/ProtocolRevision"
+          },
+          "task_versions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Task Versions",
+            "type": "object"
           }
         },
         "required": [
@@ -1756,6 +2017,13 @@
           "trial_count": {
             "title": "Trial Count",
             "type": "integer"
+          },
+          "trials": {
+            "items": {
+              "$ref": "#/components/schemas/MatrixPreviewTrial"
+            },
+            "title": "Trials",
+            "type": "array"
           }
         },
         "required": [
@@ -1765,7 +2033,8 @@
           "protocol_id",
           "budget_profile_id",
           "reserved_budget_usd",
-          "cells"
+          "cells",
+          "trials"
         ],
         "title": "MatrixPreview",
         "type": "object"
@@ -1793,6 +2062,42 @@
           "repetitions"
         ],
         "title": "MatrixPreviewCell",
+        "type": "object"
+      },
+      "MatrixPreviewTrial": {
+        "additionalProperties": false,
+        "description": "The exact trial a freeze WOULD create: deterministic identity, cell\nmembership, repetition index and dispatch position (spec section 28/13).",
+        "properties": {
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "order_index": {
+            "title": "Order Index",
+            "type": "integer"
+          },
+          "repetition_index": {
+            "title": "Repetition Index",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "trial_id": {
+            "format": "uuid",
+            "title": "Trial Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trial_id",
+          "task_id",
+          "entrant_id",
+          "repetition_index",
+          "order_index"
+        ],
+        "title": "MatrixPreviewTrial",
         "type": "object"
       },
       "MethodologyRevisionResponse": {
@@ -2450,6 +2755,17 @@
               }
             ]
           },
+          "correction_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Reason"
+          },
           "frozen_entrants": {
             "items": {
               "$ref": "#/components/schemas/FrozenEntrantEntry"
@@ -2474,6 +2790,15 @@
               }
             ],
             "title": "Notice"
+          },
+          "publication_class": {
+            "default": "ranked",
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
           },
           "publication_id": {
             "format": "uuid",
@@ -2509,6 +2834,17 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "withdrawal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawal Reason"
           }
         },
         "required": [
@@ -2599,6 +2935,14 @@
             "title": "Id",
             "type": "string"
           },
+          "publication_class": {
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
+          },
           "published_publication_id": {
             "anyOf": [
               {
@@ -2658,7 +3002,8 @@
           "review_kind",
           "supersedes_publication_id",
           "published_publication_id",
-          "created_at"
+          "created_at",
+          "publication_class"
         ],
         "title": "PublicationPreparationSummary",
         "type": "object"
@@ -2688,6 +3033,15 @@
               }
             ],
             "title": "Correction Run Id"
+          },
+          "publication_class": {
+            "default": "ranked",
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
           },
           "supersedes_publication_id": {
             "anyOf": [
@@ -2829,6 +3183,11 @@
             "title": "Decision",
             "type": "string"
           },
+          "independence_attestation": {
+            "default": false,
+            "title": "Independence Attestation",
+            "type": "boolean"
+          },
           "notes": {
             "anyOf": [
               {
@@ -2839,19 +3198,10 @@
               }
             ],
             "title": "Notes"
-          },
-          "review_kind": {
-            "enum": [
-              "single_maintainer",
-              "independent"
-            ],
-            "title": "Review Kind",
-            "type": "string"
           }
         },
         "required": [
-          "decision",
-          "review_kind"
+          "decision"
         ],
         "title": "PublicationReviewRequest",
         "type": "object"
@@ -3891,6 +4241,22 @@
               ],
               "title": "If-Match"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -3933,7 +4299,7 @@
     },
     "/v1/campaigns/{campaign_id}/cancel": {
       "post": {
-        "description": "frozen/running/paused -> cancelling: stop new dispatch and release the\nbudget reservation. Already-leased work finishes or expires naturally; the\nworker finalizes the campaign to `cancelled` once nothing remains.",
+        "description": "frozen/running/paused -> cancelling: stop new dispatch, keep the\nbudget reservation ACTIVE until the drain completes. Releasing at request\ntime would book the estimate back as available while leased work was\nstill capable of billing spend; the reservation is released only when no\nready/leased work remains. Already-leased work finishes or expires\nnaturally; the worker (or the idle sweep) finalizes the campaign to\n`cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.\ncancelling a frozen campaign that was never enqueued, or one whose last\nitem just finished - is finalized to `cancelled` directly in THIS\ntransaction, so it can never sit stuck in `cancelling` with no work item\nleft to trigger the worker's completion path.",
         "operationId": "cancel_campaign_route_v1_campaigns__campaign_id__cancel_post",
         "parameters": [
           {
@@ -3944,6 +4310,22 @@
               "format": "uuid",
               "title": "Campaign Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -4237,6 +4619,22 @@
               "title": "Campaign Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "responses": {
@@ -4269,7 +4667,7 @@
     },
     "/v1/campaigns/{campaign_id}/preview": {
       "post": {
-        "description": "Exact trial matrix a freeze WOULD produce for this draft + registry,\ncomputed by the pure planner and NEVER persisted. Works on a draft campaign\nso an operator can preview coverage/cost before committing to a freeze.",
+        "description": "Exact trial matrix a freeze WOULD produce for this draft + registry,\ncomputed by the pure planner and NEVER persisted. Works on a draft campaign\nso an operator can preview coverage/cost before committing to a freeze.\n\nDeliberately NOT idempotency-keyed: this POST writes nothing, so it is a\nread in disguise (the OpenAPI mutation audit lists it as non-persisting)\nand there is no response to replay.",
         "operationId": "preview_matrix_v1_campaigns__campaign_id__preview_post",
         "parameters": [
           {
@@ -4377,6 +4775,22 @@
               "title": "Campaign Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -4430,6 +4844,22 @@
               "title": "Campaign Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -4482,6 +4912,22 @@
               "format": "uuid",
               "title": "Campaign Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -4560,7 +5006,7 @@
     },
     "/v1/campaigns/{campaign_id}/start": {
       "post": {
-        "description": "frozen -> running: reserve the declared budget (estimated, not a hard\nprovider hold), enqueue the frozen trial matrix, then flip to running.",
+        "description": "frozen -> running: reserve the declared budget (estimated, not a hard\nprovider hold), enqueue the frozen trial matrix, then flip to running.\nAll writes, including the idempotent response, share one transaction.",
         "operationId": "start_campaign_v1_campaigns__campaign_id__start_post",
         "parameters": [
           {
@@ -4745,7 +5191,7 @@
     },
     "/v1/corrections": {
       "get": {
-        "description": "Append-only corrections: a publication that supersedes an earlier one, or a\nwithdrawal - both are visible as a real query over `publication`, not fabricated\ncontent. There is no free-text \"reason\" field on `publication` yet, so this cannot\nyet show why a correction happened, only that one did (which publication superseded\nwhich, and any withdrawal) - a disclosed gap, not an invented reason.",
+        "description": "Append-only corrections and reasons: a publication that supersedes an\nearlier one, or a withdrawal - both are visible as a real query over\n`publication`, not fabricated content. Each entry carries the RECORDED\nreasons (the correction/supersession rationale frozen at publish time and,\nfor a withdrawal, the withdrawal rationale - two distinct fields, never\none mutated reason), the before/after publication IDs (`supersedes_id` ->\n`id`), and the publication class so a non-ranking publication is visibly\nlabelled here too.",
         "operationId": "list_corrections_v1_corrections_get",
         "parameters": [
           {
@@ -4942,6 +5388,28 @@
         ]
       }
     },
+    "/v1/me": {
+      "get": {
+        "description": "401 when unconfigured/unauthenticated (fail closed, via get_identity);\na provisioned identity returns its server-resolved roles. An identity with\nno `users` row reports zero roles - authenticating grants nothing by\nitself (auth.py's rule), and the UI surfaces that honestly.",
+        "operationId": "current_identity_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentIdentity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Current Identity",
+        "tags": [
+          "identity"
+        ]
+      }
+    },
     "/v1/methodology": {
       "get": {
         "operationId": "list_methodology_revisions_v1_methodology_get",
@@ -5108,6 +5576,22 @@
               "format": "uuid",
               "title": "Preparation Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -5343,6 +5827,22 @@
               "format": "uuid",
               "title": "Publication Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],

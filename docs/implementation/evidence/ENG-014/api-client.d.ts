@@ -67,9 +67,17 @@ export interface paths {
         put?: never;
         /**
          * Cancel Campaign Route
-         * @description frozen/running/paused -> cancelling: stop new dispatch and release the
-         *     budget reservation. Already-leased work finishes or expires naturally; the
-         *     worker finalizes the campaign to `cancelled` once nothing remains.
+         * @description frozen/running/paused -> cancelling: stop new dispatch, keep the
+         *     budget reservation ACTIVE until the drain completes. Releasing at request
+         *     time would book the estimate back as available while leased work was
+         *     still capable of billing spend; the reservation is released only when no
+         *     ready/leased work remains. Already-leased work finishes or expires
+         *     naturally; the worker (or the idle sweep) finalizes the campaign to
+         *     `cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.
+         *     cancelling a frozen campaign that was never enqueued, or one whose last
+         *     item just finished - is finalized to `cancelled` directly in THIS
+         *     transaction, so it can never sit stuck in `cancelling` with no work item
+         *     left to trigger the worker's completion path.
          */
         post: operations["cancel_campaign_route_v1_campaigns__campaign_id__cancel_post"];
         delete?: never;
@@ -181,6 +189,10 @@ export interface paths {
          * @description Exact trial matrix a freeze WOULD produce for this draft + registry,
          *     computed by the pure planner and NEVER persisted. Works on a draft campaign
          *     so an operator can preview coverage/cost before committing to a freeze.
+         *
+         *     Deliberately NOT idempotency-keyed: this POST writes nothing, so it is a
+         *     read in disguise (the OpenAPI mutation audit lists it as non-persisting)
+         *     and there is no response to replay.
          */
         post: operations["preview_matrix_v1_campaigns__campaign_id__preview_post"];
         delete?: never;
@@ -287,6 +299,7 @@ export interface paths {
          * Start Campaign
          * @description frozen -> running: reserve the declared budget (estimated, not a hard
          *     provider hold), enqueue the frozen trial matrix, then flip to running.
+         *     All writes, including the idempotent response, share one transaction.
          */
         post: operations["start_campaign_v1_campaigns__campaign_id__start_post"];
         delete?: never;
@@ -366,11 +379,14 @@ export interface paths {
         };
         /**
          * List Corrections
-         * @description Append-only corrections: a publication that supersedes an earlier one, or a
-         *     withdrawal - both are visible as a real query over `publication`, not fabricated
-         *     content. There is no free-text "reason" field on `publication` yet, so this cannot
-         *     yet show why a correction happened, only that one did (which publication superseded
-         *     which, and any withdrawal) - a disclosed gap, not an invented reason.
+         * @description Append-only corrections and reasons: a publication that supersedes an
+         *     earlier one, or a withdrawal - both are visible as a real query over
+         *     `publication`, not fabricated content. Each entry carries the RECORDED
+         *     reasons (the correction/supersession rationale frozen at publish time and,
+         *     for a withdrawal, the withdrawal rationale - two distinct fields, never
+         *     one mutated reason), the before/after publication IDs (`supersedes_id` ->
+         *     `id`), and the publication class so a non-ranking publication is visibly
+         *     labelled here too.
          */
         get: operations["list_corrections_v1_corrections_get"];
         put?: never;
@@ -444,6 +460,29 @@ export interface paths {
         };
         /** Get Entrant Revision */
         get: operations["get_entrant_revision_v1_entrants__entrant_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current Identity
+         * @description 401 when unconfigured/unauthenticated (fail closed, via get_identity);
+         *     a provisioned identity returns its server-resolved roles. An identity with
+         *     no `users` row reports zero roles - authenticating grants nothing by
+         *     itself (auth.py's rule), and the UI surfaces that honestly.
+         */
+        get: operations["current_identity_v1_me_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -748,6 +787,7 @@ export interface components {
             complete_for_rank: boolean;
             /** Cost Per Resolution */
             cost_per_resolution: number | null;
+            coverage_disclosure?: components["schemas"]["CoverageDisclosure"] | null;
             /** Deadline Rate */
             deadline_rate: number | null;
             /** Infrastructure Attrition */
@@ -823,7 +863,33 @@ export interface components {
             /** Model Profile Id */
             model_profile_id: string;
         };
-        /** BudgetProfile */
+        /** AttemptCoverageDisclosure */
+        AttemptCoverageDisclosure: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Cost By Role */
+            cost_by_role: {
+                [key: string]: "reported" | "estimated" | "unknown";
+            };
+            /**
+             * Trace
+             * @enum {string}
+             */
+            trace: "present" | "missing";
+        };
+        /**
+         * BudgetProfile
+         * @description `aieb.budget/v1` - UNCHANGED byte-compatible contract.
+         *
+         *     Do not add fields here: canonical digests hash explicit nulls
+         *     (`canonical._normalise`), so any new field - even one defaulted to null -
+         *     would change the digest of every existing frozen `aieb.budget/v1`
+         *     manifest and invalidate stored campaign identities. Environment cost
+         *     bounds arrived with `aieb.budget/v2` (see `BudgetProfileV2`).
+         */
         BudgetProfile: {
             /** Engineer Cpu */
             engineer_cpu: number;
@@ -840,6 +906,37 @@ export interface components {
              * @constant
              */
             schema_version: "aieb.budget/v1";
+            /** Verification Wall Seconds */
+            verification_wall_seconds: number;
+        };
+        /**
+         * BudgetProfileV2
+         * @description `aieb.budget/v2` - adds the environment upper bound the architecture's
+         *     upper-bound reservation formula requires (planned trials x (engineer cap +
+         *     development application cap + verifier cap + environment upper bound),
+         *     with an explicit infrastructure replacement reserve). A new schema version,
+         *     not an optional field on v1, preserves digest compatibility for every
+         *     existing frozen v1 manifest. The bound is REQUIRED: a reservation computed
+         *     without it would understate the declared upper bound.
+         */
+        BudgetProfileV2: {
+            /** Engineer Cpu */
+            engineer_cpu: number;
+            /** Engineer Memory Mb */
+            engineer_memory_mb: number;
+            /** Engineer Wall Seconds */
+            engineer_wall_seconds: number;
+            /** Environment Upper Bound Usd */
+            environment_upper_bound_usd: string;
+            /** Id */
+            id: string;
+            /** Per Role Budget Usd */
+            per_role_budget_usd: components["schemas"]["RoleBudget"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "aieb.budget/v2";
             /** Verification Wall Seconds */
             verification_wall_seconds: number;
         };
@@ -1047,10 +1144,16 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Publication Class */
+            publication_class?: ("ranked" | "non_ranked") | null;
+            /** Reason */
+            reason?: string | null;
             /** Status */
             status: string;
             /** Supersedes Id */
             supersedes_id: string | null;
+            /** Withdrawal Reason */
+            withdrawal_reason?: string | null;
         };
         /** CorrectionRunSummary */
         CorrectionRunSummary: {
@@ -1073,6 +1176,36 @@ export interface components {
              * @enum {string}
              */
             status: "running" | "completed" | "failed";
+        };
+        /** CoverageDisclosure */
+        CoverageDisclosure: {
+            /** Attempts */
+            attempts: components["schemas"]["AttemptCoverageDisclosure"][];
+            /** Hard Cost Eligible */
+            hard_cost_eligible: boolean;
+            /** Limitations */
+            limitations: string[];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "aieb.coverage-disclosure/v1";
+        };
+        /** CurrentIdentity */
+        CurrentIdentity: {
+            /**
+             * Authenticated
+             * @constant
+             */
+            authenticated: true;
+            /** Issuer */
+            issuer: string;
+            /** Roles */
+            roles: string[];
+            /** Subject */
+            subject: string;
+            /** User Id */
+            user_id: string | null;
         };
         /**
          * DependencyMode
@@ -1221,9 +1354,24 @@ export interface components {
          *     client supplies the exact revisions to resolve against, mirroring the local CLI planner.
          */
         FreezeRegistry: {
-            budget: components["schemas"]["BudgetProfile"];
+            /** Budget */
+            budget: components["schemas"]["BudgetProfile"] | components["schemas"]["BudgetProfileV2"];
             cohort: components["schemas"]["Cohort"];
+            /**
+             * Entrant Versions
+             * @default {}
+             */
+            entrant_versions: {
+                [key: string]: string;
+            };
             protocol: components["schemas"]["ProtocolRevision"];
+            /**
+             * Task Versions
+             * @default {}
+             */
+            task_versions: {
+                [key: string]: string;
+            };
         };
         /**
          * FrozenEntrantEntry
@@ -1464,6 +1612,8 @@ export interface components {
             reserved_budget_usd: string | null;
             /** Trial Count */
             trial_count: number;
+            /** Trials */
+            trials: components["schemas"]["MatrixPreviewTrial"][];
         };
         /**
          * MatrixPreviewCell
@@ -1478,6 +1628,26 @@ export interface components {
             repetitions: number;
             /** Task Id */
             task_id: string;
+        };
+        /**
+         * MatrixPreviewTrial
+         * @description The exact trial a freeze WOULD create: deterministic identity, cell
+         *     membership, repetition index and dispatch position (spec section 28/13).
+         */
+        MatrixPreviewTrial: {
+            /** Entrant Id */
+            entrant_id: string;
+            /** Order Index */
+            order_index: number;
+            /** Repetition Index */
+            repetition_index: number;
+            /** Task Id */
+            task_id: string;
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
         };
         /** MethodologyRevisionResponse */
         MethodologyRevisionResponse: {
@@ -1731,12 +1901,20 @@ export interface components {
              */
             campaign_id: string;
             cohort: components["schemas"]["CohortIdentity"] | null;
+            /** Correction Reason */
+            correction_reason?: string | null;
             /** Frozen Entrants */
             frozen_entrants: components["schemas"]["FrozenEntrantEntry"][];
             /** Frozen Tasks */
             frozen_tasks: components["schemas"]["FrozenTaskEntry"][];
             /** Notice */
             notice?: string | null;
+            /**
+             * Publication Class
+             * @default ranked
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /**
              * Publication Id
              * Format: uuid
@@ -1753,6 +1931,8 @@ export interface components {
             snapshot_digest: string;
             /** Status */
             status: string;
+            /** Withdrawal Reason */
+            withdrawal_reason?: string | null;
         };
         /** PublicationPreparationDetail */
         PublicationPreparationDetail: {
@@ -1785,6 +1965,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * Publication Class
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /** Published Publication Id */
             published_publication_id: string | null;
             /** Review Kind */
@@ -1805,6 +1990,12 @@ export interface components {
             correction_reason?: string | null;
             /** Correction Run Id */
             correction_run_id?: string | null;
+            /**
+             * Publication Class
+             * @default ranked
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /** Supersedes Publication Id */
             supersedes_publication_id?: string | null;
         };
@@ -1854,13 +2045,13 @@ export interface components {
              * @enum {string}
              */
             decision: "approve" | "reject";
+            /**
+             * Independence Attestation
+             * @default false
+             */
+            independence_attestation: boolean;
             /** Notes */
             notes?: string | null;
-            /**
-             * Review Kind
-             * @enum {string}
-             */
-            review_kind: "single_maintainer" | "independent";
         };
         /** PublicationSignature */
         PublicationSignature: {
@@ -2287,6 +2478,7 @@ export interface operations {
             query?: never;
             header?: {
                 "If-Match"?: string | null;
+                "Idempotency-Key"?: string | null;
             };
             path: {
                 campaign_id: string;
@@ -2322,7 +2514,9 @@ export interface operations {
     cancel_campaign_route_v1_campaigns__campaign_id__cancel_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 campaign_id: string;
             };
@@ -2491,7 +2685,9 @@ export interface operations {
     pause_campaign_v1_campaigns__campaign_id__pause_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 campaign_id: string;
             };
@@ -2588,7 +2784,9 @@ export interface operations {
     prepare_publication_v1_campaigns__campaign_id__publications_prepare_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 campaign_id: string;
             };
@@ -2623,7 +2821,9 @@ export interface operations {
     regrade_v1_campaigns__campaign_id__regrade_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 campaign_id: string;
             };
@@ -2658,7 +2858,9 @@ export interface operations {
     resume_campaign_v1_campaigns__campaign_id__resume_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 campaign_id: string;
             };
@@ -2941,6 +3143,26 @@ export interface operations {
             };
         };
     };
+    current_identity_v1_me_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CurrentIdentity"];
+                };
+            };
+        };
+    };
     list_methodology_revisions_v1_methodology_get: {
         parameters: {
             query?: never;
@@ -3057,7 +3279,9 @@ export interface operations {
     review_publication_v1_publications_preparations__preparation_id__review_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 preparation_id: string;
             };
@@ -3217,7 +3441,9 @@ export interface operations {
     withdraw_publication_v1_publications__publication_id__withdraw_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 publication_id: string;
             };

@@ -51,6 +51,9 @@ def build_publication_export(session: Session, publication_id: UUID) -> Publicat
             review_kind=publication.review_kind,
         )
     notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if publication.status == "withdrawn" else None
+    if publication.publication_class == "non_ranked":
+        rank_notice = "this publication is explicitly non-ranking and is excluded from canonical ranks"
+        notice = f"{notice}; {rank_notice}" if notice else rank_notice
     return PublicationExport(
         publication_id=publication.id,
         campaign_id=publication.campaign_id,
@@ -63,4 +66,7 @@ def build_publication_export(session: Session, publication_id: UUID) -> Publicat
         signature=signature,
         runs=runs,
         notice=notice,
+        publication_class=publication.publication_class,
+        correction_reason=publication.reason,
+        withdrawal_reason=publication.withdrawal_reason,
     )

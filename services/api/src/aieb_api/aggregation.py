@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .models import (
+    AttemptEventRow,
     AttemptRow,
     CampaignRow,
     CandidateRow,
@@ -279,6 +280,55 @@ def campaign_observations(
     return tuple(observations)
 
 
+def _coverage_disclosure(session: Session, campaign_id: UUID) -> dict:
+    """Disclose recorded evidence, not a claim of complete instrumentation.
+
+    Every persisted attempt is included, including replacements and corrections.
+    No request identities, receipt values, or trace payloads enter public data.
+    A present lifecycle event does not prove full action-trace coverage; a known
+    receipt does not prove every provider request was metered.
+    """
+    attempts = session.execute(
+        select(AttemptRow).join(TrialRow, TrialRow.id == AttemptRow.trial_id)
+        .where(TrialRow.campaign_id == campaign_id).order_by(AttemptRow.id)
+    ).scalars().all()
+    roles = ("engineer", "dev_application", "verifier_application", "verifier_judge")
+    disclosures = []
+    for attempt in attempts:
+        costs = {}
+        for role in roles:
+            receipts = session.execute(
+                select(UsageReceiptRow.reported_cost_usd, UsageReceiptRow.estimated_cost_usd)
+                .select_from(UsageRequestRow)
+                .outerjoin(UsageReceiptRow, UsageReceiptRow.usage_request_id == UsageRequestRow.id)
+                .where(UsageRequestRow.attempt_id == attempt.id, UsageRequestRow.actor_role == role)
+            ).all()
+            if not receipts or any(reported is None and estimated is None for reported, estimated in receipts):
+                costs[role] = "unknown"
+            elif any(reported is None for reported, _ in receipts):
+                costs[role] = "estimated"
+            else:
+                costs[role] = "reported"
+        has_events = session.execute(select(AttemptEventRow.id).where(
+            AttemptEventRow.attempt_id == attempt.id,
+        ).limit(1)).scalar_one_or_none() is not None
+        disclosures.append({
+            "attempt_id": str(attempt.id),
+            "trace": "present" if has_events else "missing",
+            "cost_by_role": costs,
+        })
+    return {
+        "schema_version": "aieb.coverage-disclosure/v1",
+        "attempts": disclosures,
+        "hard_cost_eligible": False,
+        "limitations": [
+            "Trace presence records lifecycle evidence, not complete action-trace coverage.",
+            "Cost labels describe recorded requests and retries only; absent role accounting is unknown, not zero.",
+            "Complete provider accounting and hard budget enforcement are not established by this publication path.",
+        ],
+    }
+
+
 def aggregate_campaign_snapshot(
     session: Session, campaign_id: UUID, correction_run_id: UUID | None = None,
 ) -> dict:
@@ -303,4 +353,6 @@ def aggregate_campaign_snapshot(
     if isinstance(draft.get("repetitions"), int):
         required_repetitions = draft["repetitions"]
 
-    return summarize(observations, required_repetitions=required_repetitions, planned_cells=planned_cells)
+    snapshot = summarize(observations, required_repetitions=required_repetitions, planned_cells=planned_cells)
+    snapshot["coverage_disclosure"] = _coverage_disclosure(session, campaign_id)
+    return snapshot

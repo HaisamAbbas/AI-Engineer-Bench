@@ -51,6 +51,19 @@ def run_worker(
             leased: LeasedWork | None = repository.claim_work_item(session, worker_id=worker_id, lease_seconds=lease_seconds)
         if leased is None:
             log_event("worker.idle", worker_id=worker_id)
+            # The idle sweep is what un-sticks campaigns whose lifecycle can
+            # no longer be advanced by finishing work: a cancelling drain
+            # whose last item completed (or a frozen campaign cancelled with
+            # no work items at all), and a running/paused campaign whose
+            # final item finished between after-processing checkpoints or
+            # while paused (resume creates no new work, so only this path can
+            # finalize it). Bounded and SKIP LOCKED: concurrent idle workers
+            # claim different campaigns and never double-finalize.
+            with session_factory() as session:
+                finalized = repository.finalize_stalled_campaigns(session)
+            if finalized:
+                log_event("worker.stalled_campaigns_finalized", worker_id=worker_id,
+                          campaign_ids=[str(cid) for cid in finalized])
             if max_iterations is not None:
                 continue
             time.sleep(poll_seconds)

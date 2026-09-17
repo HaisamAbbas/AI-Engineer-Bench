@@ -456,12 +456,22 @@ class PublicationRow(Base):
     signing_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     signed_manifest: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     review_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Two DISTINCT reasons: `reason` records the correction/supersession
+    # rationale (frozen at publish by the immutability trigger);
+    # `withdrawal_reason` records why a publication was withdrawn (the only
+    # provenance field a withdrawal may set, exactly once).
+    withdrawal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ranked = eligible to be the canonical ranking release; non_ranked =
+    # explicitly excluded from canonical ranks (e.g. an incomplete cohort
+    # published with disclosure). Defaulted for historical rows.
+    publication_class: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ranked")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint("status in ('published','withdrawn','superseded')", name="ck_publication_status"),
         CheckConstraint("review_kind is null or review_kind in ('single_maintainer','independent')", name="ck_publication_review_kind"),
+        CheckConstraint("publication_class in ('ranked','non_ranked')", name="ck_publication_class"),
         CheckConstraint(
             "(evidence_manifest IS NULL) = (evidence_manifest_digest IS NULL)",
             name="ck_publication_evidence_manifest_digest_pair",
@@ -579,12 +589,14 @@ class PublicationPreparationRow(Base):
     supersedes_publication_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
     correction_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     published_publication_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
+    publication_class: Mapped[str] = mapped_column(String(16), nullable=False, server_default="ranked")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint("status in ('prepared','approved','rejected','published')", name="ck_publication_preparation_status"),
         CheckConstraint("review_kind is null or review_kind in ('single_maintainer','independent')", name="ck_publication_preparation_review_kind"),
+        CheckConstraint("publication_class in ('ranked','non_ranked')", name="ck_publication_preparation_class"),
         Index("ix_publication_preparation_campaign", "campaign_id"),
     )
 
@@ -595,7 +607,7 @@ class IdempotencyRecordRow(Base):
     __tablename__ = "idempotency_record"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(256), nullable=False)
     key: Mapped[str] = mapped_column(String(128), nullable=False)
     request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     response_status: Mapped[int] = mapped_column(Integer, nullable=False)

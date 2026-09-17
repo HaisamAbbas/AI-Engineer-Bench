@@ -1,6 +1,6 @@
-import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "./client";
+import { replayableWrite } from "./mutationReplay";
 import type { components } from "./schema";
 import { ApiRequestError } from "./client";
 
@@ -170,37 +170,21 @@ export type CampaignWrite =
   | { action: "start" | "pause" | "resume" | "cancel"; id: string };
 export function useCampaignWrite() {
   const client = useQueryClient();
-  // A transport failure cannot tell us whether the server committed. Retain
-  // that request's key until success, including across manual retries in this
-  // mounted hook. Unrelated successful writes must not discard pending keys.
-  const keys = useRef(new Map<string, string>());
-  const idempotencyHeaders = (action: string, input: CampaignWrite): Record<string, string> => {
-    if (action === "create" || action === "freeze" || action === "start") {
-      const fingerprint = JSON.stringify(input);
-      let key = keys.current.get(fingerprint);
-      if (!key) {
-        key = crypto.randomUUID();
-        keys.current.set(fingerprint, key);
-      }
-      return { "Idempotency-Key": key };
-    }
-    return {};
-  };
   return useMutation({ retry: false,
-    mutationFn: async (input: CampaignWrite) => {
-      if (input.action === "create") return unwrap(api.POST("/v1/campaigns", { body: input.body, headers: idempotencyHeaders("create", input) }));
+    // Replay identity lives in sessionStorage (survives reloads and remounts):
+    // a transport failure cannot tell us whether the server committed, so the
+    // key persists until a SUCCESS clears it; every action sends a key.
+    mutationFn: (input: CampaignWrite) => replayableWrite("campaign", input, async headers => {
+      if (input.action === "create") return unwrap(api.POST("/v1/campaigns", { body: input.body, headers }));
       const params = { path: { campaign_id: input.id } };
-      if (input.action === "patch") return unwrap(api.PATCH("/v1/campaigns/{campaign_id}", { params, body: input.body, headers: { "If-Match": String(input.revision) } }));
-      if (input.action === "freeze") return unwrap(api.POST("/v1/campaigns/{campaign_id}/freeze", { params, body: input.body, headers: idempotencyHeaders("freeze", input) }));
-      const result = await unwrap(api.POST(`/v1/campaigns/{campaign_id}/${input.action}`, { params, headers: idempotencyHeaders(input.action, input) }));
+      if (input.action === "patch") return unwrap(api.PATCH("/v1/campaigns/{campaign_id}", { params, body: input.body, headers: { ...headers, "If-Match": String(input.revision) } }));
+      if (input.action === "freeze") return unwrap(api.POST("/v1/campaigns/{campaign_id}/freeze", { params, body: input.body, headers }));
+      const result = await unwrap(api.POST(`/v1/campaigns/{campaign_id}/${input.action}`, { params, headers }));
       client.setQueryData(["campaign", input.id], result);
       return result.campaign;
-    },
+    }),
     onSettled: async () => {
       await Promise.all(["campaign", "campaign-progress", "invalid-attempts"].map(key => client.invalidateQueries({ queryKey: [key] })));
-    },
-    onSuccess: (_data, input) => {
-      keys.current.delete(JSON.stringify(input));
     },
   });
 }

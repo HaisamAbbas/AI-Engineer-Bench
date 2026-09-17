@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { Layout } from "./Layout";
+import { mockApi } from "../test/mockApi";
 import { renderWithProviders } from "../test/renderWithProviders";
 
 afterEach(() => {
@@ -42,6 +43,18 @@ describe("Layout authentication wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("sign-in discovery failed");
     expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+  });
+
+  it.each([{ roles: [] }, { roles: ["operator", "reviewer"] }])("shows server-resolved roles $roles", async ({ roles }) => {
+    vi.stubEnv("VITE_OIDC_ISSUER", "https://provider.example");
+    vi.stubEnv("VITE_OIDC_CLIENT_ID", "web-client");
+    sessionStorage.setItem("aieb.oidc.access_token", "jwt-token");
+    sessionStorage.setItem("aieb.oidc.expires_at", String(Date.now() + 300_000));
+    mockApi({ "/v1/me": { data: { authenticated: true, subject: "server-user", issuer: "https://provider.example", user_id: null, roles } } });
+    renderWithProviders(<Layout />);
+    expect(await screen.findByText(/Signed in as server-user/)).toHaveTextContent(
+      roles.length ? `Roles: ${roles.join(", ")}` : "No roles assigned",
+    );
   });
 
   it("offers sign-out once a session token exists", () => {

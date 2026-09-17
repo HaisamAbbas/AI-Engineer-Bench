@@ -156,6 +156,8 @@ class WorkerLeasingTests(unittest.TestCase):
             session.commit()
             campaign_id = campaign.id
             repository.enqueue_frozen_campaign(session, campaign_id)
+            campaign.state = "running"
+            session.commit()
         return campaign_id
 
     def _backdate_lease(self, work_item_id: uuid.UUID) -> None:
@@ -332,9 +334,26 @@ class WorkerLeasingTests(unittest.TestCase):
         # The child sleeps 20s before touching any candidate file, giving this test a
         # wide window to kill it while it is genuinely still "engineering".
         process = subprocess.Popen([sys.executable, str(script)], cwd=str(ROOT))
-        time.sleep(2)  # let it claim the item and enter the sleep
-        process.kill()
-        process.wait(timeout=10)
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                self.assertIsNone(process.poll(), "worker exited before engineering began")
+                with self.session_factory() as session:
+                    item = session.scalars(select(api_models.WorkItemRow)).one()
+                    started = session.scalars(select(api_models.AttemptEventRow).where(
+                        api_models.AttemptEventRow.attempt_id == item.attempt_id,
+                        api_models.AttemptEventRow.event_type == "phase.started",
+                    )).first()
+                    allocations = list((self.work_root / str(item.attempt_id) / "runs").glob("attempt-*/engineer"))
+                    if item.state == "leased" and started is not None and allocations:
+                        break
+                time.sleep(0.05)
+            else:
+                self.fail("worker did not enter engineering with a live lease and allocation")
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
 
         with self.session_factory() as session:
             leased_item = session.execute(select(api_models.WorkItemRow)).scalars().one()

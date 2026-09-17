@@ -2,6 +2,11 @@
 
 Date: 2026-09-17. Branch: `prompt-14-eng017-eng018`.
 
+**Latest working-tree review:** [Nine-point closure and real-browser acceptance](review-closure.md)
+records the subsequent fixes, 110-test backend batch, 88-test frontend suite,
+and authenticated browser/API flow. Open-item lists below describe their dated
+historical checkpoints; see that supplement for current scope and limitations.
+
 ## Implemented
 
 - Prepare derives the snapshot and selection from the same authoritative aggregation.
@@ -74,8 +79,116 @@ are not durable production keys.
   and no assertions weakened.
 - `generate_openapi.py --check` and pinned `openapi-typescript@7.13.0 --check`
   PASS; `apps/web/src/api/schema.ts` byte-identical to the declared client.
-- Full backend `unittest discover` run on this branch was terminated locally
-  for time after progressing with tests passing and no failures; the
-  uninterrupted run remains an open follow-up (recorded on PR #3).
+- Earlier full backend discovery was terminated locally and was inconclusive.
+  The uninterrupted rerun below now closes that follow-up; it does not close
+  the separate human-acceptance gates.
 Remote CI and independent acceptance must be recorded separately; local checks do
 not imply a green Ubuntu workflow.
+
+## Recorded remote CI (2026-09-17)
+
+For main commit `7953e229a1397ad0fb0dfdf3856eddd630183eba`, the GitHub API
+reported these completed successful runs:
+
+- [ENG-015 lifecycle and migration gates, attempt 1](https://github.com/HaisamAbbas/AI-Engineer-Bench/actions/runs/35245006962).
+- [API artifact staleness](https://github.com/HaisamAbbas/AI-Engineer-Bench/actions/runs/35245006999).
+- [Task admission](https://github.com/HaisamAbbas/AI-Engineer-Bench/actions/runs/35245006983).
+
+The ENG-015 workflow runs six named backend modules: attempt lifecycle,
+candidate artifacts, worker leasing, API service, API migrations, and HTTP
+integration. It also runs the website build/unit tests and browser sweep.
+**This is not full backend discovery** and does not include
+`tests.test_invalidity_review`. Earlier conversation claims equating this
+workflow with uninterrupted full discovery were incorrect.
+
+The earlier PR-head run `35243824831` failed while waiting for Chrome's
+DevTools `/json/version` endpoint; its second attempt completed successfully.
+That startup timeout was not a completed browser assertion failure. These
+remote results do not constitute ENG-011 human acceptance or independent
+review-console acceptance.
+
+## Uninterrupted full backend discovery (2026-09-17)
+
+- Tested commit: `a1e3d7c58b67ca1ff069bf305358162484b0be26`. Its entire committed
+  tree is identical to main merge `7953e229a1397ad0fb0dfdf3856eddd630183eba`
+  (`git diff --quiet` returned 0). Only this evidence document was edited
+  during the run; no source, tests, or workflow files changed.
+- Windows, existing virtual environment, `AIEB_ENV=test`, migrated disposable
+  PostgreSQL database `aieb_gap_review` on localhost:5544. One discovery
+  process ran to completion without interruption or competing discovery.
+- Command from the repository root:
+  `.venv\Scripts\python.exe -m unittest discover -s tests -p test_*.py -v`.
+- **188 tests run in 546.495 seconds: 187 passed, 1 skipped, 0 failures,
+  0 errors; process exit code 0.** Includes the new invalidity-review module.
+- Skip: `integration.test_eng001_harbor.HarborCompatibilityTest.test_timeout_collection_separate_replay_and_cleanup`
+  requires the explicit `AIEB_RUN_HARBOR_INTEGRATION=1` opt-in. This run does
+  not claim Harbor/Docker compatibility acceptance.
+- Previously reported Windows-sensitive engineering-child-death and
+  task-admission cleanup tests both passed in this run. Their historical
+  failures remain recorded in `../../PROMPT14_HANDOFF.md`; no test was
+  removed, weakened, or rerun separately to obtain this full-run result.
+- Local raw log: `D:\AI-Engineer-Bench\.cache\prompt14-final-discover.log`.
+  SHA-256: `4b7c02528b24e9b0db8630e2a92833005c461ecc9ca2fd51f0d7ef6cb08cfccb`.
+  Exit-code file: `D:\AI-Engineer-Bench\.cache\prompt14-final-discover.exit`.
+  These local cache files are not committed artifacts.
+
+Full-discovery and remote-CI recording follow-ups are now satisfied for the
+recorded tree. ENG-011 round-2 human acceptance and independent review-console
+acceptance remain open; ENG-017/018 are not promoted to COMPLETE by this run.
+
+## Prompt 14 review fixes and coverage disclosure (working tree, 2026-09-17)
+
+The following results concern the uncommitted review-fix tree, not the historical
+commits above. They do not establish remote CI or human acceptance for this tree.
+
+- Campaign start now keeps reservation, enqueue, state, and replay response in
+  the caller-owned transaction under a campaign row lock.
+- Dispatch is state-gated; completion uses authoritative selected evaluations;
+  cancellation retains the reservation until work drains.
+- Revision pins fail closed on ambiguous slugs. Preview exposes the exact ordered
+  frozen trial matrix. Reservation estimates include repetitions and replacements.
+- Backend focused batch: 120 tests passed in 331.444 seconds, exit 0.
+- Full discovery BEFORE the coverage-disclosure change: 198 tests in 505.170
+  seconds, 197 passed, one Harbor/Docker opt-in skip, zero failures/errors, exit 0.
+  Log: `D:\AI-Engineer-Bench\.cache\prompt14-blocker-discover.log`.
+  SHA-256: `f41a2d387297d6a4577ff9ffac55139cc19f0781db8b4bcfacc4c07b28d127e0`.
+  This is not a full-discovery claim for the later coverage-disclosure change.
+
+### Additional test-first disclosure fix
+
+A new publication preparation regression first failed because the snapshot lacked
+`coverage_disclosure` (one failure, exit 1). Aggregation now records per-attempt
+trace presence/missingness and per-role reported/estimated/unknown receipt coverage,
+including physical retries, without exposing request identities or event payloads.
+The disclosure is included before snapshot hashing. Trace presence does not assert
+complete action instrumentation; missing accounting does not imply zero spend.
+Hard-cost eligibility remains false: complete provider accounting and hard budget
+enforcement are not established by this path.
+
+The first API-module run exposed two regressions: the strict public snapshot schema
+rejected the added field. Typed disclosure models and an optional historical-snapshot
+field fixed that mismatch without relaxing extra-field rejection. The new regression,
+publication lifecycle, and retained-candidate regrade/supersede journey then all
+passed: three tests in 8.906 seconds, exit 0.
+
+OpenAPI and pinned TypeScript regeneration/checks passed; both generated clients
+are byte-identical. TypeScript compilation and production build passed after the
+schema fix. Final API module: **81 tests passed in 191.782 seconds, exit 0**.
+Log: `D:\AI-Engineer-Bench\.cache\prompt14-coverage-api-final.log`.
+SHA-256: `997c81c77ff87a357996e9a6da815fa22ebc6acb1ca5004bd7d8e64905ba4209`.
+Frontend: **56 tests / 15 files passed in 30.33 seconds, exit 0**.
+Log: `D:\AI-Engineer-Bench\.cache\prompt14-coverage-web.log`.
+Non-failing Starlette deprecation and psycopg connection ResourceWarnings remain.
+No source or test files changed during either final suite run.
+
+### Still open — Prompt 14 is NOT fully satisfied
+
+- Browser authentication wiring: the access-token provider setter has no application
+  caller; backend token verification alone is not a usable authenticated UI journey.
+- Mutation replay across the remaining write operations and network-loss retries.
+- Publication eligibility enforcement for protocol-required cost/trace coverage,
+  and complete pinned analysis/provenance metadata. Disclosure alone does not close this.
+- Public error/reason handling review and authenticated staging browser acceptance.
+- Separate human-review gates, Harbor opt-in compatibility, and current-tree remote CI.
+
+No production deployment or real public release was performed.

@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { CampaignAdmin } from "./CampaignAdmin";
 import { api } from "../api/client";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { mockApi } from "../test/mockApi";
+import { mockAuthenticatedApi as mockApi } from "../test/mockApi";
 const summary = (state: string) => ({ id: "camp", name: "Fixture campaign", state, revision: 4, manifest_digest: "digest", cohort_digest: "cohort" });
 const result = (data: unknown) => ({ data, response: new Response(null, { status: 200 }) });
 function renderDetail() { return renderWithProviders(<CampaignAdmin />, { route: "/admin/campaigns/camp", path: "/admin/campaigns/:campaignId" }); }
@@ -27,7 +27,7 @@ describe("CampaignAdmin", () => {
     fireEvent.change(editor, { target: { value: JSON.stringify(edited) } });
     fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(patch).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}", {
-      params: { path: { campaign_id: "camp" } }, body: { draft: edited }, headers: { "If-Match": "4" },
+      params: { path: { campaign_id: "camp" } }, body: { draft: edited }, headers: { "If-Match": "4", "Idempotency-Key": expect.any(String) },
     }));
   });
   it("never edits frozen plans and displays honest reservation enforcement", async () => {
@@ -49,7 +49,7 @@ describe("CampaignAdmin", () => {
     expect(screen.getByText(/Leased work finishes or expires/)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("I understand the cancellation consequences"));
     fireEvent.click(cancel);
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}/cancel", { params: { path: { campaign_id: "camp" } }, headers: {} }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}/cancel", { params: { path: { campaign_id: "camp" } }, headers: { "Idempotency-Key": expect.any(String) } }));
     expect(screen.getByText("running")).toBeInTheDocument();
     expect(cancel).toBeDisabled();
     state = "cancelling";
@@ -65,18 +65,20 @@ describe("CampaignAdmin", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
     expect(await screen.findByText("Stale revision")).toBeInTheDocument();
     expect(screen.getByText("Request ID: req-4")).toBeInTheDocument();
-    expect(patch).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}", { params: { path: { campaign_id: "camp" } }, body: { draft: { id: "draft" } }, headers: { "If-Match": "4" } });
+    expect(patch).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}", { params: { path: { campaign_id: "camp" } }, body: { draft: { id: "draft" } }, headers: { "If-Match": "4", "Idempotency-Key": expect.any(String) } });
     expect(patch).toHaveBeenCalledTimes(1);
   });
   it("renders the server matrix and clears it when registry input changes", async () => {
     mockApi({ "/v1/campaigns/{campaign_id}": { data: { campaign: summary("draft") } } });
-    const post = vi.spyOn(api, "POST").mockResolvedValue(result({ campaign_id: "camp", trial_count: 7, cohort_id: "c", protocol_id: "p", budget_profile_id: "b", reserved_budget_usd: null, cells: [{ task_id: "task-a", entrant_id: "entrant-a", repetitions: 7 }] }) as never);
+    const post = vi.spyOn(api, "POST").mockResolvedValue(result({ campaign_id: "camp", trial_count: 7, cohort_id: "c", protocol_id: "p", budget_profile_id: "b", reserved_budget_usd: null, cells: [{ task_id: "task-a", entrant_id: "entrant-a", repetitions: 7 }], trials: Array.from({ length: 7 }, (_, index) => ({ trial_id: `trial-${index}`, task_id: "task-a", entrant_id: "entrant-a", order_index: index, repetition_index: 6 - index })) }) as never);
     renderDetail();
     const registry = await screen.findByLabelText("Registry JSON");
     fireEvent.change(registry, { target: { value: '{}' } });
     fireEvent.click(screen.getByRole("button", { name: "Preview exact matrix" }));
     expect(await screen.findByText(/Server preview: 7 trials/)).toBeInTheDocument();
-    expect(screen.getByText("task-a")).toBeInTheDocument();
+    expect(screen.getAllByText("task-a")).toHaveLength(7);
+    expect(screen.getAllByRole("row")[1]).toHaveTextContent("0trial-0task-aentrant-a6");
+    expect(screen.getAllByRole("row")[7]).toHaveTextContent("6trial-6task-aentrant-a0");
     expect(screen.getByRole("button", { name: "Freeze campaign" })).toBeDisabled();
     expect(post).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}/preview", { params: { path: { campaign_id: "camp" } }, body: {} });
     fireEvent.change(registry, { target: { value: '{"cohort":{}}' } });

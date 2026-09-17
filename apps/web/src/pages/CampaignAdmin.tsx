@@ -108,13 +108,13 @@ function DraftEditor({ id, revision, disabled, saved }: { id: string; revision: 
       <button disabled={!draft.trim()} onClick={() => submit("patch")}>Save draft</button>
     </fieldset>
     <fieldset disabled={busy}><legend>Preview and freeze saved draft</legend>
-      <p>Preview uses the saved server draft, not unsaved text above. Supply a FreezeRegistry with cohort, protocol, and budget.</p>
+      <p>Preview uses the saved server draft, not unsaved text above. Supply a FreezeRegistry with cohort, protocol, budget, and task_versions / entrant_versions maps to pin stored revisions.</p>
       <label>Registry JSON<textarea rows={10} value={registry} onChange={e => { setRegistry(e.target.value); preview.reset(); setFreezeConfirmed(false); }} /></label>
       <button disabled={!registry.trim()} onClick={() => submit("preview")}>Preview exact matrix</button>
       {preview.data && <><p>Server preview: {preview.data.trial_count} trials · cohort {preview.data.cohort_id} · protocol {preview.data.protocol_id} · budget {preview.data.budget_profile_id}</p>
         <p>Estimated reservation USD: {preview.data.reserved_budget_usd ?? "Unknown"} — not a provider hold.</p>
-        <table><caption>Exact saved-draft matrix</caption><thead><tr><th>Task</th><th>Entrant</th><th>Repetitions</th></tr></thead>
-          <tbody>{preview.data.cells.map(cell => <tr key={`${cell.task_id}:${cell.entrant_id}`}><td>{cell.task_id}</td><td>{cell.entrant_id}</td><td>{cell.repetitions}</td></tr>)}</tbody></table>
+        <table><caption>Exact saved-draft matrix (zero-based indexes)</caption><thead><tr><th>Order</th><th>Trial ID</th><th>Task</th><th>Entrant</th><th>Repetition</th></tr></thead>
+          <tbody>{preview.data.trials.map(trial => <tr key={trial.trial_id}><td>{trial.order_index}</td><td>{trial.trial_id}</td><td>{trial.task_id}</td><td>{trial.entrant_id}</td><td>{trial.repetition_index}</td></tr>)}</tbody></table>
         <label><input type="checkbox" checked={freezeConfirmed} onChange={e => setFreezeConfirmed(e.target.checked)} />I understand freezing is immutable</label>
         <button disabled={!freezeConfirmed} onClick={() => submit("freeze")}>Freeze campaign</button></>}
     </fieldset>

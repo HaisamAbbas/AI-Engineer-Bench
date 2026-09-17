@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Generic, Literal, TypeVar, Union
 from uuid import UUID
 
-from aieb_core.models import ApplicationProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
+from aieb_core.models import ApplicationProfile, BudgetProfile, BudgetProfileV2, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
 from pydantic import BaseModel, ConfigDict, model_validator
 
 ItemT = TypeVar("ItemT")
@@ -37,7 +37,13 @@ class FreezeRegistry(BaseModel):
 
     cohort: Cohort
     protocol: ProtocolRevision
-    budget: BudgetProfile
+    # Either declared budget contract version; aieb.budget/v2 additionally
+    # declares the environment upper bound the reservation formula requires.
+    budget: BudgetProfile | BudgetProfileV2
+    # Exact stored versions, keyed by draft slug. Unpinned legacy references
+    # are accepted only when there is a single stored revision.
+    task_versions: dict[str, str] = {}
+    entrant_versions: dict[str, str] = {}
 
 
 class CampaignCreateRequest(BaseModel):
@@ -298,6 +304,23 @@ class TaskCellStats(BaseModel):
     pass_power_k: float | None
 
 
+class AttemptCoverageDisclosure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: UUID
+    trace: Literal["present", "missing"]
+    cost_by_role: dict[Literal["engineer", "dev_application", "verifier_application", "verifier_judge"], Literal["reported", "estimated", "unknown"]]
+
+
+class CoverageDisclosure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["aieb.coverage-disclosure/v1"]
+    attempts: list[AttemptCoverageDisclosure]
+    hard_cost_eligible: bool
+    limitations: list[str]
+
+
 class AnalysisSnapshot(BaseModel):
     """The exact shape aieb_analysis.metrics.summarize() returns. Publication
     snapshots are this package's authoritative output, persisted verbatim
@@ -346,6 +369,8 @@ class AnalysisSnapshot(BaseModel):
     per_entrant_median_engineering_seconds: dict[str, float | None] | None = None
     per_entrant_deadline_rate: dict[str, float | None] | None = None
     per_entrant_infrastructure_attrition: dict[str, float | None] | None = None
+    # Absent in historical snapshots; never synthesize evidence on public reads.
+    coverage_disclosure: CoverageDisclosure | None = None
     limitations: list[str]
 
 
@@ -560,6 +585,15 @@ class CorrectionEntry(BaseModel):
     status: str
     supersedes_id: UUID | None
     created_at: str
+    # Two DISTINCT recorded reasons, never one mutable field: `reason` is the
+    # correction/supersession rationale frozen at publish time (immutability
+    # trigger), `withdrawal_reason` is set only when the publication is
+    # withdrawn. A withdrawal no longer overwrites the correction reason.
+    reason: str | None = None
+    withdrawal_reason: str | None = None
+    # `ranked` publications may become the canonical ranking release;
+    # `non_ranked` publications are explicitly excluded from canonical ranks.
+    publication_class: Literal["ranked", "non_ranked"] | None = None
 
 
 class EntrantResultEntry(BaseModel):
@@ -612,6 +646,19 @@ class MatrixPreviewCell(BaseModel):
     repetitions: int
 
 
+class MatrixPreviewTrial(BaseModel):
+    """The exact trial a freeze WOULD create: deterministic identity, cell
+    membership, repetition index and dispatch position (spec section 28/13)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: UUID
+    task_id: str
+    entrant_id: str
+    repetition_index: int
+    order_index: int
+
+
 class MatrixPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -622,6 +669,9 @@ class MatrixPreview(BaseModel):
     budget_profile_id: str
     reserved_budget_usd: str | None
     cells: list[MatrixPreviewCell]
+    # The ordered frozen matrix itself, not only aggregate cell counts, so an
+    # operator can review the exact dispatch input before committing to a freeze.
+    trials: list[MatrixPreviewTrial]
 
 
 class BudgetReservationSummary(BaseModel):
@@ -683,6 +733,12 @@ class PublicationPrepareRequest(BaseModel):
     supersedes_publication_id: UUID | None = None
     correction_reason: str | None = None
     correction_run_id: UUID | None = None
+    # Prompt 14: preparation validates a COMPLETE cohort for a ranked
+    # publication. `ranked` is the only default and rejects incomplete
+    # coverage; publishing an incomplete snapshot requires the operator to
+    # explicitly choose `non_ranked`, and such a publication is labelled and
+    # can never become the canonical ranked release.
+    publication_class: Literal["ranked", "non_ranked"] = "ranked"
 
 
 class PublicationPreparationSummary(BaseModel):
@@ -697,6 +753,7 @@ class PublicationPreparationSummary(BaseModel):
     supersedes_publication_id: UUID | None
     published_publication_id: UUID | None
     created_at: str
+    publication_class: Literal["ranked", "non_ranked"]
 
 
 class PublicationPreparationDetail(BaseModel):
@@ -714,7 +771,11 @@ class PublicationReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["approve", "reject"]
-    review_kind: Literal["single_maintainer", "independent"]
+    # review_kind is NEVER client-selected: the server derives whether the
+    # review is independent from recorded identities (see publications.py).
+    # The reviewer supplies an organizational-independence ATTESTATION - an
+    # input to the server's derivation, not the label itself.
+    independence_attestation: bool = False
     notes: str | None = None
 
 
@@ -771,6 +832,12 @@ class PublicationExport(BaseModel):
     signature: PublicationSignature | None
     runs: list[PublicRunEvidence]
     notice: str | None = None
+    # Public provenance transparency: whether this snapshot may be treated as
+    # the canonical ranked release, and the recorded reasons (correction +
+    # withdrawal) so a reader can see why a result changed or was withdrawn.
+    publication_class: Literal["ranked", "non_ranked"] = "ranked"
+    correction_reason: str | None = None
+    withdrawal_reason: str | None = None
 
 
 PublicRunEvidence.model_rebuild()
