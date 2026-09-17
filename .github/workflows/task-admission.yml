@@ -9,6 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - uses: astral-sh/setup-uv@b75a9098c1922b3195d3655f8f5fd8831a79c6e4
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
       - run: uv sync --all-packages --locked
       - run: uv run python -m unittest tests.test_rag01_admission tests.test_ext_tool_admission tests.test_eng013_admission -v
