@@ -1,8 +1,15 @@
 # Session handoff
 
-Updated: 2026-09-16
-Current phase: Prompt 13 (ENG-016, public website).
-ENG-015 and ENG-016 are IN_PROGRESS. ENG-015 still needs a successful committed Ubuntu/PostgreSQL run. ENG-016's latest five review findings have been implemented and exercised against PostgreSQL, the frontend test/build gates, and real Edge browser checks. The previous false mobile report was replaced with a 26-case report that asserts both requested and visual viewport widths.
+Updated: 2026-09-17
+Current phase: closing Prompt 13 (ENG-016) and the ENG-015/ENG-011 gates before Prompt 14 (ENG-017 + ENG-018).
+
+ENG-016 is COMPLETE. Two further independent-review passes were remediated and accepted (see DECISIONS.md ENG016-017): seven findings on the public-evidence path (strict included/excluded published-selection union; snapshot-digest binding of the evidence manifest - swap-proof after publication, with semantic rate-derivation verification explicitly deferred to ENG-018; terminal/scored/completed-campaign publication gating; whitelist-redacted public trace; immutable-evaluation-only public usage; lease-fenced `phase.started`; keyboard-operable ARIA tabs), then one follow-up blocker (terminal_status must be a real scored verdict AND equal the pinned evaluation's verdict). Committed and pushed at `beb4bb4`.
+
+ENG-015 gates had never actually executed on Ubuntu: the CI workflows pinned `astral-sh/setup-uv` to a SHA that no longer resolves, so every run failed at "Set up job" before any step. Repinned to a valid release (v10.1.0) in all three workflows and pushed (`e7dac58`), so the Ubuntu/PostgreSQL ENG-015 gates run for the first time. ENG-015 stays IN_PROGRESS until that CI result is observed green; if red, fix only the demonstrated CI failure.
+
+ENG-011 has a remaining aggregation-integration gate: wire a frozen campaign's planned cells/categories through real aggregation (so a wholly-missing planned cell is detectable in production aggregation, not only in tests that supply `planned_cells`/`category` explicitly). ENG-018 depends on this. Do NOT start Prompt 14 while ENG-015 and ENG-011 remain unresolved.
+
+Prior context (unchanged): ENG-016's earlier five review findings were implemented and exercised against PostgreSQL, the frontend test/build gates, and real Edge browser checks; the previous false mobile report was replaced with a 26-case report that asserts both requested and visual viewport widths.
 
 ## Current state
 
