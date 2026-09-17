@@ -1378,6 +1378,121 @@ class ApiServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_evidence_manifest(session, campaign_id, {trial_id: evaluation_id}, snapshot=self._analysis_snapshot({"agent-a": 1.0}))
 
+    def _seed_frozen_campaign_for_aggregation(self, *, include_entrant_b_trial: bool, campaign_state: str = "completed") -> uuid.UUID:
+        """Seed a frozen campaign whose resolved manifest PLANS one task x two
+        entrants (agent-a, agent-b), then persist a terminal passing trial for
+        agent-a and, only when asked, for agent-b. When agent-b's trial is
+        omitted, the (task, agent-b) planned cell is wholly missing from the
+        real data - the exact case `aggregate_campaign_snapshot` must detect as
+        incomplete coverage by wiring the frozen plan through summarize()."""
+        from aieb_core.models import CandidateManifest, EntrantRevision, TaskRevision
+        from aieb_runner.artifacts import StoredCandidate
+        from aieb_api.worker.runner_bridge import _serialize_stored_candidate
+
+        task_manifest = {
+            "schema_version": "aieb.task/v1", "id": "rag.document-freshness", "version": "0.1.0",
+            "family_id": "knowledge-service-a", "category": "rag", "activity": "repair",
+            "source": {"repository_digest": "1" * 64, "commit": "synthetic", "license": "Apache-2.0", "provenance_digest": "2" * 64},
+            "environment": {"official_image": "registry.example/aieb@sha256:" + "3" * 64, "engineer_cpu": 1, "engineer_memory_mb": 512, "service_topology_digest": "4" * 64, "egress_policy": "none"},
+            "application": {"dependency_mode": "fixture", "entrypoint": ["python", "-m", "knowledge_service.server"], "contract_digest": "5" * 64, "model_profile_id": "deterministic-rag-fixture-v1"},
+            "submission": {"include": ["knowledge_service/**"], "protected": ["dev_tests/**"], "max_artifact_bytes": 1000},
+            "requirements": [{"id": "api-ready", "severity": "mandatory", "description": "ready"}],
+            "evaluator": {"evaluator_digest": "6" * 64, "development_fixture": "rag01-dev-v1", "official_fixture_ref": "maintainer-only:rag01-v1"},
+            "profile_compatibility": ["cohort-a"],
+        }
+
+        def _entrant_manifest(slug: str) -> dict:
+            return {
+                "schema_version": "aieb.entrant/v1", "id": slug, "track": "agents", "agent_implementation": "demo",
+                "agent_version": "1.0.0",
+                "engineer_model": {"provider_class": "demo", "requested_model": "demo-model", "reported_model": "demo-model", "settings_digest": "a" * 64},
+                "prompt_digest": "b" * 64, "tools_digest": "c" * 64, "capabilities": ["cpu-fixture-standard-v1"],
+                "credential_ref_type": "broker",
+            }
+
+        entrant_a_manifest = _entrant_manifest("agent-a")
+        entrant_b_manifest = _entrant_manifest("agent-b")
+        task_digest = TaskRevision.model_validate(task_manifest).digest()
+        entrant_a_digest = EntrantRevision.model_validate(entrant_a_manifest).digest()
+        entrant_b_digest = EntrantRevision.model_validate(entrant_b_manifest).digest()
+        resolved = {
+            "tasks": [task_manifest], "entrants": [entrant_a_manifest, entrant_b_manifest],
+            "trials": [
+                {"task_digest": task_digest, "entrant_digest": entrant_a_digest, "repetition_index": 0},
+                {"task_digest": task_digest, "entrant_digest": entrant_b_digest, "repetition_index": 0},
+            ],
+        }
+
+        with db.session_factory()() as session:
+            evaluator_id = self._seed_evaluator(session)
+            task = api_models.TaskRevisionRow(
+                slug="rag.document-freshness", version="0.1.0", family_id="knowledge-service-a", category="rag",
+                source_digest="1" * 64, manifest_digest="d" * 64, evaluator_id=evaluator_id, manifest=task_manifest,
+            )
+            entrant_a = api_models.EntrantRevisionRow(slug="agent-a", version="1.0.0", track="agents", config_digest="agent-a-digest", capabilities=["cpu-fixture-standard-v1"], manifest=entrant_a_manifest)
+            entrant_b = api_models.EntrantRevisionRow(slug="agent-b", version="1.0.0", track="agents", config_digest="agent-b-digest", capabilities=["cpu-fixture-standard-v1"], manifest=entrant_b_manifest)
+            fixture = api_models.FixtureRevisionRow(digest="4" * 64, visibility="public", family_id="knowledge-service-a")
+            campaign = api_models.CampaignRow(name=f"agg-{uuid.uuid4().hex[:8]}", state=campaign_state, draft={"repetitions": 1}, resolved=resolved)
+            session.add_all([task, entrant_a, entrant_b, fixture, campaign])
+            session.flush()
+
+            def _persist_pass(entrant: api_models.EntrantRevisionRow) -> None:
+                trial = api_models.TrialRow(campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id, repetition=0, cell_digest="c" * 64)
+                session.add(trial)
+                session.flush()
+                attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="terminal", terminal_status="pass")
+                session.add(attempt)
+                session.flush()
+                manifest = CandidateManifest(schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64, full_tree_hash="2" * 64, files=())
+                candidate = api_models.CandidateRow(
+                    attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(),
+                    validation_status="valid", stored_candidate=_serialize_stored_candidate(StoredCandidate(manifest, (), ())),
+                )
+                session.add(candidate)
+                session.flush()
+                session.add(api_models.EvaluationRow(
+                    candidate_id=candidate.id, evaluator_id=evaluator_id, fixture_id=fixture.id,
+                    schedule_digest=manifest.digest(), verdict="pass", result={"checks": {"api-ready": True}},
+                ))
+
+            _persist_pass(entrant_a)
+            if include_entrant_b_trial:
+                _persist_pass(entrant_b)
+            campaign_id = campaign.id
+            session.commit()
+        return campaign_id
+
+    def test_aggregate_campaign_snapshot_flags_a_wholly_missing_planned_cell_as_incomplete(self) -> None:
+        """ENG-011 integration gate: a frozen (task, agent-b) planned cell with
+        zero recorded trials must make the real aggregation report incomplete
+        coverage, via planned_cells wired from the campaign's own manifest."""
+        from aieb_api.aggregation import aggregate_campaign_snapshot
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        with db.session_factory()() as session:
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+        self.assertFalse(snapshot["complete_for_rank"])
+        self.assertIsNone(snapshot["suite_rate"])  # not ranked when coverage is incomplete
+        self.assertEqual(snapshot["per_entrant"].get("agent-a"), 1.0)  # agent-a's real cell is present
+        # agent-b's planned cell has no observation at all, so it has no per_task entry.
+        self.assertNotIn("rag.document-freshness:agent-b", snapshot["per_task"])
+
+    def test_aggregate_campaign_snapshot_is_complete_and_categorized_when_every_planned_cell_is_present(self) -> None:
+        """With both planned cells recorded, real aggregation reports complete
+        coverage, a suite rate, and a per-category breakdown sourced from the
+        frozen task category - all wired end to end, not supplied by the test."""
+        from aieb_api.aggregation import aggregate_campaign_snapshot
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+        self.assertTrue(snapshot["complete_for_rank"])
+        self.assertEqual(snapshot["suite_rate"], 1.0)
+        self.assertEqual(snapshot["per_entrant"]["agent-a"], 1.0)
+        self.assertEqual(snapshot["per_entrant"]["agent-b"], 1.0)
+        self.assertIn("rag", snapshot["per_category"])
+        self.assertEqual(snapshot["per_category"]["rag"]["agent-a"], 1.0)
+
     def test_publication_results_reject_a_snapshot_that_does_not_match_its_recorded_digest(self) -> None:
         # Review finding #14: nothing recomputed snapshot_digest against the
         # stored snapshot JSONB before serving it as canonical public results.
