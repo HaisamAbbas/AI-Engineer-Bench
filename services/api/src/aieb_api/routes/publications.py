@@ -15,7 +15,7 @@ from ..db import get_session
 from ..errors import conflict, forbidden, invalid_request, not_found
 from ..evidence_integrity import evidence_digest
 from ..models import (
-    AttemptRow, AuditEventRow, CampaignRow, PublicationPreparationRow,
+    AttemptRow, AuditEventRow, CampaignRow, CorrectionRunRow, EvaluationRow, PublicationPreparationRow,
     PublicationRow, ReviewRow, TrialRow,
 )
 from ..publication_evidence import build_evidence_manifest
@@ -58,10 +58,12 @@ def _selected_evaluations(session: Session, campaign_id: UUID) -> dict[UUID, UUI
     return selected
 
 
-def _prepared_data(session: Session, campaign_id: UUID) -> tuple[dict, dict]:
+def _prepared_data(session: Session, campaign_id: UUID, correction_run_id: UUID | None = None) -> tuple[dict, dict]:
     try:
-        snapshot = aggregation.aggregate_campaign_snapshot(session, campaign_id)
-        manifest = build_evidence_manifest(session, campaign_id, _selected_evaluations(session, campaign_id), snapshot=snapshot)
+        snapshot = aggregation.aggregate_campaign_snapshot(session, campaign_id, correction_run_id)
+        manifest = build_evidence_manifest(session, campaign_id,
+            {trial: row.id for trial, row in aggregation.selected_campaign_evaluations(session, campaign_id, correction_run_id).items()},
+            snapshot=snapshot)
     except ValueError as exc:
         raise conflict(str(exc)) from exc
     return snapshot, manifest
@@ -89,12 +91,16 @@ def prepare_publication(
     if campaign.state not in {"completed", "incomplete"}:
         raise conflict("publication requires a terminal campaign")
     if body.correction_run_id is not None:
-        raise conflict("corrected publication requires the regrade integration")
-    if body.supersedes_publication_id and not (body.correction_reason or "").strip():
-        raise invalid_request("superseding a publication requires a correction reason")
+        run = session.get(CorrectionRunRow, body.correction_run_id)
+        if run is None or run.campaign_id != campaign_id:
+            raise invalid_request("correction run must belong to this campaign")
+        if run.status != "completed":
+            raise conflict("correction run must be completed before preparing a publication")
     _prior_publication(session, campaign_id, body.supersedes_publication_id)
-    snapshot, manifest = _prepared_data(session, campaign_id)
+    snapshot, manifest = _prepared_data(session, campaign_id, body.correction_run_id)
     snapshot_hash, manifest_hash = snapshot_digest(snapshot), evidence_digest(manifest)
+    if body.supersedes_publication_id and body.correction_run_id is None:
+        raise conflict("superseding requires the correction run that justifies it")
     row = session.execute(select(PublicationPreparationRow).where(
         PublicationPreparationRow.campaign_id == campaign_id,
         PublicationPreparationRow.status == "prepared",
@@ -137,7 +143,19 @@ def review_publication(
     if body.decision == "approve" and reviewer_id in {row.prepared_by_user_id, campaign.created_by_user_id}:
         raise forbidden("preparer and campaign creator cannot approve their own publication")
     if body.decision == "approve":
-        snapshot, manifest = _prepared_data(session, campaign_id)
+        # Recover the correction identity from the exact pinned evaluations,
+        # never from whichever correction run most recently completed.
+        correction_ids = set()
+        for selection in row.evidence_manifest.get("selections", []):
+            if selection.get("included"):
+                evaluation = session.get(EvaluationRow, UUID(selection["evaluation_id"]))
+                if evaluation is None:
+                    raise conflict("prepared evaluation no longer exists")
+                if evaluation.correction_run_id is not None:
+                    correction_ids.add(evaluation.correction_run_id)
+        if len(correction_ids) > 1:
+            raise conflict("preparation mixes correction runs")
+        snapshot, manifest = _prepared_data(session, campaign_id, next(iter(correction_ids), None))
         if (snapshot_digest(row.snapshot) != row.snapshot_digest
                 or evidence_digest(row.evidence_manifest) != row.evidence_manifest_digest
                 or snapshot_digest(snapshot) != row.snapshot_digest

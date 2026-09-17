@@ -157,7 +157,7 @@ def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
     return created
 
 
-_ATTEMPT_PHASE_FOR_WORK_TYPE = {"engineering": "engineering", "verification": "verifying"}
+_ATTEMPT_PHASE_FOR_WORK_TYPE = {"engineering": "engineering", "verification": "verifying", "regrade": "verifying"}
 
 
 def claim_work_item(session: Session, *, worker_id: str, work_type: str | None = None, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> LeasedWork | None:
@@ -243,6 +243,7 @@ class EvaluationOutcome:
     schedule_digest: str
     verdict: str | None
     result: dict
+    correction_run_id: uuid.UUID | None = None
 
 
 def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_seconds: int) -> bool:
@@ -438,6 +439,7 @@ def record_evaluation(
     row = EvaluationRow(
         candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
         schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
+        correction_run_id=evaluation.correction_run_id,
     )
     session.add(row)
     attempt_id = session.execute(select(CandidateRow.attempt_id).where(CandidateRow.id == candidate_id)).scalar_one()
@@ -738,12 +740,12 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         item.state = "failed"
         orphaned.append(attempt.id)
         verification_attempts = session.execute(
-            select(func.count()).select_from(WorkItemRow).where(WorkItemRow.attempt_id == attempt.id, WorkItemRow.type == "verification")
+            select(func.count()).select_from(WorkItemRow).where(WorkItemRow.attempt_id == attempt.id, WorkItemRow.type == item.type)
         ).scalar_one()
         if verification_attempts - 1 < max_replacements:
             # Retry verification in place - same attempt, same persisted
             # candidate - a dead verifier never causes engineering to repeat.
-            session.add(WorkItemRow(attempt_id=attempt.id, type="verification", state="ready"))
+            session.add(WorkItemRow(attempt_id=attempt.id, type=item.type, state="ready"))
             requeued += 1
         else:
             attempt.phase = "terminal"

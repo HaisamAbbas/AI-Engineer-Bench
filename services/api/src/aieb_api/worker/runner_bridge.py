@@ -439,6 +439,17 @@ def execute_leased_verification(
         task_version = task_row.version
         campaign_id = trial.campaign_id
         loaded = repository.load_stored_candidate(session, leased.attempt_id)
+        from ..regrading import correction_for_attempt, installed_scoring_bundle
+        correction = correction_for_attempt(session, leased.attempt_id) if leased.work_type == "regrade" else None
+        if leased.work_type == "regrade" and (
+            correction is None or correction.status != "running"
+            or correction.scoring_correction_digest != evidence_digest(installed_scoring_bundle(session, campaign_id))
+        ):
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="scorer_error", done=False,
+            )
+            return ExecutionResult(finalized=finalized, execution_validity="infrastructure_invalid", verdict=None)
 
     if loaded is None:
         # Should never happen in practice - verification is only ever enqueued
@@ -550,10 +561,13 @@ def execute_leased_verification(
             evaluator_id = task_row_evaluator_id(session, task_slug, task_version)
             fixture_id = ensure_fixture_row(session, task_slug)
             evaluation = EvaluationOutcome(
-                evaluator_id=evaluator_id, fixture_id=fixture_id,
-                schedule_digest=outcome.candidate.manifest.digest(),
+                evaluator_id=correction.corrected_evaluator_id if correction else evaluator_id,
+                fixture_id=correction.corrected_fixture_id if correction else fixture_id,
+                schedule_digest=evidence_digest({"candidate": outcome.candidate.manifest.digest(),
+                    "correction": correction.scoring_correction_digest}) if correction else outcome.candidate.manifest.digest(),
                 verdict=outcome.verdict.value if outcome.verdict else None,
                 result=outcome.evaluation,
+                correction_run_id=correction.id if correction else None,
             )
             try:
                 recorded_evaluation = repository.record_evaluation(
@@ -642,7 +656,7 @@ def execute_leased_work(
         )
     if not started:
         return ExecutionResult(finalized=False, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
-    if leased.work_type == "verification":
+    if leased.work_type in {"verification", "regrade"}:
         return execute_leased_verification(
             session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,
         )

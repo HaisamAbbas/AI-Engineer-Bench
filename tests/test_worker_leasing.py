@@ -211,6 +211,39 @@ class WorkerLeasingTests(unittest.TestCase):
 
     # ---- review finding #5: shared storage is the actual default, not merely documented --
 
+    def test_regrade_executes_retained_candidate_without_engineering(self) -> None:
+        from aieb_api.regrading import enqueue_regrade, installed_scoring_bundle, complete_correction_runs
+        from aieb_api.evidence_integrity import evidence_digest
+        from aieb_api.aggregation import aggregate_campaign_snapshot
+
+        campaign_id = self._frozen_enqueued_campaign()
+        self._run_to_completion()
+        with self.session_factory() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            campaign.state = "completed"
+            user = api_models.User(oidc_subject="correction-reviewer", oidc_issuer="test")
+            session.add(user); session.flush()
+            original = session.execute(select(api_models.EvaluationRow)).scalar_one()
+            original_id, original_result = original.id, original.result
+            run = enqueue_regrade(session, campaign,
+                scoring_digest=evidence_digest(installed_scoring_bundle(session, campaign_id)),
+                reason="staging verification", user_id=user.id)
+            run_id = run.id
+            session.commit()
+            leased = repository.claim_work_item(session, worker_id="regrader", work_type="regrade")
+        result = execute_leased_work(self.session_factory, leased, worker_id="regrader", work_root=self.work_root / "regrade")
+        self.assertTrue(result.finalized)
+        self.assertEqual(result.verdict, "pass")
+        with self.session_factory() as session:
+            complete_correction_runs(session)
+            self.assertEqual(session.get(api_models.CorrectionRunRow, run_id).status, "completed")
+            corrected = session.execute(select(api_models.EvaluationRow).where(api_models.EvaluationRow.correction_run_id == run_id)).scalar_one()
+            self.assertNotEqual(corrected.id, original_id)
+            self.assertEqual(session.get(api_models.EvaluationRow, original_id).result, original_result)
+            self.assertEqual(session.query(api_models.WorkItemRow).filter_by(type="engineering").count(), 1)
+            self.assertEqual(aggregate_campaign_snapshot(session, campaign_id, correction_run_id=run_id)["suite_rate"], 1.0)
+
+
     def test_verification_recovers_the_candidate_with_no_shared_filesystem_at_all(self) -> None:
         """Review finding #5: a prior version's independence test still
         pointed both phases at the same local directory, and candidate bytes

@@ -621,7 +621,7 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("draft", response.json()["error"]["message"])
 
-    def _drive_campaign_to_terminal(self, campaign_id: uuid.UUID, *, resolve: bool) -> None:
+    def _drive_campaign_to_terminal(self, campaign_id: uuid.UUID, *, resolve: bool, retain_source: bool = False) -> None:
         from aieb_core.models import CandidateManifest
         from aieb_runner.artifacts import StoredCandidate
         from aieb_api.worker.runner_bridge import _serialize_stored_candidate
@@ -635,7 +635,17 @@ class ApiServiceTests(unittest.TestCase):
             if resolve:
                 session.execute(update(api_models.AttemptRow).where(api_models.AttemptRow.id == attempt.id).values(phase="terminal", terminal_status="pass"))
                 manifest = CandidateManifest(schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64, full_tree_hash="2" * 64, files=())
-                candidate = api_models.CandidateRow(attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(), validation_status="valid", stored_candidate=_serialize_stored_candidate(StoredCandidate(manifest, (), ())))
+                stored = StoredCandidate(manifest, (), ())
+                if retain_source:
+                    from aieb_core.models import SubmissionPolicy
+                    from aieb_runner.artifacts import collect_candidate
+                    from aieb_api.worker.artifact_store import PostgresArtifactStore
+                    source = ROOT / "suites/dev/rag.document-freshness/repo"
+                    stored = collect_candidate(frozen_source=source, workspace=source,
+                        submission=SubmissionPolicy(include=("knowledge_service/**",), protected=("dev_tests/**",), max_artifact_bytes=52428800),
+                        base_revision_digest="1" * 64, store=PostgresArtifactStore(db.session_factory()), access_scope=str(attempt.id))
+                    manifest = stored.manifest
+                candidate = api_models.CandidateRow(attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(), validation_status="valid", stored_candidate=_serialize_stored_candidate(stored))
                 fixture = api_models.FixtureRevisionRow(digest="4" * 64, visibility="public", family_id="knowledge-service-a")
                 task = session.execute(select(api_models.TaskRevisionRow).where(api_models.TaskRevisionRow.slug == "rag.document-freshness")).scalar_one()
                 session.add_all([candidate, fixture]); session.flush()
@@ -1895,11 +1905,92 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["cost_per_resolution"], 2.0)
         self.assertEqual(snapshot["infrastructure_attrition"], 0.5)
 
+    def test_regrade_queue_retains_original_candidate_and_attempt(self) -> None:
+        from aieb_api.evidence_integrity import evidence_digest
+        from aieb_api.regrading import enqueue_regrade, installed_scoring_bundle, correction_for_attempt
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            user = api_models.User(oidc_subject="regrade-reviewer", oidc_issuer="test")
+            session.add(user); session.flush()
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            original_ids = {a.id for a in self._aggregation_attempts(session, campaign_id)}
+            digest = evidence_digest(installed_scoring_bundle(session, campaign_id))
+            with self.assertRaisesRegex(ValueError, "installed trusted"):
+                enqueue_regrade(session, campaign, scoring_digest="0" * 64, reason="test", user_id=user.id)
+            run = enqueue_regrade(session, campaign, scoring_digest=digest, reason="test", user_id=user.id)
+            session.commit()
+            attempts = self._aggregation_attempts(session, campaign_id)
+            self.assertEqual(len(attempts), 4)
+            for attempt in attempts:
+                if attempt.id in original_ids:
+                    self.assertEqual((attempt.phase, attempt.terminal_status), ("terminal", "pass"))
+                else:
+                    self.assertEqual((attempt.phase, attempt.number), ("queued", 2))
+                    self.assertEqual(correction_for_attempt(session, attempt.id).id, run.id)
+            items = session.execute(select(api_models.WorkItemRow).where(api_models.WorkItemRow.type == "regrade")).scalars().all()
+            self.assertEqual(len(items), 2)
+            self.assertTrue(all(item.state == "ready" for item in items))
+            self.assertEqual(session.query(api_models.CandidateRow).count(), 4)
+
+
+    def test_regrade_then_superseding_publication_end_to_end(self) -> None:
+        from aieb_api.worker import repository
+        from aieb_api.worker.runner_bridge import execute_leased_work
+
+        campaign_id = uuid.UUID(self._create_and_freeze())
+        operator = _auth_header(("operator",))
+        reviewer = _auth_header(("reviewer",), subject="reviewer-only")
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "rg-start"})
+        self._drive_campaign_to_terminal(campaign_id, resolve=True, retain_source=True)
+        with db.session_factory()() as session:
+            from aieb_api.worker.repository import maybe_complete_campaign
+            self.assertTrue(maybe_complete_campaign(session, campaign_id))
+        first = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        approved = self.client.post(f"/v1/publications/preparations/{first.json()['id']}/review",
+            headers=reviewer, json={"decision": "approve", "review_kind": "independent"})
+        original_publication = approved.json()["published_publication_id"]
+        self.assertEqual(self.client.get(f"/v1/publications/{original_publication}/results").json()["snapshot"]["suite_rate"], 1.0)
+
+        bundle = self.client.get(f"/v1/campaigns/{campaign_id}/scoring-bundle", headers=reviewer)
+        self.assertEqual(bundle.status_code, 200, bundle.text)
+        with db.session_factory()() as session:
+            frozen = session.get(api_models.CampaignRow, campaign_id).resolved
+        registry = {"cohort": frozen["cohort"], "protocol": {**frozen["protocol"], "scoring_digest": bundle.json()["scoring_digest"]}, "budget": frozen["budget"]}
+        regrade = self.client.post(f"/v1/campaigns/{campaign_id}/regrade", headers=reviewer,
+            json={"registry": registry, "reason": "staging scoring correction"})
+        self.assertEqual(regrade.status_code, 200, regrade.text)
+        while True:
+            with db.session_factory()() as session:
+                leased = repository.claim_work_item(session, worker_id="regrader", work_type="regrade")
+            if leased is None:
+                break
+            result = execute_leased_work(db.session_factory(), leased, worker_id="regrader", work_root=Path(".cache") / "eng011-tests" / uuid.uuid4().hex)
+            self.assertEqual(result.verdict, "fail")
+        from aieb_api.regrading import complete_correction_runs
+        with db.session_factory()() as session:
+            complete_correction_runs(session)
+        run_id = regrade.json()["id"]
+        self.assertEqual(self.client.get(f"/v1/correction-runs/{run_id}", headers=reviewer).json()["status"], "completed")
+
+        superseding = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator,
+            json={"supersedes_publication_id": original_publication, "correction_run_id": run_id, "correction_reason": "scoring corrected"})
+        self.assertEqual(superseding.status_code, 200, superseding.text)
+        approved = self.client.post(f"/v1/publications/preparations/{superseding.json()['id']}/review",
+            headers=reviewer, json={"decision": "approve", "review_kind": "independent"})
+        self.assertEqual(approved.status_code, 200, approved.text)
+        corrected_publication = approved.json()["published_publication_id"]
+        self.assertEqual(self.client.get(f"/v1/publications/{corrected_publication}/results").json()["snapshot"]["suite_rate"], 0.0)
+        self.assertEqual(self.client.get(f"/v1/publications/{original_publication}/results").json()["status"], "superseded")
+        corrections = self.client.get("/v1/corrections")
+        self.assertIn(str(corrected_publication), repr(corrections.json()))
+
     def test_correction_snapshot_selects_run_without_changing_original(self) -> None:
         from aieb_api.aggregation import aggregate_campaign_snapshot, CampaignNotAggregatable
 
         campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
         with db.session_factory()() as session:
+
             original = self._aggregation_attempts(session, campaign_id)[0]
             candidate = session.execute(select(api_models.CandidateRow).where(
                 api_models.CandidateRow.attempt_id == original.id,
