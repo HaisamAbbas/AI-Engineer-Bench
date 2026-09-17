@@ -1385,7 +1385,7 @@ class ApiServiceTests(unittest.TestCase):
         omitted, the (task, agent-b) planned cell is wholly missing from the
         real data - the exact case `aggregate_campaign_snapshot` must detect as
         incomplete coverage by wiring the frozen plan through summarize()."""
-        from aieb_core.models import CandidateManifest, EntrantRevision, TaskRevision
+        from aieb_core.models import CandidateManifest, EntrantRevision, TaskRevision, Trial
         from aieb_runner.artifacts import StoredCandidate
         from aieb_api.worker.runner_bridge import _serialize_stored_candidate
 
@@ -1415,12 +1415,14 @@ class ApiServiceTests(unittest.TestCase):
         task_digest = TaskRevision.model_validate(task_manifest).digest()
         entrant_a_digest = EntrantRevision.model_validate(entrant_a_manifest).digest()
         entrant_b_digest = EntrantRevision.model_validate(entrant_b_manifest).digest()
+        frozen_trials = {
+            slug: Trial(id=uuid.uuid4(), campaign_digest="a" * 64, cohort_digest="b" * 64,
+                        task_digest=task_digest, entrant_digest=digest, repetition_index=0, order_index=index)
+            for index, (slug, digest) in enumerate((("agent-a", entrant_a_digest), ("agent-b", entrant_b_digest)))
+        }
         resolved = {
             "tasks": [task_manifest], "entrants": [entrant_a_manifest, entrant_b_manifest],
-            "trials": [
-                {"task_digest": task_digest, "entrant_digest": entrant_a_digest, "repetition_index": 0},
-                {"task_digest": task_digest, "entrant_digest": entrant_b_digest, "repetition_index": 0},
-            ],
+            "trials": [trial.model_dump(mode="json") for trial in frozen_trials.values()],
         }
 
         with db.session_factory()() as session:
@@ -1436,10 +1438,13 @@ class ApiServiceTests(unittest.TestCase):
             session.add_all([task, entrant_a, entrant_b, fixture, campaign])
             session.flush()
 
-            def _persist_pass(entrant: api_models.EntrantRevisionRow) -> None:
-                trial = api_models.TrialRow(campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id, repetition=0, cell_digest="c" * 64)
+            def _persist_pass(entrant: api_models.EntrantRevisionRow, *, scored: bool = True) -> None:
+                frozen = frozen_trials[entrant.slug]
+                trial = api_models.TrialRow(id=frozen.id, campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id, repetition=frozen.repetition_index, cell_digest=frozen.digest())
                 session.add(trial)
                 session.flush()
+                if not scored:
+                    return
                 attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="terminal", terminal_status="pass")
                 session.add(attempt)
                 session.flush()
@@ -1456,8 +1461,7 @@ class ApiServiceTests(unittest.TestCase):
                 ))
 
             _persist_pass(entrant_a)
-            if include_entrant_b_trial:
-                _persist_pass(entrant_b)
+            _persist_pass(entrant_b, scored=include_entrant_b_trial)
             campaign_id = campaign.id
             session.commit()
         return campaign_id
@@ -1492,6 +1496,277 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["per_entrant"]["agent-b"], 1.0)
         self.assertIn("rag", snapshot["per_category"])
         self.assertEqual(snapshot["per_category"]["rag"]["agent-a"], 1.0)
+
+    def test_aggregate_campaign_snapshot_rejects_unplanned_passing_trial(self) -> None:
+        from aieb_api.aggregation import CampaignNotAggregatable, aggregate_campaign_snapshot, campaign_observations
+        from aieb_core.models import TaskRevision, Trial
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            self.assertTrue(aggregate_campaign_snapshot(session, campaign_id)["complete_for_rank"])
+            original = session.execute(select(api_models.TrialRow).where(api_models.TrialRow.campaign_id == campaign_id)).scalars().first()
+            task = session.get(api_models.TaskRevisionRow, original.task_revision_id)
+            rogue_manifest = {**task.manifest, "id": "rag.unplanned-task"}
+            rogue_task = api_models.TaskRevisionRow(
+                slug=rogue_manifest["id"], version=task.version, family_id=task.family_id,
+                category=task.category, source_digest=task.source_digest,
+                manifest_digest=TaskRevision.model_validate(rogue_manifest).digest(),
+                evaluator_id=task.evaluator_id, manifest=rogue_manifest,
+            )
+            session.add(rogue_task)
+            session.flush()
+            frozen = session.get(api_models.CampaignRow, campaign_id).resolved["trials"][0]
+            rogue_contract = Trial.model_validate({**frozen, "id": str(uuid.uuid4()), "task_digest": rogue_task.manifest_digest})
+            rogue = api_models.TrialRow(
+                id=rogue_contract.id, campaign_id=campaign_id, task_revision_id=rogue_task.id,
+                entrant_revision_id=original.entrant_revision_id, repetition=0, cell_digest=rogue_contract.digest(),
+            )
+            session.add(rogue)
+            session.flush()
+            attempt = api_models.AttemptRow(trial_id=rogue.id, number=1, phase="terminal", terminal_status="pass")
+            session.add(attempt)
+            session.flush()
+            candidate = api_models.CandidateRow(attempt_id=attempt.id, tree_digest="9" * 64, manifest_digest="8" * 64, validation_status="valid", stored_candidate={})
+            session.add(candidate)
+            session.flush()
+            evaluation = session.execute(select(api_models.EvaluationRow)).scalars().first()
+            session.add(api_models.EvaluationRow(candidate_id=candidate.id, evaluator_id=evaluation.evaluator_id,
+                fixture_id=evaluation.fixture_id, schedule_digest=evaluation.schedule_digest, verdict="pass", result={"checks": {"api-ready": True}}))
+            session.commit()
+            for aggregate in (campaign_observations, aggregate_campaign_snapshot):
+                with self.assertRaisesRegex(CampaignNotAggregatable, "missing or extra trial IDs"):
+                    aggregate(session, campaign_id)
+
+    def test_aggregate_campaign_snapshot_rejects_missing_or_mismatched_trial_identity(self) -> None:
+        from aieb_api.aggregation import CampaignNotAggregatable, aggregate_campaign_snapshot, campaign_observations
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        with db.session_factory()() as session:
+            # agent-b has a planned row but no attempts, so identity changes do
+            # not trip attempt foreign keys before reaching the aggregation guard.
+            trial = session.execute(select(api_models.TrialRow).join(api_models.EntrantRevisionRow)
+                .where(api_models.TrialRow.campaign_id == campaign_id, api_models.EntrantRevisionRow.slug == "agent-b")).scalar_one()
+            cases = (("id", uuid.uuid4()), ("repetition", 1), ("cell_digest", "0" * 64), ("missing", None))
+            for field, value in cases:
+                with self.subTest(field=field), session.begin_nested() as savepoint:
+                    try:
+                        if field == "missing":
+                            session.delete(trial)
+                        else:
+                            setattr(trial, field, value)
+                        session.flush()
+                        for aggregate in (campaign_observations, aggregate_campaign_snapshot):
+                            with self.assertRaises(CampaignNotAggregatable):
+                                aggregate(session, campaign_id)
+                    finally:
+                        savepoint.rollback()
+    def test_aggregate_campaign_snapshot_rejects_duplicate_or_incomplete_frozen_matrix(self) -> None:
+        from copy import deepcopy
+        from aieb_api.aggregation import CampaignNotAggregatable, aggregate_campaign_snapshot
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True, campaign_state="draft")
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            original = deepcopy(campaign.resolved)
+            for case in ("missing", "empty", "partial", "duplicate_id", "duplicate_cell", "unknown_task", "unknown_entrant"):
+                with self.subTest(case=case), session.begin_nested() as savepoint:
+                    try:
+                        resolved = deepcopy(original)
+                        if case == "missing":
+                            del resolved["trials"]
+                        elif case == "empty":
+                            resolved["trials"] = []
+                        elif case == "partial":
+                            del resolved["trials"][0]["id"]
+                        elif case.startswith("duplicate"):
+                            duplicate = deepcopy(resolved["trials"][0])
+                            if case == "duplicate_cell":
+                                duplicate["id"] = str(uuid.uuid4())
+                            resolved["trials"].append(duplicate)
+                        else:
+                            resolved["trials"][0]["task_digest" if case == "unknown_task" else "entrant_digest"] = "0" * 64
+                        campaign.resolved = resolved
+                        campaign.state = "completed"
+                        session.flush()
+                        with self.assertRaises(CampaignNotAggregatable):
+                            aggregate_campaign_snapshot(session, campaign_id)
+                    finally:
+                        savepoint.rollback()
+
+
+    def test_aggregate_campaign_snapshot_unknown_invalid_attempt_cost_is_not_discarded(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        with db.session_factory()() as session:
+            success = self._aggregation_attempts(session, campaign_id)[0]
+            success.number = 2
+            session.flush()
+            session.add(api_models.AttemptRow(
+                trial_id=success.trial_id, number=1, phase="terminal", terminal_status="infrastructure_invalid",
+            ))
+            for role in ("engineer", "dev_application", "verifier_application"):
+                self._aggregation_usage(session, success, role, [("1", None)])
+            session.commit()
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+        self.assertIsNone(snapshot["total_campaign_cost_usd"])
+        self.assertIsNone(snapshot["verifier_cost_total_usd"])
+        self.assertEqual(snapshot["cost_per_resolution"], 2.0)
+        self.assertEqual(snapshot["infrastructure_attrition"], 0.5)
+
+    def test_aggregate_campaign_snapshot_first_scored_attempt_is_final(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot, campaign_observations
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        with db.session_factory()() as session:
+            later = self._aggregation_attempts(session, campaign_id)[0]
+            later.number = 2
+            session.flush()
+            original = api_models.AttemptRow(
+                trial_id=later.trial_id, number=1, phase="terminal", terminal_status="fail",
+            )
+            session.add(original)
+            session.flush()
+            candidate = api_models.CandidateRow(
+                attempt_id=original.id, tree_digest="9" * 64, manifest_digest="8" * 64,
+                validation_status="valid", stored_candidate={},
+            )
+            session.add(candidate)
+            session.flush()
+            evaluation = session.execute(select(api_models.EvaluationRow)).scalar_one()
+            session.add(api_models.EvaluationRow(
+                candidate_id=candidate.id, evaluator_id=evaluation.evaluator_id,
+                fixture_id=evaluation.fixture_id, schedule_digest=evaluation.schedule_digest,
+                verdict="fail", result={"checks": {"api-ready": False}},
+            ))
+            session.commit()
+            observations = campaign_observations(session, campaign_id)
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+        self.assertEqual([v.passed for v in observations], [False, None])
+        self.assertEqual(snapshot["per_task"]["rag.document-freshness:agent-a"]["n"], 1)
+        self.assertEqual(snapshot["per_task"]["rag.document-freshness:agent-a"]["s"], 0)
+
+
+    def test_aggregate_campaign_snapshot_cost_receipts_preserve_unknown_and_zero(self) -> None:
+        from decimal import Decimal
+        from aieb_api.aggregation import _role_cost, aggregate_campaign_snapshot
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        cases = (
+            ([(None, None)], None),
+            ([("2", None), (None, None)], None),
+            ([("0", "9")], Decimal("0")),
+            ([(None, "1.25"), ("2", "99")], Decimal("3.25")),
+            ([], None),  # request exists but its receipt has not arrived
+        )
+        with db.session_factory()() as session:
+            attempt = self._aggregation_attempts(session, campaign_id)[0]
+            for role in ("dev_application", "verifier_application"):
+                self._aggregation_usage(session, attempt, role, [("0", None)])
+            session.commit()
+            for receipts, expected in cases:
+                with self.subTest(receipts=receipts), session.begin_nested() as savepoint:
+                    try:
+                        self._aggregation_usage(session, attempt, "engineer", receipts)
+                        cost = _role_cost(session, attempt.id, {"engineer"})
+                        self.assertEqual(None if cost is None else Decimal(cost), expected)
+                        snapshot = aggregate_campaign_snapshot(session, campaign_id)
+                        if expected is None:
+                            self.assertIsNone(snapshot["total_campaign_cost_usd"])
+                            self.assertIsNone(snapshot["cost_per_resolution"])
+                        else:
+                            self.assertEqual(snapshot["total_campaign_cost_usd"], float(expected))
+                            self.assertEqual(snapshot["cost_per_resolution"], float(expected))
+                    finally:
+                        savepoint.rollback()
+            # A known receipt on one request must not hide a pending second request.
+            self._aggregation_usage(session, attempt, "engineer", [("2", None)])
+            self._aggregation_usage(session, attempt, "engineer", [])
+            self.assertIsNone(_role_cost(session, attempt.id, {"engineer"}))
+
+
+    def _aggregation_attempts(self, session, campaign_id):
+        return session.execute(
+            select(api_models.AttemptRow)
+            .join(api_models.TrialRow)
+            .where(api_models.TrialRow.campaign_id == campaign_id)
+            .order_by(api_models.AttemptRow.number)
+        ).scalars().all()
+
+    def _aggregation_usage(self, session, attempt, role, receipts):
+        request = api_models.UsageRequestRow(
+            attempt_id=attempt.id, actor_role=role, request_id=uuid.uuid4().hex,
+        )
+        session.add(request)
+        session.flush()
+        for retry, (reported, estimated) in enumerate(receipts):
+            session.add(api_models.UsageReceiptRow(
+                usage_request_id=request.id, physical_retry=retry,
+                reported_cost_usd=reported, estimated_cost_usd=estimated,
+            ))
+        session.flush()
+
+    def test_aggregate_campaign_snapshot_retains_replacement_attempt_costs_and_attrition(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot, campaign_observations
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            successes = self._aggregation_attempts(session, campaign_id)
+            success = successes[0]
+            success.number = 2
+            session.flush()
+            invalid = api_models.AttemptRow(
+                trial_id=success.trial_id, number=1, phase="terminal", terminal_status="infrastructure_invalid",
+            )
+            session.add(invalid)
+            session.flush()
+            for attempt in successes:
+                for role, cost in (("engineer", "1"), ("dev_application", "2"), ("verifier_application", "3")):
+                    self._aggregation_usage(session, attempt, role, [(cost, None)])
+            for role, cost in (("engineer", "10"), ("dev_application", "20"), ("verifier_judge", "30")):
+                self._aggregation_usage(session, invalid, role, [(cost, None)])
+            session.commit()
+            observations = campaign_observations(session, campaign_id)
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+            entrant = session.get(api_models.EntrantRevisionRow, session.get(api_models.TrialRow, success.trial_id).entrant_revision_id).slug
+        self.assertEqual(len(observations), 3)
+        self.assertEqual(snapshot["total_campaign_cost_usd"], 72.0)
+        self.assertEqual(snapshot["verifier_cost_total_usd"], 36.0)
+        self.assertEqual(snapshot["per_entrant_verifier_cost_usd"][entrant], 33.0)
+        self.assertAlmostEqual(snapshot["infrastructure_attrition"], 1 / 3)
+        self.assertEqual(snapshot["per_entrant_infrastructure_attrition"][entrant], 0.5)
+        self.assertEqual(snapshot["cost_per_resolution"], 3.0)
+        self.assertTrue(snapshot["complete_for_rank"])
+        self.assertEqual(snapshot["per_task"][f"rag.document-freshness:{entrant}"]["n"], 1)
+
+    def test_aggregate_campaign_snapshot_unknown_deadlines_are_unavailable(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot, campaign_observations
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            self.assertTrue(all(v.deadline is None for v in campaign_observations(session, campaign_id)))
+            snapshot = aggregate_campaign_snapshot(session, campaign_id)
+        self.assertIsNone(snapshot["deadline_rate"])
+        self.assertEqual(snapshot["per_entrant_deadline_rate"], {"agent-a": None, "agent-b": None})
+
+    def test_aggregate_campaign_snapshot_rejects_nonvalid_terminal_statuses(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot, campaign_observations
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=False)
+        with db.session_factory()() as session:
+            attempt = self._aggregation_attempts(session, campaign_id)[0]
+            for status in ("scorer_error", "infrastructure_invalid", "cancelled", "unrecognized", None):
+                with self.subTest(status=status):
+                    attempt.terminal_status = status
+                    session.flush()
+                    observation, = campaign_observations(session, campaign_id)
+                    self.assertFalse(observation.execution_valid)
+                    self.assertIsNone(observation.passed)  # even with a persisted PASS evaluation
+                    snapshot = aggregate_campaign_snapshot(session, campaign_id)
+                    self.assertEqual(snapshot["infrastructure_attrition"], 1.0)
+                    self.assertFalse(snapshot["complete_for_rank"])
+                    self.assertEqual(snapshot["per_entrant_valid_trials"]["agent-a"], 0)
+
 
     def test_publication_results_reject_a_snapshot_that_does_not_match_its_recorded_digest(self) -> None:
         # Review finding #14: nothing recomputed snapshot_digest against the
