@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from ..models import (
     AttemptEventRow,
     AttemptRow,
+    BudgetReservationRow,
     CampaignRow,
     CandidateRow,
     EntrantRevisionRow,
@@ -156,7 +157,7 @@ def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
     return created
 
 
-_ATTEMPT_PHASE_FOR_WORK_TYPE = {"engineering": "engineering", "verification": "verifying"}
+_ATTEMPT_PHASE_FOR_WORK_TYPE = {"engineering": "engineering", "verification": "verifying", "regrade": "verifying"}
 
 
 def claim_work_item(session: Session, *, worker_id: str, work_type: str | None = None, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> LeasedWork | None:
@@ -166,7 +167,22 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
     both `engineering` and `verification` queues - a real worker pool
     services both phases, not a phase-dedicated one; pass an explicit
     `work_type` only to isolate one phase's queue (as some tests do)."""
-    query = select(WorkItemRow.id).where(WorkItemRow.state == "ready")
+    # A PAUSED campaign must not have new work dispatched (ENG-017 pause/resume):
+    # its ready items stay ready and are picked up again on resume. Cancelling/
+    # cancelled campaigns are deliberately NOT excluded here - their ready items
+    # are still claimed so the worker can finalize each attempt as `cancelled`
+    # (the attempt is not engineered; see is_campaign_cancelling in the worker
+    # loop), which is how a cancellation drains to completion. Excluded via a
+    # subquery so the FOR UPDATE SKIP LOCKED below still locks only work_item
+    # rows, never the campaign/trial rows it joins through.
+    paused = (
+        select(WorkItemRow.id)
+        .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
+        .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
+        .join(CampaignRow, CampaignRow.id == TrialRow.campaign_id)
+        .where(CampaignRow.state == "paused")
+    )
+    query = select(WorkItemRow.id).where(WorkItemRow.state == "ready", WorkItemRow.id.not_in(paused))
     if work_type is not None:
         query = query.where(WorkItemRow.type == work_type)
     candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
@@ -227,6 +243,7 @@ class EvaluationOutcome:
     schedule_digest: str
     verdict: str | None
     result: dict
+    correction_run_id: uuid.UUID | None = None
 
 
 def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_seconds: int) -> bool:
@@ -422,6 +439,7 @@ def record_evaluation(
     row = EvaluationRow(
         candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, fixture_id=evaluation.fixture_id,
         schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
+        correction_run_id=evaluation.correction_run_id,
     )
     session.add(row)
     attempt_id = session.execute(select(CandidateRow.attempt_id).where(CandidateRow.id == candidate_id)).scalar_one()
@@ -722,12 +740,12 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         item.state = "failed"
         orphaned.append(attempt.id)
         verification_attempts = session.execute(
-            select(func.count()).select_from(WorkItemRow).where(WorkItemRow.attempt_id == attempt.id, WorkItemRow.type == "verification")
+            select(func.count()).select_from(WorkItemRow).where(WorkItemRow.attempt_id == attempt.id, WorkItemRow.type == item.type)
         ).scalar_one()
         if verification_attempts - 1 < max_replacements:
             # Retry verification in place - same attempt, same persisted
             # candidate - a dead verifier never causes engineering to repeat.
-            session.add(WorkItemRow(attempt_id=attempt.id, type="verification", state="ready"))
+            session.add(WorkItemRow(attempt_id=attempt.id, type=item.type, state="ready"))
             requeued += 1
         else:
             attempt.phase = "terminal"
@@ -766,6 +784,52 @@ def maybe_complete_cancellation(session: Session, campaign_id: uuid.UUID) -> boo
     if outstanding > 0:
         return False
     campaign.state = "cancelled"
+    session.commit()
+    return True
+
+
+def maybe_complete_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
+    """Once a running campaign has no work left ready or leased, transition it
+    to a terminal state: `completed` if every planned trial has a valid scored
+    terminal attempt, otherwise `incomplete` (spec: incomplete coverage is a
+    first-class, publishable outcome). The authoritative completeness for
+    ranking is still recomputed at publication time by
+    aggregate_campaign_snapshot; this state is a coarse operator-facing signal.
+    Marks the budget reservation `consumed`."""
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None or campaign.state != "running":
+        return False
+    outstanding = session.execute(
+        select(func.count())
+        .select_from(WorkItemRow)
+        .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
+        .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
+        .where(TrialRow.campaign_id == campaign_id, WorkItemRow.state.in_(("ready", "leased")))
+    ).scalar_one()
+    if outstanding > 0:
+        return False
+    total_trials = session.execute(
+        select(func.count()).select_from(TrialRow).where(TrialRow.campaign_id == campaign_id)
+    ).scalar_one()
+    resolved_trials = session.execute(
+        select(func.count(func.distinct(TrialRow.id)))
+        .select_from(TrialRow)
+        .join(AttemptRow, AttemptRow.trial_id == TrialRow.id)
+        .join(CandidateRow, CandidateRow.attempt_id == AttemptRow.id)
+        .join(EvaluationRow, EvaluationRow.candidate_id == CandidateRow.id)
+        .where(
+            TrialRow.campaign_id == campaign_id,
+            AttemptRow.phase == "terminal",
+            AttemptRow.terminal_status.notin_(("infrastructure_invalid", "cancelled")),
+            EvaluationRow.verdict.isnot(None),
+        )
+    ).scalar_one()
+    campaign.state = "completed" if total_trials > 0 and resolved_trials == total_trials else "incomplete"
+    reservation = session.execute(
+        select(BudgetReservationRow).where(BudgetReservationRow.campaign_id == campaign_id)
+    ).scalar_one_or_none()
+    if reservation is not None and reservation.status == "active":
+        reservation.status = "consumed"
     session.commit()
     return True
 

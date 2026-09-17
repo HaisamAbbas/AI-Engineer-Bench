@@ -27,6 +27,7 @@ from .models import (
     AttemptRow,
     CampaignRow,
     CandidateRow,
+    CorrectionRunRow,
     EntrantRevisionRow,
     EvaluationRow,
     TaskRevisionRow,
@@ -179,7 +180,53 @@ def _latest_evaluation(session: Session, attempt_id: UUID) -> EvaluationRow | No
     ).scalar_one_or_none()
 
 
-def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObservation, ...]:
+def selected_campaign_evaluations(
+    session: Session, campaign_id: UUID, correction_run_id: UUID | None = None,
+) -> dict[UUID, EvaluationRow]:
+    """Select original definitive results, overridden only by the requested run.
+
+    Corrections from other runs never resolve an original trial. A corrected
+    indeterminate verdict overrides the original too: uncertainty cannot be
+    hidden by falling back to an earlier pass.
+    """
+    _, trials = _validated_campaign_trials(session, campaign_id)
+    if correction_run_id is not None:
+        run = session.get(CorrectionRunRow, correction_run_id)
+        if run is None or run.campaign_id != campaign_id or run.status != "completed":
+            raise CampaignNotAggregatable("correction run must be completed and belong to this campaign")
+    selected: dict[UUID, EvaluationRow] = {}
+    for trial in trials:
+        attempts = session.execute(select(AttemptRow).where(
+            AttemptRow.trial_id == trial.id,
+        ).order_by(AttemptRow.number)).scalars().all()
+        corrected: list[EvaluationRow] = []
+        for attempt in attempts:
+            evaluations = session.execute(select(EvaluationRow).join(CandidateRow).where(
+                CandidateRow.attempt_id == attempt.id,
+            ).order_by(EvaluationRow.created_at.desc(), EvaluationRow.id.desc())).scalars().all()
+            matching = [e for e in evaluations if correction_run_id is not None and e.correction_run_id == correction_run_id]
+            if matching:
+                evaluation = matching[0]
+                if (len(matching) != 1 or attempt.phase != "terminal"
+                        or attempt.terminal_status not in _VALID_TERMINAL_STATUSES
+                        or evaluation.verdict != attempt.terminal_status):
+                    raise CampaignNotAggregatable("correction has ambiguous or invalid scored evidence")
+                corrected.append(evaluation)
+            original = next((e for e in evaluations if e.correction_run_id is None), None)
+            if (trial.id not in selected and original is not None and attempt.phase == "terminal"
+                    and original.verdict == attempt.terminal_status
+                    and _VERDICT_TO_PASSED.get(original.verdict) is not None):
+                selected[trial.id] = original
+        if len(corrected) > 1:
+            raise CampaignNotAggregatable("correction run has multiple results for one trial")
+        if corrected:
+            selected[trial.id] = corrected[0]
+    return selected
+
+
+def campaign_observations(
+    session: Session, campaign_id: UUID, correction_run_id: UUID | None = None,
+) -> tuple[TrialObservation, ...]:
     """One observation per persisted attempt, retaining replacement spend.
 
     Only the first valid scored attempt resolves a trial (never the best or
@@ -188,6 +235,11 @@ def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObs
     not invented as an infrastructure failure or unknown-cost execution.
     """
     resolved, trials = _validated_campaign_trials(session, campaign_id)
+    selected = selected_campaign_evaluations(session, campaign_id, correction_run_id)
+    selected_attempts = {
+        session.get(CandidateRow, evaluation.candidate_id).attempt_id: evaluation
+        for evaluation in selected.values()
+    }
     _, category_by_task, family_by_task = _planned_cells_and_categories(resolved)
     observations: list[TrialObservation] = []
     for trial in trials:
@@ -201,17 +253,10 @@ def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObs
         attempts = session.execute(
             select(AttemptRow).where(AttemptRow.trial_id == trial.id).order_by(AttemptRow.number)
         ).scalars().all()
-        resolved_trial = False
         for attempt in attempts:
             execution_valid = attempt.phase == "terminal" and attempt.terminal_status in _VALID_TERMINAL_STATUSES
-            passed: bool | None = None
-            if execution_valid and not resolved_trial:
-                evaluation = _latest_evaluation(session, attempt.id)
-                # A mismatched or absent evaluation is unresolved, never a
-                # license to fabricate a scientific result from status alone.
-                if evaluation is not None and evaluation.verdict == attempt.terminal_status:
-                    passed = _VERDICT_TO_PASSED.get(evaluation.verdict)
-                resolved_trial = passed is not None
+            evaluation = selected_attempts.get(attempt.id)
+            passed = _VERDICT_TO_PASSED.get(evaluation.verdict) if evaluation is not None else None
             observations.append(
                 TrialObservation(
                     task_id=task_id,
@@ -234,7 +279,9 @@ def campaign_observations(session: Session, campaign_id: UUID) -> tuple[TrialObs
     return tuple(observations)
 
 
-def aggregate_campaign_snapshot(session: Session, campaign_id: UUID) -> dict:
+def aggregate_campaign_snapshot(
+    session: Session, campaign_id: UUID, correction_run_id: UUID | None = None,
+) -> dict:
     """Aggregate a frozen campaign's persisted trials into the authoritative
     analysis snapshot, wiring the campaign's OWN planned cells and categories
     through summarize() so incomplete coverage is detected against the real
@@ -245,7 +292,7 @@ def aggregate_campaign_snapshot(session: Session, campaign_id: UUID) -> dict:
     campaign = session.get(CampaignRow, campaign_id)
     if campaign is None or not campaign.resolved:
         raise CampaignNotAggregatable("campaign has no frozen resolved manifest to aggregate")
-    observations = campaign_observations(session, campaign_id)
+    observations = campaign_observations(session, campaign_id, correction_run_id)
     resolved = campaign.resolved
     planned_cells, _, _ = _planned_cells_and_categories(resolved)
     # required_repetitions comes from the frozen CampaignDraft (the planner

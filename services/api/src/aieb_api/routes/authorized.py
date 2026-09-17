@@ -200,10 +200,36 @@ def get_public_trial(trial_id: UUID, session: Session = Depends(get_session)) ->
     # downstream projection can rely on them being present.
     if not isinstance(selection, IncludedEvidenceSelection):
         raise not_found()
+    return public_run_evidence_for(session, trial, publication, selection)
+
+
+def verified_published_manifest(publication: PublicationRow) -> PublishedEvidenceManifest:
+    """Verify a publication's stored evidence manifest against its own digest,
+    shape, and snapshot binding (shared by the public run-evidence route and
+    the redacted export). Raises service_unavailable on any integrity fault."""
+    if publication.evidence_manifest is None or publication.evidence_manifest_digest is None:
+        raise not_found()
+    if evidence_digest(publication.evidence_manifest) != publication.evidence_manifest_digest:
+        raise service_unavailable("published run selection failed its recorded digest check")
+    try:
+        manifest = PublishedEvidenceManifest.model_validate(publication.evidence_manifest)
+    except Exception as exc:
+        raise service_unavailable("published run selection is malformed") from exc
+    if manifest.snapshot_digest != publication.snapshot_digest:
+        raise service_unavailable("published run selection is not bound to this publication's snapshot")
+    return manifest
+
+
+def public_run_evidence_for(
+    session: Session, trial: TrialRow, publication: PublicationRow, selection: IncludedEvidenceSelection
+) -> PublicRunEvidence:
+    """Build one trial's whitelist-redacted public run evidence from a pinned,
+    digest-verified included selection. Reused by GET /public/trials/{id} and
+    the redacted publication export so both share identical redaction."""
     attempt = session.get(AttemptRow, selection.attempt_id) if selection.attempt_id else None
     if selection.attempt_id is not None and attempt is None:
         raise service_unavailable("published attempt selection no longer exists")
-    if attempt is not None and attempt.trial_id != trial_id:
+    if attempt is not None and attempt.trial_id != trial.id:
         raise service_unavailable("published attempt does not belong to the selected trial")
     candidate = session.get(CandidateRow, selection.candidate_id) if selection.candidate_id else None
     if selection.candidate_id is not None and candidate is None:
