@@ -171,3 +171,13 @@ needed after merge (leave `diff_review.txt` untouched — it is intentionally un
 - Independent vs single-maintainer review is a disclosed LABEL; real public publication is
   out of scope/unauthorized.
 - Budget reservations are ESTIMATED (no provider hard hold exists).
+
+## Addendum (2026-09-17): gap closure on `prompt-14-gap-closure` (PR #3)
+The three staging gaps found after this handoff was written are closed on the stacked
+branch (do NOT re-implement from the instructions above): preparation-evidence GET
+(`routes/publications.py`), saved-draft exposure in `CampaignStateResponse.draft`, and
+invalidity review routes (`routes/invalidity.py` + `tests/test_invalidity_review.py`).
+The UI sections below predate the gap closure: the review page now has an "Inspect
+prepared materials" panel and the admin editor prefills the saved draft. Ledger updates
+live in `STATUS.md`, `DECISIONS.md`, `SESSION_HANDOFF.md`, and the ENG-017/018 evidence
+files. The uninterrupted full-suite run remains open (see PR #3 comment).

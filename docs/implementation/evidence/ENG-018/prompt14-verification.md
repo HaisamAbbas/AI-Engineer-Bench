@@ -50,9 +50,32 @@ explicitly open; implementation authorization does not silently close that gate.
 No real public release or production deployment was performed or authorized.
 Regrade is restricted to local/test/staging and the installed trusted scoring bundle;
 arbitrary external evaluator registries are not supported.
-The UI has no preparation-read or identity endpoint: reviewers must obtain prepared
-materials out of band; local self-approval blocking covers IDs prepared in that page
-session, while the server enforces actual user identity. This is not a complete
-identity-aware review console. Ephemeral signing keys are not durable production keys.
+Preparation reads now exist (closed on `prompt-14-gap-closure`, PR #3):
+`GET /v1/publications/preparations/{preparation_id}` serves the exact prepared
+snapshot, evidence manifest, correction reason, and identity-aware approval
+eligibility after recomputing both digests, and the review UI loads it through
+an "Inspect prepared materials" panel. No identity endpoint was added: the
+server remains the sole identity authority, and local self-approval blocking
+still covers only IDs prepared in that page session. Ephemeral signing keys
+are not durable production keys.
+
+## Gap-closure verification (2026-09-17, branch `prompt-14-gap-closure`, PR #3)
+
+- PostgreSQL regressions (migrated `aieb_gap_review` database): preparation-
+  detail read (401 unauthenticated; reviewer eligible; preparer blocked with
+  reason; digests and manifest present), saved-draft retrieval assertion, and
+  the historical invalidity review regression — all PASS.
+- Targeted frontend tests: PublicationReview 13, CampaignAdmin 7,
+  CampaignProgress 4 (24 total) PASS; `tsc --noEmit` clean; production build
+  PASS.
+- Full frontend suite: 55/56 PASS; the one failure was the accessibility
+  route sweep exceeding its default 5s timeout, which passes in isolation
+  (5.2s) and now carries an explicit 30s test budget. No axe rules relaxed
+  and no assertions weakened.
+- `generate_openapi.py --check` and pinned `openapi-typescript@7.13.0 --check`
+  PASS; `apps/web/src/api/schema.ts` byte-identical to the declared client.
+- Full backend `unittest discover` run on this branch was terminated locally
+  for time after progressing with tests passing and no failures; the
+  uninterrupted run remains an open follow-up (recorded on PR #3).
 Remote CI and independent acceptance must be recorded separately; local checks do
 not imply a green Ubuntu workflow.
