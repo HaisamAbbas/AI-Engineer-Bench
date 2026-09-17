@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -7,7 +7,9 @@ import { PublicationReview } from "./PublicationReview";
 import { usePublicationCorrectionRun, useWithdrawPublication } from "../api/publicationHooks";
 import { api } from "../api/client";
 import { renderWithProviders } from "../test/renderWithProviders";
-import { mockApi } from "../test/mockApi";
+import { mockAuthenticatedApi as mockApi } from "../test/mockApi";
+
+beforeEach(() => { sessionStorage.clear(); mockApi(); });
 
 const preparePath = "/v1/campaigns/{campaign_id}/publications/prepare";
 const reviewPath = "/v1/publications/preparations/{preparation_id}/review";
@@ -18,7 +20,7 @@ const runPath = "/v1/correction-runs/{run_id}";
 const prepared = {
   id: "prep-1", campaign_id: "camp-1", status: "prepared", snapshot_digest: "sha256:snapshot",
   evidence_manifest_digest: "sha256:evidence", review_kind: null, supersedes_publication_id: null,
-  published_publication_id: null, created_at: "2026-09-17T00:00:00Z",
+  published_publication_id: null, created_at: "2026-09-17T00:00:00Z", publication_class: "ranked",
 };
 const exported = {
   publication_id: "pub-1", campaign_id: "camp-1", status: "published", snapshot_digest: "sha256:export",
@@ -64,12 +66,13 @@ describe("PublicationReview", () => {
     expect(await screen.findByText("sha256:snapshot")).toBeInTheDocument();
     expect(screen.getByText("sha256:evidence")).toBeInTheDocument();
     expect(post).toHaveBeenCalledWith(preparePath, { params: { path: { campaign_id: "camp-1" } },
-      body: { supersedes_publication_id: null, correction_run_id: null, correction_reason: null } });
+      headers: { "Idempotency-Key": expect.any(String) },
+      body: { supersedes_publication_id: null, correction_run_id: null, correction_reason: null, publication_class: "ranked" } });
     await user.selectOptions(screen.getByLabelText("Decision"), "approve");
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: /I confirm this is a staging fixture/ }));
     expect(screen.getByRole("button", { name: "Approve and publish staging fixture" })).toBeDisabled();
     fill("Preparation ID", " PREP-1 ");
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: /I confirm this is a staging fixture/ }));
     expect(screen.getByRole("button", { name: "Approve and publish staging fixture" })).toBeDisabled();
     await user.selectOptions(screen.getByLabelText("Decision"), "reject");
     await user.click(screen.getByRole("button", { name: "Reject preparation" }));
@@ -78,7 +81,7 @@ describe("PublicationReview", () => {
     expect(post).toHaveBeenCalledTimes(2);
   });
 
-  it("requires fixture acknowledgement for manual approval and publishes with the disclosed review kind", async () => {
+  it("requires fixture acknowledgement for manual approval and records the independence attestation", async () => {
     const user = userEvent.setup();
     mockApi({});
     const post = mockPost({ [reviewPath]: { data: { ...prepared, status: "published", published_publication_id: "pub-1", review_kind: "independent" } } });
@@ -87,18 +90,16 @@ describe("PublicationReview", () => {
     await user.selectOptions(screen.getByLabelText("Decision"), "approve");
     const approve = screen.getByRole("button", { name: "Approve and publish staging fixture" });
     expect(approve).toBeDisabled();
-    await user.click(screen.getByRole("checkbox"));
-    await user.selectOptions(screen.getByLabelText("Review kind"), "independent");
-    expect(approve).toBeDisabled();
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: /independently of the preparation/i }));
     fill("Preparation ID", "prep-1");
     expect(approve).toBeDisabled();
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: "I confirm this is a staging fixture, not a real public publication." }));
     fill("Review notes (optional)", "Evidence reviewed");
     await user.click(approve);
     expect(await screen.findByRole("link", { name: "pub-1" })).toHaveAttribute("href", "/releases/pub-1");
     expect(post).toHaveBeenCalledWith(reviewPath, { params: { path: { preparation_id: "prep-1" } },
-      body: { decision: "approve", review_kind: "independent", notes: "Evidence reviewed" } });
+      headers: { "Idempotency-Key": expect.any(String) },
+      body: { decision: "approve", independence_attestation: true, notes: "Evidence reviewed" } });
     expect(approve).toBeDisabled();
   });
 
@@ -133,7 +134,8 @@ describe("PublicationReview", () => {
     fill("Correction reason", "Corrected scoring");
     await user.click(submit);
     await waitFor(() => expect(post).toHaveBeenCalledWith(preparePath, { params: { path: { campaign_id: "camp-1" } },
-      body: { supersedes_publication_id: "pub-old", correction_run_id: "run-1", correction_reason: "Corrected scoring" } }));
+      headers: { "Idempotency-Key": expect.any(String) },
+      body: { supersedes_publication_id: "pub-old", correction_run_id: "run-1", correction_reason: "Corrected scoring", publication_class: "ranked" } }));
   });
 
   it("surfaces server denial with request ID and never resubmits a mutation via error Retry", async () => {
@@ -145,7 +147,7 @@ describe("PublicationReview", () => {
     renderPage();
     fill("Preparation ID", "manual-id");
     await user.selectOptions(screen.getByLabelText("Decision"), "approve");
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: /I confirm this is a staging fixture/ }));
     await user.click(screen.getByRole("button", { name: "Approve and publish staging fixture" }));
     expect(await screen.findByText("Request ID: req-denied")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry" }));
@@ -175,7 +177,8 @@ describe("PublicationReview", () => {
     fill("Registry JSON", JSON.stringify(registry));
     await user.click(screen.getByRole("button", { name: "Start staging regrade" }));
     expect(await screen.findByText(/Correction completed/)).toBeInTheDocument();
-    expect(post).toHaveBeenCalledWith(regradePath, { params: { path: { campaign_id: "camp-1" } }, body: { registry, reason: "fixture correction" } });
+    expect(post).toHaveBeenCalledWith(regradePath, { params: { path: { campaign_id: "camp-1" } },
+      headers: { "Idempotency-Key": expect.any(String) }, body: { registry, reason: "fixture correction" } });
     expect(post).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith(runPath, { params: { path: { run_id: "run-1" } } });
   });
@@ -196,7 +199,8 @@ describe("PublicationReview", () => {
     status = "withdrawn";
     await user.click(screen.getByRole("button", { name: "Withdraw publication" }));
     expect(await screen.findByText("withdrawn", { selector: "dd" })).toBeInTheDocument();
-    expect(post).toHaveBeenCalledWith(withdrawPath, { params: { path: { publication_id: "pub-1" } }, body: { reason: "fixture only" } });
+    expect(post).toHaveBeenCalledWith(withdrawPath, { params: { path: { publication_id: "pub-1" } },
+      headers: { "Idempotency-Key": expect.any(String) }, body: { reason: "fixture only" } });
     expect(screen.getByText(/not cryptographic verification/)).toBeInTheDocument();
   });
 

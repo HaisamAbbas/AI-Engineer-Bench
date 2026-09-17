@@ -206,7 +206,7 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(stored.status_code, 200, stored.text)
         self.assertEqual(stored.json()["draft"], draft)
         response = self.client.patch(
-            f"/v1/campaigns/{campaign_id}", json={"draft": draft}, headers=_auth_header(("operator",)) | {"If-Match": "999"}
+            f"/v1/campaigns/{campaign_id}", json={"draft": draft}, headers=_auth_header(("operator",)) | {"If-Match": "999", "Idempotency-Key": "patch-stale"}
         )
         self.assertEqual(response.status_code, 412)
 
@@ -223,8 +223,11 @@ class ApiServiceTests(unittest.TestCase):
             },
             "protocol": {"schema_version": "aieb.protocol/v1", "id": "protocol-a", "scoring_digest": "9" * 64, "max_replacements": 2, "required_trace_coverage": False, "hard_cost_ranking": False},
             "budget": {
-                "schema_version": "aieb.budget/v1", "id": "budget-a", "engineer_wall_seconds": 1200, "verification_wall_seconds": 300,
+                # aieb.budget/v2: declares the environment upper bound the
+                # architecture's upper-bound reservation formula requires.
+                "schema_version": "aieb.budget/v2", "id": "budget-a", "engineer_wall_seconds": 1200, "verification_wall_seconds": 300,
                 "engineer_cpu": 2, "engineer_memory_mb": 1024,
+                "environment_upper_bound_usd": "0.5",
                 "per_role_budget_usd": [
                     {"role": "engineer", "limit_usd": None}, {"role": "dev_application", "limit_usd": None},
                     {"role": "verifier_application", "limit_usd": None}, {"role": "verifier_judge", "limit_usd": None},
@@ -418,7 +421,8 @@ class ApiServiceTests(unittest.TestCase):
         def call(repetitions: int) -> None:
             variant = {**draft, "repetitions": repetitions}
             barrier.wait(timeout=5)
-            response = self.client.patch(f"/v1/campaigns/{campaign_id}", json={"draft": variant}, headers=headers)
+            response = self.client.patch(f"/v1/campaigns/{campaign_id}", json={"draft": variant},
+                headers=headers | {"Idempotency-Key": f"patch-race-{repetitions}"})
             results.append(response.status_code)
 
         threads = [threading.Thread(target=call, args=(reps,)) for reps in (2, 3)]
@@ -541,7 +545,8 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(body["campaign"]["state"], "running")
         self.assertEqual(body["reservation"]["status"], "active")
         self.assertEqual(body["reservation"]["enforcement"], "estimated_time_limited")
-        self.assertEqual(body["reservation"]["reserved_usd"], "6.000000")  # 4 roles x 1.5
+        # (4 roles x 1.5 + 0.5 environment bound) x 2 trials x (1 + 2 replacements)
+        self.assertEqual(body["reservation"]["reserved_usd"], "39.000000")
         with db.session_factory()() as session:
             trials = session.execute(select(func.count()).select_from(api_models.TrialRow).where(api_models.TrialRow.campaign_id == uuid.UUID(campaign_id))).scalar_one()
             self.assertEqual(trials, 2)
@@ -559,25 +564,35 @@ class ApiServiceTests(unittest.TestCase):
 
     def test_pause_stops_new_dispatch_and_resume_restores_it(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
-        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-p"})
-        paused = self.client.post(f"/v1/campaigns/{campaign_id}/pause", headers=_auth_header(("operator",)))
+        operator = _auth_header(("operator",))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-p"})
+        paused = self.client.post(f"/v1/campaigns/{campaign_id}/pause", headers=operator | {"Idempotency-Key": "pause-p"})
         self.assertEqual(paused.status_code, 200)
         self.assertEqual(paused.json()["campaign"]["state"], "paused")
+        # A retry of the same pause (same key) replays the stored response.
+        replay = self.client.post(f"/v1/campaigns/{campaign_id}/pause", headers=operator | {"Idempotency-Key": "pause-p"})
+        self.assertEqual(replay.status_code, 200)
+        self.assertEqual(replay.json(), paused.json())
         from aieb_api.worker import repository
         with db.session_factory()() as session:
             self.assertIsNone(repository.claim_work_item(session, worker_id="w-paused"))
-        self.client.post(f"/v1/campaigns/{campaign_id}/resume", headers=_auth_header(("operator",)))
+        self.client.post(f"/v1/campaigns/{campaign_id}/resume", headers=operator | {"Idempotency-Key": "resume-p"})
         with db.session_factory()() as session:
             leased = repository.claim_work_item(session, worker_id="w-resumed")
             self.assertIsNotNone(leased)
 
     def test_cancel_releases_reservation_and_stops_dispatch(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
-        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-c"})
-        cancelled = self.client.post(f"/v1/campaigns/{campaign_id}/cancel", headers=_auth_header(("operator",)))
+        operator = _auth_header(("operator",))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-c"})
+        cancelled = self.client.post(f"/v1/campaigns/{campaign_id}/cancel", headers=operator | {"Idempotency-Key": "cancel-c"})
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(cancelled.json()["campaign"]["state"], "cancelling")
-        self.assertEqual(cancelled.json()["reservation"]["status"], "released")
+        self.assertEqual(cancelled.json()["reservation"]["status"], "active")  # released only after drain
+        # Cancellation is replay-safe: the same key returns the stored response
+        # rather than re-deriving a new state or a second reservation change.
+        replay = self.client.post(f"/v1/campaigns/{campaign_id}/cancel", headers=operator | {"Idempotency-Key": "cancel-c"})
+        self.assertEqual(replay.json(), cancelled.json())
         from aieb_api.worker import repository
         with db.session_factory()() as session:
             # A cancelling campaign's ready item is still claimable so the worker
@@ -621,7 +636,7 @@ class ApiServiceTests(unittest.TestCase):
         campaign_id = self._create_and_freeze(repetitions=1)
         response = self.client.patch(
             f"/v1/campaigns/{campaign_id}", json={"draft": self._draft_body()["draft"]},
-            headers=_auth_header(("operator",)) | {"If-Match": "1"},
+            headers=_auth_header(("operator",)) | {"If-Match": "1", "Idempotency-Key": "patch-frozen-plan"},
         )
         self.assertEqual(response.status_code, 409)
         self.assertIn("draft", response.json()["error"]["message"])
@@ -693,7 +708,8 @@ class ApiServiceTests(unittest.TestCase):
         self._drive_campaign_to_terminal(campaign_id, resolve=True)
         with db.session_factory()() as session:
             self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
-        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=operator | {"Idempotency-Key": "pub-prep-1"}, json={})
         self.assertEqual(prepared.status_code, 200, prepared.text)
         review_url = f"/v1/publications/preparations/{prepared.json()['id']}/review"
 
@@ -711,17 +727,27 @@ class ApiServiceTests(unittest.TestCase):
         self.assertIn("cannot approve", own.json()["approval_blocked_reason"])
 
         # Rejection keeps the preparation reviewable state honest.
-        rejected = self.client.post(review_url, headers=reviewer, json={"decision": "reject", "review_kind": "independent", "notes": "not yet"})
+        rejected = self.client.post(review_url, headers=reviewer | {"Idempotency-Key": "pub-rev-reject"},
+            json={"decision": "reject", "notes": "not yet"})
         self.assertEqual(rejected.status_code, 200, rejected.text)
         self.assertEqual(rejected.json()["status"], "rejected")
+        # review_kind is server-derived, never client-selected: without an
+        # independence attestation a distinct-identity review is honestly
+        # labelled single_maintainer even for a rejection.
+        self.assertEqual(rejected.json()["review_kind"], "single_maintainer")
 
-        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=operator | {"Idempotency-Key": "pub-prep-2"}, json={})
         self.assertEqual(prepared.status_code, 200, prepared.text)
         approved = self.client.post(
             f"/v1/publications/preparations/{prepared.json()['id']}/review",
-            headers=reviewer, json={"decision": "approve", "review_kind": "independent"},
+            headers=reviewer | {"Idempotency-Key": "pub-rev-approve"},
+            json={"decision": "approve", "independence_attestation": True},
         )
         self.assertEqual(approved.status_code, 200, approved.text)
+        # A distinct identity WITH the attestation is labelled independent, and
+        # the label travels into the signed manifest.
+        self.assertEqual(approved.json()["review_kind"], "independent")
         publication_id = approved.json()["published_publication_id"]
 
         signature = self.client.get(f"/v1/publications/{publication_id}/signature")
@@ -755,14 +781,75 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(snapshot_digest(export.json()["snapshot"]), export.json()["snapshot_digest"])
 
         withdrawn = self.client.post(
-            f"/v1/publications/{publication_id}/withdraw", headers=reviewer, json={"reason": "fixture only"},
+            f"/v1/publications/{publication_id}/withdraw", headers=reviewer | {"Idempotency-Key": "pub-withdraw"},
+            json={"reason": "fixture only"},
         )
         self.assertEqual(withdrawn.status_code, 200, withdrawn.text)
         self.assertEqual(withdrawn.json()["status"], "withdrawn")
+        # The withdrawal reason is recorded SEPARATELY from any correction
+        # reason; a withdrawal never rewrites the frozen correction rationale.
+        self.assertEqual(withdrawn.json()["withdrawal_reason"], "fixture only")
+        # Replaying the withdrawal with the same key returns the stored bundle.
+        replay = self.client.post(
+            f"/v1/publications/{publication_id}/withdraw", headers=reviewer | {"Idempotency-Key": "pub-withdraw"},
+            json={"reason": "fixture only"},
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json(), withdrawn.json())
         results = self.client.get(f"/v1/publications/{publication_id}/results")
         self.assertEqual(results.status_code, 200)
         self.assertEqual(results.json()["status"], "withdrawn")
         self.assertIn("withdrawn", results.json()["notice"])
+
+    def test_publication_prepare_discloses_cost_and_trace_evidence(self) -> None:
+        from aieb_api.snapshots import snapshot_digest
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        headers = _auth_header(("operator",))
+        with db.session_factory()() as session:
+            attempts = session.execute(select(api_models.AttemptRow).join(api_models.TrialRow).where(
+                api_models.TrialRow.campaign_id == campaign_id,
+            ).order_by(api_models.AttemptRow.id)).scalars().all()
+            recorded_id, missing_id = (str(attempt.id) for attempt in attempts)
+            request = api_models.UsageRequestRow(
+                attempt_id=attempts[0].id, actor_role="engineer", request_id="private-request-identity",
+            )
+            session.add(request)
+            session.flush()
+            session.add_all([
+                api_models.UsageReceiptRow(usage_request_id=request.id, physical_retry=0, reported_cost_usd="0"),
+                api_models.UsageReceiptRow(usage_request_id=request.id, physical_retry=1, estimated_cost_usd="1"),
+                api_models.AttemptEventRow(attempt_id=attempts[0].id, sequence=1,
+                    event_type="phase.started", payload={"private": "must-not-leak"}),
+            ])
+            session.commit()
+        prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=headers | {"Idempotency-Key": "disclosure-prep-1"}, json={})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        detail = self.client.get(f"/v1/publications/preparations/{prepared.json()['id']}", headers=headers)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        snapshot = detail.json()["snapshot"]
+        self.assertIn("coverage_disclosure", snapshot)
+        coverage = snapshot["coverage_disclosure"]
+        by_attempt = {item["attempt_id"]: item for item in coverage["attempts"]}
+        self.assertEqual(by_attempt[recorded_id]["trace"], "present")
+        self.assertEqual(by_attempt[recorded_id]["cost_by_role"]["engineer"], "estimated")
+        self.assertEqual(by_attempt[recorded_id]["cost_by_role"]["verifier_judge"], "unknown")
+        self.assertEqual(by_attempt[missing_id]["trace"], "missing")
+        self.assertEqual(set(by_attempt[missing_id]["cost_by_role"].values()), {"unknown"})
+        self.assertFalse(coverage["hard_cost_eligible"])
+        self.assertNotIn("private-request-identity", str(coverage))
+        self.assertNotIn("must-not-leak", str(coverage))
+        self.assertEqual(snapshot_digest(snapshot), prepared.json()["snapshot_digest"])
+        # A repeat prepare with a NEW key is deduplicated on the prepared
+        # content itself (existing behaviour), while a replay with the SAME key
+        # returns the stored response verbatim.
+        replay = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=headers | {"Idempotency-Key": "disclosure-prep-2"}, json={})
+        self.assertEqual(replay.json()["id"], prepared.json()["id"])
+        same_key = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=headers | {"Idempotency-Key": "disclosure-prep-1"}, json={})
+        self.assertEqual(same_key.json(), prepared.json())
 
     def test_publication_prepare_is_idempotent_and_rejects_self_approval(self) -> None:
 
@@ -776,12 +863,20 @@ class ApiServiceTests(unittest.TestCase):
         with db.session_factory()() as session:
             self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
         url = f"/v1/campaigns/{campaign_id}/publications/prepare"
-        prepared = self.client.post(url, headers=headers, json={})
+        prepared = self.client.post(url, headers=headers | {"Idempotency-Key": "pub-prep-idem"}, json={})
         self.assertEqual(prepared.status_code, 200, prepared.text)
-        self.assertEqual(self.client.post(url, headers=headers, json={}).json()["id"], prepared.json()["id"])
+        replay = self.client.post(url, headers=headers | {"Idempotency-Key": "pub-prep-idem"}, json={})
+        self.assertEqual(replay.json(), prepared.json())
+        # A mutation without a key is rejected outright, never silently applied.
+        self.assertEqual(self.client.post(url, headers=headers, json={}).status_code, 400)
         review_url = f"/v1/publications/preparations/{prepared.json()['id']}/review"
-        rejected = self.client.post(review_url, headers=_auth_header(("reviewer",)), json={"decision": "approve", "review_kind": "single_maintainer"})
+        rejected = self.client.post(review_url, headers=_auth_header(("reviewer",)) | {"Idempotency-Key": "pub-self-approve"},
+            json={"decision": "approve"})
         self.assertEqual(rejected.status_code, 403, rejected.text)
+        # The client cannot select its own review provenance: review_kind is not
+        # an accepted request field at all (strict schema, 422).
+        self.assertEqual(self.client.post(review_url, headers=_auth_header(("reviewer",)) | {"Idempotency-Key": "pub-self-kind"},
+            json={"decision": "approve", "review_kind": "independent"}).status_code, 422)
 
 
     def test_corrupt_task_manifest_is_503_not_500(self) -> None:
@@ -1143,14 +1238,15 @@ class ApiServiceTests(unittest.TestCase):
             snapshot_a = {"per_entrant": {}}
             original = api_models.PublicationRow(
                 campaign_id=campaign.id, snapshot_digest=content_hash(snapshot_a), snapshot=snapshot_a,
-                reviewer_id=user.id, status="withdrawn",
+                reviewer_id=user.id, status="withdrawn", withdrawal_reason="withdrawn after a scoring dispute",
             )
             session.add(original)
             session.flush()
             snapshot_b = {"per_entrant": {"x": 1}}
             superseding = api_models.PublicationRow(
                 campaign_id=campaign.id, snapshot_digest=content_hash(snapshot_b), snapshot=snapshot_b,
-                reviewer_id=user.id, supersedes_id=original.id,
+                reviewer_id=user.id, supersedes_id=original.id, reason="scoring corrected",
+                publication_class="non_ranked",
             )
             session.add(superseding)
             # A normal published (never-corrected) publication must NOT show up here.
@@ -1165,8 +1261,17 @@ class ApiServiceTests(unittest.TestCase):
 
         response = self.client.get("/v1/corrections")
         self.assertEqual(response.status_code, 200)
-        ids = {item["id"] for item in response.json()["items"]}
-        self.assertEqual(ids, {str(original_id), str(superseding_id)})
+        items = {item["id"]: item for item in response.json()["items"]}
+        self.assertEqual(set(items), {str(original_id), str(superseding_id)})
+        # Both recorded reasons are public, and they are DISTINCT fields: the
+        # withdrawal rationale never overwrote the correction rationale, and
+        # the non-ranking class is labelled on the public entry.
+        self.assertEqual(items[str(original_id)]["withdrawal_reason"], "withdrawn after a scoring dispute")
+        self.assertIsNone(items[str(original_id)]["reason"])
+        self.assertEqual(items[str(superseding_id)]["reason"], "scoring corrected")
+        self.assertIsNone(items[str(superseding_id)]["withdrawal_reason"])
+        self.assertEqual(items[str(superseding_id)]["publication_class"], "non_ranked")
+        self.assertEqual(items[str(superseding_id)]["supersedes_id"], str(original_id))
 
     def test_publication_results_include_supersedes_id(self) -> None:
         from aieb_api.snapshots import snapshot_digest as content_hash
@@ -1730,6 +1835,7 @@ class ApiServiceTests(unittest.TestCase):
             for index, (slug, digest) in enumerate((("agent-a", entrant_a_digest), ("agent-b", entrant_b_digest)))
         }
         resolved = {
+            "protocol": self._registry_payload()["protocol"],
             "tasks": [task_manifest], "entrants": [entrant_a_manifest, entrant_b_manifest],
             "trials": [trial.model_dump(mode="json") for trial in frozen_trials.values()],
         }
@@ -1964,9 +2070,11 @@ class ApiServiceTests(unittest.TestCase):
         with db.session_factory()() as session:
             from aieb_api.worker.repository import maybe_complete_campaign
             self.assertTrue(maybe_complete_campaign(session, campaign_id))
-        first = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator, json={})
+        first = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=operator | {"Idempotency-Key": "rg-prep-1"}, json={})
         approved = self.client.post(f"/v1/publications/preparations/{first.json()['id']}/review",
-            headers=reviewer, json={"decision": "approve", "review_kind": "independent"})
+            headers=reviewer | {"Idempotency-Key": "rg-rev-1"},
+            json={"decision": "approve", "independence_attestation": True})
         original_publication = approved.json()["published_publication_id"]
         self.assertEqual(self.client.get(f"/v1/publications/{original_publication}/results").json()["snapshot"]["suite_rate"], 1.0)
 
@@ -1975,9 +2083,16 @@ class ApiServiceTests(unittest.TestCase):
         with db.session_factory()() as session:
             frozen = session.get(api_models.CampaignRow, campaign_id).resolved
         registry = {"cohort": frozen["cohort"], "protocol": {**frozen["protocol"], "scoring_digest": bundle.json()["scoring_digest"]}, "budget": frozen["budget"]}
-        regrade = self.client.post(f"/v1/campaigns/{campaign_id}/regrade", headers=reviewer,
+        regrade = self.client.post(f"/v1/campaigns/{campaign_id}/regrade",
+            headers=reviewer | {"Idempotency-Key": "rg-regrade"},
             json={"registry": registry, "reason": "staging scoring correction"})
         self.assertEqual(regrade.status_code, 200, regrade.text)
+        # Regrade is replay-safe: the same key returns the same correction run
+        # and does not enqueue a second round of regrade work.
+        regrade_replay = self.client.post(f"/v1/campaigns/{campaign_id}/regrade",
+            headers=reviewer | {"Idempotency-Key": "rg-regrade"},
+            json={"registry": registry, "reason": "staging scoring correction"})
+        self.assertEqual(regrade_replay.json(), regrade.json())
         while True:
             with db.session_factory()() as session:
                 leased = repository.claim_work_item(session, worker_id="regrader", work_type="regrade")
@@ -1991,11 +2106,13 @@ class ApiServiceTests(unittest.TestCase):
         run_id = regrade.json()["id"]
         self.assertEqual(self.client.get(f"/v1/correction-runs/{run_id}", headers=reviewer).json()["status"], "completed")
 
-        superseding = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare", headers=operator,
+        superseding = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+            headers=operator | {"Idempotency-Key": "rg-prep-2"},
             json={"supersedes_publication_id": original_publication, "correction_run_id": run_id, "correction_reason": "scoring corrected"})
         self.assertEqual(superseding.status_code, 200, superseding.text)
         approved = self.client.post(f"/v1/publications/preparations/{superseding.json()['id']}/review",
-            headers=reviewer, json={"decision": "approve", "review_kind": "independent"})
+            headers=reviewer | {"Idempotency-Key": "rg-rev-2"},
+            json={"decision": "approve", "independence_attestation": True})
         self.assertEqual(approved.status_code, 200, approved.text)
         corrected_publication = approved.json()["published_publication_id"]
         self.assertEqual(self.client.get(f"/v1/publications/{corrected_publication}/results").json()["snapshot"]["suite_rate"], 0.0)

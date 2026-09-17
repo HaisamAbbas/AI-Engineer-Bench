@@ -33,6 +33,14 @@ export function mockApi(routes: Partial<Record<string, Route>>) {
   return spy;
 }
 
+/** Explicit identity fixture for authenticated mutation tests only. */
+export function mockAuthenticatedApi(routes: Partial<Record<string, Route>> = {}) {
+  return mockApi({
+    "/v1/me": { data: { authenticated: true, issuer: "https://test.example", subject: "operator", user_id: "user-1", roles: ["operator", "reviewer"] } },
+    ...routes,
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });

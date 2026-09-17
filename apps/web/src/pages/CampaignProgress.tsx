@@ -48,7 +48,7 @@ function InvalidityReviewPanel({ campaignId, attemptId }: { campaignId: string; 
   function submit(event: React.FormEvent, decision: InvalidityReviewInput["decision"]) {
     event.preventDefault();
     if (!rationale.trim() || review.isPending) return;
-    review.mutate({ body: { decision, rationale: rationale.trim() }, key: crypto.randomUUID() },
+    review.mutate({ body: { decision, rationale: rationale.trim() } },
       { onSuccess: () => setRationale("") });
   }
   return <section aria-label="Invalidity review evidence">

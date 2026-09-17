@@ -24,6 +24,20 @@ def request_digest(body: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def principal_scope(scope: str, principal: str | None) -> str:
+    """Scope an idempotency key to BOTH the route/resource AND the
+    authenticated principal.
+
+    A key is a replay handle for a stored response, so two principals using
+    the same key against the same resource must never see each other's
+    response (and must not collide on the (scope, key) unique constraint).
+    The principal is the server-resolved user id - resolved from the OIDC
+    identity against the `users` table, never a client-claimable string.
+    Every mutating route must route its scope through this helper.
+    """
+    return f"{scope}|u={principal if principal else 'unauthenticated'}"
+
+
 def check_or_reserve(session: Session, *, scope: str, key: str | None, body: dict[str, Any]) -> dict[str, Any] | None:
     """Returns a cached response body to replay, or None if the caller should proceed and later call `store`."""
     if not key:
@@ -40,6 +54,12 @@ def check_or_reserve(session: Session, *, scope: str, key: str | None, body: dic
 
 
 def store(session: Session, *, scope: str, key: str, body: dict[str, Any], status_code: int, response_body: dict[str, Any]) -> None:
+    if not key:
+        # The (scope, key) unique constraint is the correctness mechanism for
+        # concurrent replays; a NULL key would insert an unusable record that
+        # no client could ever replay (and, on PostgreSQL, would not even
+        # conflict with another NULL). Fail closed instead.
+        raise invalid_request("Idempotency-Key header is required for this mutation")
     session.add(
         IdempotencyRecordRow(
             scope=scope, key=key, request_digest=request_digest(body), response_status=status_code, response_body=response_body,

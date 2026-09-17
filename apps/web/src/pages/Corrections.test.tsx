@@ -15,7 +15,7 @@ describe("Corrections", () => {
     mockApi({
       "/v1/corrections": {
         data: {
-          items: [{ id: "pub-2", campaign_id: "camp-1", status: "published", supersedes_id: "pub-1", created_at: "2026-01-02T00:00:00Z" }],
+          items: [{ id: "pub-2", campaign_id: "camp-1", status: "withdrawn", reason: "Corrected evaluator", withdrawal_reason: "Incorrect fixture", publication_class: "non_ranked", supersedes_id: "pub-1", created_at: "2026-01-02T00:00:00Z" }],
           next_cursor: null,
         },
       },
@@ -23,5 +23,11 @@ describe("Corrections", () => {
     renderWithProviders(<Corrections />, { route: "/corrections", path: "/corrections" });
     await waitFor(() => expect(screen.getByText("pub-2")).toBeInTheDocument());
     expect(screen.getByRole("link", { name: "pub-1" })).toHaveAttribute("href", "/releases/pub-1");
+    expect(screen.getByRole("link", { name: "pub-2" })).toHaveAttribute("href", "/releases/pub-2");
+    expect(screen.getByText("Corrected evaluator")).toBeInTheDocument();
+    expect(screen.getByText("Incorrect fixture")).toBeInTheDocument();
+    expect(screen.getByText("Non-ranked")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Supersedes (before)" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Publication (after)" })).toBeInTheDocument();
   });
 });

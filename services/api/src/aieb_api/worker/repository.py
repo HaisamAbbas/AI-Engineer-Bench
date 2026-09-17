@@ -24,14 +24,13 @@ import re
 
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
     AttemptEventRow,
     AttemptRow,
-    BudgetReservationRow,
     CampaignRow,
     CandidateRow,
     EntrantRevisionRow,
@@ -153,7 +152,9 @@ def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
         session.flush()
         session.add(WorkItemRow(attempt_id=attempt_row.id, type="engineering", state="ready"))
         created += 1
-    session.commit()
+    # The caller owns the transaction: start must persist the queue, reservation,
+    # running state and replayable response together, or roll all of them back.
+    session.flush()
     return created
 
 
@@ -167,22 +168,21 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
     both `engineering` and `verification` queues - a real worker pool
     services both phases, not a phase-dedicated one; pass an explicit
     `work_type` only to isolate one phase's queue (as some tests do)."""
-    # A PAUSED campaign must not have new work dispatched (ENG-017 pause/resume):
-    # its ready items stay ready and are picked up again on resume. Cancelling/
-    # cancelled campaigns are deliberately NOT excluded here - their ready items
-    # are still claimed so the worker can finalize each attempt as `cancelled`
-    # (the attempt is not engineered; see is_campaign_cancelling in the worker
-    # loop), which is how a cancellation drains to completion. Excluded via a
-    # subquery so the FOR UPDATE SKIP LOCKED below still locks only work_item
-    # rows, never the campaign/trial rows it joins through.
-    paused = (
+    # Only running campaigns dispatch ordinary work. Cancellation claims drain
+    # through the worker's cancellation path; regrades run against terminal
+    # campaigns. Draft/frozen/paused work must never become executable merely
+    # because a ready row exists. Keep row locking scoped to work_item.
+    eligible = (
         select(WorkItemRow.id)
         .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
         .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
         .join(CampaignRow, CampaignRow.id == TrialRow.campaign_id)
-        .where(CampaignRow.state == "paused")
+        .where(
+            CampaignRow.state.in_(("running", "cancelling", "cancelled"))
+            | ((WorkItemRow.type == "regrade") & CampaignRow.state.in_(("completed", "incomplete")))
+        )
     )
-    query = select(WorkItemRow.id).where(WorkItemRow.state == "ready", WorkItemRow.id.not_in(paused))
+    query = select(WorkItemRow.id).where(WorkItemRow.state == "ready", WorkItemRow.id.in_(eligible))
     if work_type is not None:
         query = query.where(WorkItemRow.type == work_type)
     candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
@@ -768,70 +768,143 @@ def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
     return result.rowcount == 1
 
 
-def maybe_complete_cancellation(session: Session, campaign_id: uuid.UUID) -> bool:
-    """Once no work remains ready or leased for a cancelling campaign, mark it
-    fully cancelled rather than leaving it stuck in 'cancelling' forever."""
-    campaign = session.get(CampaignRow, campaign_id)
-    if campaign is None or campaign.state != "cancelling":
-        return False
-    outstanding = session.execute(
+def _outstanding_work_count(session: Session, campaign_id: uuid.UUID) -> int:
+    """Ready or leased work items for a campaign - the work a worker could
+    still pick up or is currently executing."""
+    return session.execute(
         select(func.count())
         .select_from(WorkItemRow)
         .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
         .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
         .where(TrialRow.campaign_id == campaign_id, WorkItemRow.state.in_(("ready", "leased")))
     ).scalar_one()
-    if outstanding > 0:
+
+
+def has_outstanding_work(session: Session, campaign_id: uuid.UUID) -> bool:
+    """True iff the campaign still has ready or leased work items. Used by the
+    cancel route to finalize a zero-work drain in the caller's transaction."""
+    return _outstanding_work_count(session, campaign_id) > 0
+
+
+def maybe_complete_cancellation(session: Session, campaign_id: uuid.UUID, *, commit: bool = True) -> bool:
+    """Once no work remains ready or leased for a cancelling campaign, mark it
+    fully cancelled rather than leaving it stuck in 'cancelling' forever."""
+    campaign = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if campaign is None or campaign.state != "cancelling":
+        return False
+    if _outstanding_work_count(session, campaign_id) > 0:
         return False
     campaign.state = "cancelled"
-    session.commit()
+    # The reservation stays reserved for the whole drain and is released only
+    # now, when nothing ready/leased remains that could still bill spend.
+    from .. import budgets
+    budgets.set_reservation_status(session, campaign_id, "released")
+    if commit:
+        session.commit()
+    else:
+        # HTTP callers commit settlement together with their replay response.
+        session.flush()
     return True
+
+
+def _finalize_terminal_campaign(session: Session, campaign: CampaignRow) -> None:
+    """Transition a campaign with no outstanding work to its terminal state
+    and settle its reservation exactly once (cancelling -> cancelled with the
+    reservation released; running/paused -> completed/incomplete with the
+    reservation consumed)."""
+    if campaign.state == "cancelling":
+        campaign.state = "cancelled"
+        from .. import budgets
+        budgets.set_reservation_status(session, campaign.id, "released")
+        return
+    total_trials = session.execute(
+        select(func.count()).select_from(TrialRow).where(TrialRow.campaign_id == campaign.id)
+    ).scalar_one()
+    from ..aggregation import CampaignNotAggregatable, selected_campaign_evaluations
+
+    try:
+        resolved_trials = len(selected_campaign_evaluations(session, campaign.id))
+    except CampaignNotAggregatable:
+        resolved_trials = 0
+    campaign.state = "completed" if total_trials > 0 and resolved_trials == total_trials else "incomplete"
+    from .. import budgets
+    budgets.set_reservation_status(session, campaign.id, "consumed")
 
 
 def maybe_complete_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
-    """Once a running campaign has no work left ready or leased, transition it
-    to a terminal state: `completed` if every planned trial has a valid scored
-    terminal attempt, otherwise `incomplete` (spec: incomplete coverage is a
-    first-class, publishable outcome). The authoritative completeness for
-    ranking is still recomputed at publication time by
-    aggregate_campaign_snapshot; this state is a coarse operator-facing signal.
-    Marks the budget reservation `consumed`."""
-    campaign = session.get(CampaignRow, campaign_id)
-    if campaign is None or campaign.state != "running":
-        return False
-    outstanding = session.execute(
-        select(func.count())
-        .select_from(WorkItemRow)
-        .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
-        .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
-        .where(TrialRow.campaign_id == campaign_id, WorkItemRow.state.in_(("ready", "leased")))
-    ).scalar_one()
-    if outstanding > 0:
-        return False
-    total_trials = session.execute(
-        select(func.count()).select_from(TrialRow).where(TrialRow.campaign_id == campaign_id)
-    ).scalar_one()
-    resolved_trials = session.execute(
-        select(func.count(func.distinct(TrialRow.id)))
-        .select_from(TrialRow)
-        .join(AttemptRow, AttemptRow.trial_id == TrialRow.id)
-        .join(CandidateRow, CandidateRow.attempt_id == AttemptRow.id)
-        .join(EvaluationRow, EvaluationRow.candidate_id == CandidateRow.id)
-        .where(
-            TrialRow.campaign_id == campaign_id,
-            AttemptRow.phase == "terminal",
-            AttemptRow.terminal_status.notin_(("infrastructure_invalid", "cancelled")),
-            EvaluationRow.verdict.isnot(None),
-        )
-    ).scalar_one()
-    campaign.state = "completed" if total_trials > 0 and resolved_trials == total_trials else "incomplete"
-    reservation = session.execute(
-        select(BudgetReservationRow).where(BudgetReservationRow.campaign_id == campaign_id)
+    """Once a running OR paused campaign has no work left ready or leased,
+    transition it to a terminal state: `completed` if every planned trial has
+    a valid scored terminal attempt, otherwise `incomplete` (spec: incomplete
+    coverage is a first-class, publishable outcome).
+
+    Paused campaigns are included: pause only stops NEW dispatch, and a
+    paused campaign whose last leased item just finished has no work left to
+    trigger this completion from the worker's after-processing path - the
+    idle sweep reaches it here instead. Without this, such a campaign could
+    never leave `paused` (resuming creates no new work), and its reservation
+    would stay `active` forever.
+
+    Resolution is decided by the SAME selection aggregation publishes
+    (`selected_campaign_evaluations`): the first terminal attempt whose
+    terminal status equals its evaluation's verdict, with `indeterminate`
+    never resolving a trial - counting any non-null evaluation (or accepting
+    a verdict/terminal-status mismatch) as complete would let an unresolved
+    or inconsistent campaign publish a canonical complete rank. This state
+    remains a coarse operator-facing signal; publication recomputes the
+    authoritative completeness. Marks the budget reservation `consumed`."""
+    campaign = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+        .execution_options(populate_existing=True)
     ).scalar_one_or_none()
-    if reservation is not None and reservation.status == "active":
-        reservation.status = "consumed"
+    if campaign is None or campaign.state not in ("running", "paused"):
+        return False
+    if _outstanding_work_count(session, campaign_id) > 0:
+        return False
+    _finalize_terminal_campaign(session, campaign)
     session.commit()
     return True
+
+
+def finalize_stalled_campaigns(session: Session, *, limit: int = 16) -> list[uuid.UUID]:
+    """Bounded, concurrency-safe sweep for campaigns whose lifecycle stalled
+    with no work left to trigger their completion: `cancelling` drains whose
+    last item finished (or which never had work items at all), and
+    `running`/`paused` campaigns whose final leased item completed while the
+    worker was between after-processing checkpoints (or while paused).
+
+    Candidates are claimed with FOR UPDATE SKIP LOCKED so two idle workers
+    sweeping concurrently claim DIFFERENT campaigns, never block each other,
+    and never finalize the same row twice; the outstanding-work count is then
+    re-checked under the row lock, so a work item a reconciler requeued
+    between the candidate SELECT and this transaction can never be raced into
+    a premature terminal state. Returns the ids this sweep finalized."""
+    if limit <= 0:
+        raise ValueError("sweep limit must be positive")
+    stalled = session.execute(
+        select(CampaignRow).where(
+            CampaignRow.state.in_(("cancelling", "running", "paused")),
+            ~exists(
+                select(WorkItemRow.id)
+                .join(AttemptRow, AttemptRow.id == WorkItemRow.attempt_id)
+                .join(TrialRow, TrialRow.id == AttemptRow.trial_id)
+                .where(WorkItemRow.state.in_(("ready", "leased")), TrialRow.campaign_id == CampaignRow.id)
+            ),
+        ).order_by(CampaignRow.id).with_for_update(skip_locked=True).limit(limit)
+        .execution_options(populate_existing=True)
+    ).scalars().all()
+    finalized: list[uuid.UUID] = []
+    for campaign in stalled:
+        campaign_id = campaign.id
+        if _outstanding_work_count(session, campaign_id) > 0:
+            continue  # re-checked under the row lock: work reappeared, leave it alone
+        _finalize_terminal_campaign(session, campaign)
+        finalized.append(campaign_id)
+    if finalized:
+        session.commit()
+    return finalized
 
 
 def is_campaign_cancelling(session: Session, campaign_id: uuid.UUID) -> bool:

@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   usePreparePublication, useReviewPublication, useWithdrawPublication,
   useRegradePublication, usePublicationScoringBundle, usePublicationCorrectionRun, usePublicationExport,
-  type PublicationPreparation, type PublicationReviewInput, type PublicationRegradeInput,
+  type PublicationPreparation, type PublicationPrepareInput, type PublicationReviewInput, type PublicationRegradeInput,
   type PublicationExportData,
 } from "../api/publicationHooks";
 import { PreparationEvidence } from "./PreparationEvidence";
@@ -67,7 +67,8 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
   const [reason, setReason] = useState("");
   const [preparationId, setPreparationId] = useState("");
   const [decision, setDecision] = useState<PublicationReviewInput["decision"]>("reject");
-  const [kind, setKind] = useState<PublicationReviewInput["review_kind"]>("single_maintainer");
+  const [independent, setIndependent] = useState(false);
+  const [publicationClass, setPublicationClass] = useState<PublicationPrepareInput["publication_class"]>("ranked");
   const [notes, setNotes] = useState("");
   const [fixture, setFixture] = useState(false);
   const [localIds, setLocalIds] = useState<Set<string>>(() => new Set());
@@ -91,6 +92,7 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
       supersedes_publication_id: supersedes.trim() || null,
       correction_run_id: correctionRun.trim() || null,
       correction_reason: reason.trim() || null,
+      publication_class: publicationClass,
     }, { onSuccess: (data) => {
       remember(data);
       setLocalIds((previous) => new Set([...previous, data.id.toLowerCase()]));
@@ -101,7 +103,9 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
   function submitReview(event: FormEvent) {
     event.preventDefault();
     if (reviewBlocked) return;
-    review.mutate({ preparationId: normalizedId, body: { decision, review_kind: kind, notes: notes.trim() || null } },
+    // The reviewer ATTESTS independence; the server derives the published
+    // review label from recorded identities - the client never chooses it.
+    review.mutate({ preparationId: normalizedId, body: { decision, independence_attestation: independent, notes: notes.trim() || null } },
       { onSuccess: (data) => { remember(data); setFixture(false); } });
   }
 
@@ -114,6 +118,10 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
         <label>Supersedes publication ID (optional)<input value={supersedes} onChange={(e) => setSupersedes(e.target.value)} /></label>
         <label>Completed correction run ID (optional)<input value={correctionRun} onChange={(e) => setCorrectionRun(e.target.value)} required={Boolean(supersedes.trim())} /></label>
         <label>Correction reason<textarea value={reason} onChange={(e) => setReason(e.target.value)} required={Boolean(supersedes.trim())} /></label>
+        <label>Publication class<select value={publicationClass} onChange={(e) => setPublicationClass(e.target.value as PublicationPrepareInput["publication_class"])}>
+          <option value="ranked">Ranked — requires a complete cohort (default)</option>
+          <option value="non_ranked">Non-ranked — explicitly excluded from canonical ranks</option>
+        </select></label>
         <p>Superseding a publication requires its completed correction run and a reason; the server validates campaign membership.</p>
         <button type="submit" disabled={Boolean(supersedes.trim()) && (!correctionRun.trim() || !reason.trim())}>Prepare publication</button>
       </fieldset>
@@ -131,11 +139,9 @@ function PreparationReview({ campaignId }: { campaignId: string }) {
           <option value="reject">Reject — does not publish</option>
           <option value="approve">Approve and publish immediately</option>
         </select></label>
-        <label>Review kind<select value={kind} onChange={(e) => { setKind(e.target.value as PublicationReviewInput["review_kind"]); setFixture(false); }}>
-          <option value="single_maintainer">Single-maintainer review (not independent)</option>
-          <option value="independent">Independent review</option>
-        </select></label>
-        <p>Single-maintainer is a disclosed review label, not a waiver of self-approval rules. Select independent only when an independent review occurred.</p>
+        <label><input type="checkbox" checked={independent} onChange={(e) => { setIndependent(e.target.checked); setFixture(false); }} />
+          I attest that this review was performed independently of the preparation and campaign operation.</label>
+        <p>Independence is attested here; the server derives and records the review label from identities it controls.</p>
         <label>Review notes (optional)<textarea value={notes} onChange={(e) => setNotes(e.target.value)} /></label>
         <label><input type="checkbox" checked={fixture} onChange={(e) => setFixture(e.target.checked)} />
           I confirm this is a staging fixture, not a real public publication.</label>

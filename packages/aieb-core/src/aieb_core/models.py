@@ -246,6 +246,15 @@ class RoleBudget(ContractModel):
 
 
 class BudgetProfile(ContractModel):
+    """`aieb.budget/v1` - UNCHANGED byte-compatible contract.
+
+    Do not add fields here: canonical digests hash explicit nulls
+    (`canonical._normalise`), so any new field - even one defaulted to null -
+    would change the digest of every existing frozen `aieb.budget/v1`
+    manifest and invalidate stored campaign identities. Environment cost
+    bounds arrived with `aieb.budget/v2` (see `BudgetProfileV2`).
+    """
+
     schema_version: Literal["aieb.budget/v1"]
     id: Slug
     engineer_wall_seconds: int = Field(gt=0)
@@ -262,6 +271,32 @@ class BudgetProfile(ContractModel):
         if len({value.role for value in values}) != len(values):
             raise ValueError("budget roles must be unique")
         return tuple(sorted(values, key=lambda value: value.role.value))
+
+
+class BudgetProfileV2(BudgetProfile):
+    """`aieb.budget/v2` - adds the environment upper bound the architecture's
+    upper-bound reservation formula requires (planned trials x (engineer cap +
+    development application cap + verifier cap + environment upper bound),
+    with an explicit infrastructure replacement reserve). A new schema version,
+    not an optional field on v1, preserves digest compatibility for every
+    existing frozen v1 manifest. The bound is REQUIRED: a reservation computed
+    without it would understate the declared upper bound."""
+
+    schema_version: Literal["aieb.budget/v2"]  # type: ignore[assignment]
+    environment_upper_bound_usd: str
+
+    @field_validator("environment_upper_bound_usd")
+    @classmethod
+    def normalized_environment_bound(cls, value: str) -> str:
+        normalized = _normalised_decimal(value, "environment upper bound")
+        if normalized is None:
+            raise ValueError("environment upper bound must be a non-negative decimal string")
+        return normalized
+
+
+# A frozen registry's budget is either contract version; v2 is accepted
+# everywhere v1 is (planner, freeze, regrade, preview).
+AnyBudgetProfile = BudgetProfile | BudgetProfileV2
 
 
 class Cohort(ContractModel):
@@ -320,7 +355,7 @@ class ResolvedCampaign(ContractModel):
     draft_digest: SHA256
     cohort: Cohort
     protocol: ProtocolRevision
-    budget: BudgetProfile
+    budget: AnyBudgetProfile
     tasks: tuple[TaskRevision, ...]
     entrants: tuple[EntrantRevision, ...]
     trials: tuple[Trial, ...]

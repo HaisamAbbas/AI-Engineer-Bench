@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "./client";
+import { replayableWrite } from "./mutationReplay";
 import type { components } from "./schema";
 
 export type PublicationPreparation = components["schemas"]["PublicationPreparationSummary"];
@@ -22,9 +23,9 @@ function useInvalidatePublicationWrites() {
 export function usePreparePublication(campaignId: string) {
   const invalidate = useInvalidatePublicationWrites();
   return useMutation({
-    mutationFn: (body: PublicationPrepareInput) => unwrap(api.POST("/v1/campaigns/{campaign_id}/publications/prepare", {
-      params: { path: { campaign_id: campaignId } }, body,
-    })),
+    mutationFn: (body: PublicationPrepareInput) => replayableWrite(`prepare:${campaignId}`, body, headers => unwrap(api.POST("/v1/campaigns/{campaign_id}/publications/prepare", {
+      params: { path: { campaign_id: campaignId } }, body, headers,
+    }))),
     retry: false,
     onSuccess: invalidate,
   });
@@ -34,9 +35,9 @@ export function useReviewPublication() {
   const invalidate = useInvalidatePublicationWrites();
   return useMutation({
     mutationFn: ({ preparationId, body }: { preparationId: string; body: PublicationReviewInput }) =>
-      unwrap(api.POST("/v1/publications/preparations/{preparation_id}/review", {
-        params: { path: { preparation_id: preparationId } }, body,
-      })),
+      replayableWrite(`review:${preparationId}`, body, headers => unwrap(api.POST("/v1/publications/preparations/{preparation_id}/review", {
+        params: { path: { preparation_id: preparationId } }, body, headers,
+      }))),
     retry: false,
     onSuccess: invalidate,
   });
@@ -46,9 +47,9 @@ export function useWithdrawPublication() {
   const invalidate = useInvalidatePublicationWrites();
   return useMutation({
     mutationFn: ({ publicationId, reason }: { publicationId: string; reason: string }) =>
-      unwrap(api.POST("/v1/publications/{publication_id}/withdraw", {
-        params: { path: { publication_id: publicationId } }, body: { reason },
-      })),
+      replayableWrite(`withdraw:${publicationId}`, { reason }, headers => unwrap(api.POST("/v1/publications/{publication_id}/withdraw", {
+        params: { path: { publication_id: publicationId } }, body: { reason }, headers,
+      }))),
     retry: false,
     onSuccess: invalidate,
   });
@@ -57,9 +58,9 @@ export function useWithdrawPublication() {
 export function useRegradePublication(campaignId: string) {
   const invalidate = useInvalidatePublicationWrites();
   return useMutation({
-    mutationFn: (body: PublicationRegradeInput) => unwrap(api.POST("/v1/campaigns/{campaign_id}/regrade", {
-      params: { path: { campaign_id: campaignId } }, body,
-    })),
+    mutationFn: (body: PublicationRegradeInput) => replayableWrite(`regrade:${campaignId}`, body, headers => unwrap(api.POST("/v1/campaigns/{campaign_id}/regrade", {
+      params: { path: { campaign_id: campaignId } }, body, headers,
+    }))),
     retry: false,
     onSuccess: invalidate,
   });

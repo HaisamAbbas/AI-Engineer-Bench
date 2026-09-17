@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { mockAuthenticatedApi } from "../test/mockApi";
 import { api } from "./client";
 import { useCampaignWrite, type CampaignWrite } from "./hooks";
 import { renderWithProviders } from "../test/renderWithProviders";
@@ -11,6 +12,7 @@ function WriteButton({ input }: { input: CampaignWrite }) {
     {write.isSuccess && <p>Saved</p>}</>;
 }
 
+beforeEach(() => { sessionStorage.clear(); mockAuthenticatedApi(); });
 afterEach(() => vi.restoreAllMocks());
 
 describe("campaign mutation identity", () => {

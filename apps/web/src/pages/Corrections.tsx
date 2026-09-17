@@ -3,11 +3,7 @@ import { useCorrections } from "../api/hooks";
 import { Loading, ErrorState, EmptyState } from "../components/QueryStates";
 import { formatUtc } from "../lib/format";
 
-/** "/corrections" - append-only corrections and reasons. There is no
- * free-text "reason" field on publication yet, so this shows that a
- * correction happened (a supersession or withdrawal) and what it changed
- * (before/after publication), not why - a disclosed gap, not a fabricated
- * reason. */
+/** Append-only correction history with separately retained withdrawal reasons. */
 export function Corrections() {
   const [params, setParams] = useSearchParams();
   const cursor = params.get("cursor") ?? undefined;
@@ -30,12 +26,15 @@ export function Corrections() {
       ) : (
         <div className="table-scroll" role="region" aria-label="Correction history" tabIndex={0}>
         <table>
-          <caption>Append-only correction history (newest first). Reasons are not yet recorded - see release changelogs for what changed.</caption>
+          <caption>Append-only correction history (newest first). Correction and withdrawal reasons are recorded separately.</caption>
           <thead>
             <tr>
-              <th scope="col">Publication</th>
+              <th scope="col">Publication (after)</th>
               <th scope="col">Status</th>
-              <th scope="col">Supersedes</th>
+              <th scope="col">Supersedes (before)</th>
+              <th scope="col">Publication class</th>
+              <th scope="col">Correction reason</th>
+              <th scope="col">Withdrawal reason</th>
               <th scope="col">Date</th>
             </tr>
           </thead>
@@ -55,6 +54,9 @@ export function Corrections() {
                       "None"
                     )}
                   </td>
+                  <td>{item.publication_class === "non_ranked" ? "Non-ranked" : "Ranked"}</td>
+                  <td>{item.reason ?? "Not recorded"}</td>
+                  <td>{item.withdrawal_reason ?? (item.status === "withdrawn" ? "Not recorded" : "Not withdrawn")}</td>
                   <td title={created.localTitle}>{created.display}</td>
                 </tr>
               );
