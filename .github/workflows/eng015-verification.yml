@@ -49,6 +49,15 @@ jobs:
         run: uv run --directory services/api alembic upgrade head
       - name: Run lifecycle, worker, API, and real PostgreSQL migration regressions
         run: uv run python -m unittest tests.test_attempt_lifecycle tests.test_candidate_artifacts tests.test_worker_leasing tests.test_api_service tests.test_api_migrations tests.test_api_http_integration
+      - name: Reset the schema to a clean state before seeding
+        # The regression step above leaves rows behind (its tests truncate on
+        # setUp, not teardown, and test_api_migrations/test_api_http_integration
+        # seed their own fixtures), so the browser seed - which expects an empty
+        # database - would otherwise collide on uq_task_revision_slug_version.
+        # Recreate a clean schema on the same disposable database first.
+        run: |
+          uv run --directory services/api alembic downgrade base
+          uv run --directory services/api alembic upgrade head
       - name: Seed published run for browser integration
         run: uv run python scripts/seed_eng016_browser.py
       - name: Run the API over HTTP
