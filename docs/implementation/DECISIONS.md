@@ -1,5 +1,24 @@
 # Implementation decisions
 
+## Prompt 14 staging decisions — 2026-09-17
+
+- Regrade executes only the installed trusted staging evaluator bundle. Its digest
+  covers task evaluator/fixture Python files plus the shared harness; registry
+  changes cannot alter the frozen cohort, budget, or non-scoring protocol fields.
+- Retained candidate bytes are reused in a new attempt with copied artifact
+  references scoped to that attempt. Original evidence remains unchanged.
+- Corrected preparation and approval derive from the same pinned correction
+  evaluations. A corrected verdict cannot be attached to an original attempt
+  whose terminal verdict differs.
+- UI control gaps are disclosed, not disguised: known campaign IDs and full draft
+  manifests are required, preparation review is out of band, and invalid-attempt
+  inspection has no review-decision mutation. These remain acceptance limitations.
+- Local test/fixture publication is the only authorized exercise. Review labels
+  do not waive identity-based self-approval rejection. Budget reservations are
+  estimated, not provider holds. Production key management and public release
+  remain outside this change.
+
+
 This log records implementation choices made while executing the source specifications. It does not amend or replace the unchanged specifications in `docs/specs/`. Changes to scoring, isolation, artifact submission, or reproducibility require a dedicated ADR before implementation.
 
 ## BOOT-001 — Use the workspace root as the repository root
