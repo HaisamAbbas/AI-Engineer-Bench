@@ -1,7 +1,7 @@
 # Session handoff
 
 Updated: 2026-09-17
-Prompt 14 resume: branch `prompt-14-eng017-eng018` now includes administration, publication review/signing/export, retained-candidate regrade and superseding publication, and admin/progress/review web pages. See `evidence/ENG-018/prompt14-verification.md` for current checks and explicit acceptance gaps. ENG-017/018 are IN_PROGRESS, not accepted COMPLETE. ENG-011 human acceptance remains open; ENG-015/016 remain COMPLETE. No real public release was made. Older phase claims below are historical.
+Prompt 14 resume: branch `prompt-14-eng017-eng018` now includes administration, publication review/signing/export, retained-candidate regrade and superseding publication, and admin/progress/review web pages. See `evidence/ENG-018/prompt14-verification.md` for current checks and explicit acceptance gaps. ENG-017/018 are IN_PROGRESS, not accepted COMPLETE. Gap closure (2026-09-17): invalidity review decisions, preparation-evidence reads/UI, and saved-draft editing are implemented on stacked branch `prompt-14-gap-closure` (PR #3); see `evidence/ENG-017/campaign-admin.md` and `evidence/ENG-018/prompt14-verification.md` for the closed items. ENG-011 human acceptance remains open; ENG-015/016 remain COMPLETE. No real public release was made. Older phase claims below are historical.
 
 
 Current phase: ENG-015 and ENG-016 remain COMPLETE. ENG-011 is IN_PROGRESS after aggregation review (round 2: frozen-manifest membership guard added and verified); ENG-018 is BLOCKED pending acceptance of the corrections. See `evidence/ENG-011/aggregation-review.md` for PostgreSQL regression and artifact-check evidence. The older closure/unblocked claims below are historical and superseded by this review.
