@@ -75,6 +75,7 @@ def run_worker(
         )
         with session_factory() as session:
             repository.maybe_complete_cancellation(session, campaign_id)
+            repository.maybe_complete_campaign(session, campaign_id)
     return processed
 
 

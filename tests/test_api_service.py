@@ -31,7 +31,7 @@ if DATABASE_URL:
 
     import jwt
     from fastapi.testclient import TestClient
-    from sqlalchemy import select, text, update
+    from sqlalchemy import func, select, text, update
     from sqlalchemy.exc import IntegrityError
 
     from aieb_api import auth, db
@@ -474,6 +474,198 @@ class ApiServiceTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"]["code"], "invalid_request")
+
+    # ---- ENG-017: campaign administration + budgets --------------------
+
+    def _draft_body(self, *, repetitions: int = 1, name: str = "admin-campaign") -> dict:
+        return {
+            "name": name,
+            "draft": {
+                "schema_version": "aieb.campaign-draft/v1", "id": "draft-1", "cohort_id": "cohort-a",
+                "task_ids": ["rag.document-freshness"], "entrant_ids": ["agent-a"],
+                "repetitions": repetitions, "order_seed": 1, "max_concurrent_trials": 1, "optimistic_revision": 0,
+            },
+        }
+
+    def _create_and_freeze(self, *, repetitions: int = 1, budget_limits: str | None = None) -> str:
+        self._seed_task()
+        self._seed_entrant()
+        create = self.client.post(
+            "/v1/campaigns", json=self._draft_body(repetitions=repetitions),
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": f"admin-{uuid.uuid4().hex[:8]}"},
+        )
+        self.assertEqual(create.status_code, 201, create.text)
+        campaign_id = create.json()["id"]
+        registry = self._registry_payload()
+        if budget_limits is not None:
+            registry["budget"]["per_role_budget_usd"] = [
+                {"role": role, "limit_usd": budget_limits}
+                for role in ("engineer", "dev_application", "verifier_application", "verifier_judge")
+            ]
+        frozen = self.client.post(
+            f"/v1/campaigns/{campaign_id}/freeze", json=registry,
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": f"frz-{uuid.uuid4().hex[:8]}"},
+        )
+        self.assertEqual(frozen.status_code, 200, frozen.text)
+        return campaign_id
+
+    def test_matrix_preview_returns_exact_matrix_without_persisting(self) -> None:
+        self._seed_task()
+        self._seed_entrant()
+        create = self.client.post(
+            "/v1/campaigns", json=self._draft_body(repetitions=3),
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": "prev-1"},
+        )
+        campaign_id = create.json()["id"]
+        response = self.client.post(
+            f"/v1/campaigns/{campaign_id}/preview", json=self._registry_payload(), headers=_auth_header(("operator",))
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["trial_count"], 3)
+        self.assertEqual(body["cells"], [{"task_id": "rag.document-freshness", "entrant_id": "agent-a", "repetitions": 3}])
+        self.assertEqual(body["cohort_id"], "cohort-a")
+        with db.session_factory()() as session:
+            self.assertEqual(session.execute(select(func.count()).select_from(api_models.TrialRow).where(api_models.TrialRow.campaign_id == uuid.UUID(campaign_id))).scalar_one(), 0)
+
+    def test_start_reserves_budget_enqueues_trials_and_runs(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=2, budget_limits="1.500000")
+        response = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-1"})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["campaign"]["state"], "running")
+        self.assertEqual(body["reservation"]["status"], "active")
+        self.assertEqual(body["reservation"]["enforcement"], "estimated_time_limited")
+        self.assertEqual(body["reservation"]["reserved_usd"], "6.000000")  # 4 roles x 1.5
+        with db.session_factory()() as session:
+            trials = session.execute(select(func.count()).select_from(api_models.TrialRow).where(api_models.TrialRow.campaign_id == uuid.UUID(campaign_id))).scalar_one()
+            self.assertEqual(trials, 2)
+        # Idempotent replay.
+        replay = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-1"})
+        self.assertEqual(replay.status_code, 200)
+
+    def test_start_requires_a_frozen_campaign(self) -> None:
+        self._seed_task()
+        self._seed_entrant()
+        create = self.client.post("/v1/campaigns", json=self._draft_body(), headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-draft"})
+        campaign_id = create.json()["id"]
+        response = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "s2"})
+        self.assertEqual(response.status_code, 409)
+
+    def test_pause_stops_new_dispatch_and_resume_restores_it(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=1)
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-p"})
+        paused = self.client.post(f"/v1/campaigns/{campaign_id}/pause", headers=_auth_header(("operator",)))
+        self.assertEqual(paused.status_code, 200)
+        self.assertEqual(paused.json()["campaign"]["state"], "paused")
+        from aieb_api.worker import repository
+        with db.session_factory()() as session:
+            self.assertIsNone(repository.claim_work_item(session, worker_id="w-paused"))
+        self.client.post(f"/v1/campaigns/{campaign_id}/resume", headers=_auth_header(("operator",)))
+        with db.session_factory()() as session:
+            leased = repository.claim_work_item(session, worker_id="w-resumed")
+            self.assertIsNotNone(leased)
+
+    def test_cancel_releases_reservation_and_stops_dispatch(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=1)
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-c"})
+        cancelled = self.client.post(f"/v1/campaigns/{campaign_id}/cancel", headers=_auth_header(("operator",)))
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["campaign"]["state"], "cancelling")
+        self.assertEqual(cancelled.json()["reservation"]["status"], "released")
+        from aieb_api.worker import repository
+        with db.session_factory()() as session:
+            # A cancelling campaign's ready item is still claimable so the worker
+            # can finalize it as `cancelled` (it is NOT engineered) - that is how
+            # cancellation drains, not by leaving work stuck.
+            self.assertTrue(repository.is_campaign_cancelling(session, uuid.UUID(campaign_id)))
+
+    def test_progress_and_invalid_attempts(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=1)
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-pr"})
+        progress = self.client.get(f"/v1/campaigns/{campaign_id}/progress", headers=_auth_header(("operator",)))
+        self.assertEqual(progress.status_code, 200, progress.text)
+        pbody = progress.json()
+        self.assertEqual(pbody["planned_trials"], 1)
+        self.assertEqual(pbody["observed_trials"], 1)
+        # Force the single attempt to an infrastructure-invalid terminal state.
+        with db.session_factory()() as session:
+            attempt = session.execute(
+                select(api_models.AttemptRow).join(api_models.TrialRow, api_models.TrialRow.id == api_models.AttemptRow.trial_id)
+                .where(api_models.TrialRow.campaign_id == uuid.UUID(campaign_id))
+            ).scalars().first()
+            session.execute(
+                update(api_models.AttemptRow).where(api_models.AttemptRow.id == attempt.id)
+                .values(phase="terminal", terminal_status="infrastructure_invalid")
+            )
+            session.commit()
+        invalid = self.client.get(f"/v1/campaigns/{campaign_id}/invalid-attempts", headers=_auth_header(("reviewer",)))
+        self.assertEqual(invalid.status_code, 200)
+        self.assertEqual(len(invalid.json()), 1)
+        self.assertEqual(invalid.json()[0]["terminal_status"], "infrastructure_invalid")
+
+    def test_campaign_admin_endpoints_require_a_role(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=1)
+        for path in (f"/v1/campaigns/{campaign_id}/start", f"/v1/campaigns/{campaign_id}/pause", f"/v1/campaigns/{campaign_id}/cancel"):
+            self.assertEqual(self.client.post(path).status_code, 401)
+            # A subject with ONLY the visitor role (not the operator that
+            # _create_and_freeze grants the default subject) must be forbidden.
+            self.assertEqual(self.client.post(path, headers=_auth_header(("visitor",), subject="visitor-only")).status_code, 403)
+
+    def test_a_frozen_plan_cannot_be_edited(self) -> None:
+        campaign_id = self._create_and_freeze(repetitions=1)
+        response = self.client.patch(
+            f"/v1/campaigns/{campaign_id}", json={"draft": self._draft_body()["draft"]},
+            headers=_auth_header(("operator",)) | {"If-Match": "1"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("draft", response.json()["error"]["message"])
+
+    def _drive_campaign_to_terminal(self, campaign_id: uuid.UUID, *, resolve: bool) -> None:
+        from aieb_core.models import CandidateManifest
+        from aieb_runner.artifacts import StoredCandidate
+        from aieb_api.worker.runner_bridge import _serialize_stored_candidate
+
+        with db.session_factory()() as session:
+            session.execute(update(api_models.WorkItemRow).where(api_models.WorkItemRow.state == "ready").values(state="done"))
+            attempt = session.execute(
+                select(api_models.AttemptRow).join(api_models.TrialRow, api_models.TrialRow.id == api_models.AttemptRow.trial_id)
+                .where(api_models.TrialRow.campaign_id == campaign_id)
+            ).scalars().first()
+            if resolve:
+                session.execute(update(api_models.AttemptRow).where(api_models.AttemptRow.id == attempt.id).values(phase="terminal", terminal_status="pass"))
+                manifest = CandidateManifest(schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64, full_tree_hash="2" * 64, files=())
+                candidate = api_models.CandidateRow(attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(), validation_status="valid", stored_candidate=_serialize_stored_candidate(StoredCandidate(manifest, (), ())))
+                fixture = api_models.FixtureRevisionRow(digest="4" * 64, visibility="public", family_id="knowledge-service-a")
+                task = session.execute(select(api_models.TaskRevisionRow).where(api_models.TaskRevisionRow.slug == "rag.document-freshness")).scalar_one()
+                session.add_all([candidate, fixture]); session.flush()
+                session.add(api_models.EvaluationRow(candidate_id=candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id, schedule_digest=manifest.digest(), verdict="pass", result={"checks": {"api-ready": True}}))
+            else:
+                session.execute(update(api_models.AttemptRow).where(api_models.AttemptRow.id == attempt.id).values(phase="terminal", terminal_status="infrastructure_invalid"))
+            session.commit()
+
+    def test_campaign_completion_marks_completed_when_all_trials_resolve(self) -> None:
+        from aieb_api.worker import repository
+
+        campaign_id = uuid.UUID(self._create_and_freeze(repetitions=1))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "cmp-ok"})
+        self._drive_campaign_to_terminal(campaign_id, resolve=True)
+        with db.session_factory()() as session:
+            self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
+        detail = self.client.get(f"/v1/campaigns/{campaign_id}", headers=_auth_header(("operator",)))
+        self.assertEqual(detail.json()["campaign"]["state"], "completed")
+        self.assertEqual(detail.json()["reservation"]["status"], "consumed")
+
+    def test_campaign_completion_marks_incomplete_when_a_trial_is_invalid(self) -> None:
+        from aieb_api.worker import repository
+
+        campaign_id = uuid.UUID(self._create_and_freeze(repetitions=1))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "cmp-bad"})
+        self._drive_campaign_to_terminal(campaign_id, resolve=False)
+        with db.session_factory()() as session:
+            self.assertTrue(repository.maybe_complete_campaign(session, campaign_id))
+        detail = self.client.get(f"/v1/campaigns/{campaign_id}", headers=_auth_header(("operator",)))
+        self.assertEqual(detail.json()["campaign"]["state"], "incomplete")
 
     def test_corrupt_task_manifest_is_503_not_500(self) -> None:
         with db.session_factory()() as session:

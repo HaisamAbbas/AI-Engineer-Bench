@@ -198,6 +198,10 @@ class CampaignRow(Base):
     manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resolved: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     reservation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Who created the campaign (ENG-017). Nullable for rows predating the
+    # column; set at create time. Used to reject self-approval of a
+    # publication (a reviewer may not approve a campaign they created).
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     submitter_note: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -339,6 +343,12 @@ class EvaluationRow(Base):
     verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     evaluation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Set when this evaluation was produced by a scorer-correction regrade
+    # (ENG-018). NULL for original campaign evaluations. Corrected evaluations
+    # fold the correction's scoring digest into schedule_digest, so they carry
+    # a distinct identity and are retained ALONGSIDE the originals, never
+    # replacing them (historical raw envelopes are never mutated).
+    correction_run_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("correction_run.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -435,10 +445,23 @@ class PublicationRow(Base):
     # deliberately ineligible for public run evidence.
     evidence_manifest: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     evidence_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ENG-018 signed manifest. The Ed25519 signature (base64) over the
+    # canonical signed_manifest, the PEM public key and its id, and the
+    # canonical document itself - all set at insert (publish) time and frozen
+    # by the publication immutability trigger. review_kind is the honest
+    # 'single_maintainer' vs 'independent' label; reason records a
+    # withdrawal/correction rationale (mutable, unlike the signed evidence).
+    manifest_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_public_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signing_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    signed_manifest: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    review_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint("status in ('published','withdrawn','superseded')", name="ck_publication_status"),
+        CheckConstraint("review_kind is null or review_kind in ('single_maintainer','independent')", name="ck_publication_review_kind"),
         CheckConstraint(
             "(evidence_manifest IS NULL) = (evidence_manifest_digest IS NULL)",
             name="ck_publication_evidence_manifest_digest_pair",
@@ -481,6 +504,89 @@ class AuditEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (Index("ix_audit_event_target", "target_type", "target_id"),)
+
+
+class BudgetReservationRow(Base):
+    """ENG-017 budget reservation for a started campaign.
+
+    With no provider reservation integration (ENG-008), a hosted reservation is
+    an ESTIMATED_TIME_LIMITED recorded intent - the summed per-role budget the
+    frozen cohort declared - not a real hard hold on provider spend. Modeled
+    explicitly so the honest enforcement level is visible, never implied to be
+    a hard cap.
+    """
+
+    __tablename__ = "budget_reservation"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=False)
+    reservation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    enforcement: Mapped[str] = mapped_column(String(32), nullable=False)
+    reserved_usd: Mapped[object | None] = mapped_column(Numeric(20, 6), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", name="uq_budget_reservation_campaign"),
+        CheckConstraint("enforcement in ('hard','estimated_time_limited')", name="ck_budget_reservation_enforcement"),
+        CheckConstraint("status in ('active','released','consumed')", name="ck_budget_reservation_status"),
+    )
+
+
+class CorrectionRunRow(Base):
+    """ENG-018 scorer-correction regrade run: re-scores a campaign's retained
+    candidates with a corrected evaluator/fixture. `scoring_correction_digest`
+    is folded into each regrade evaluation's schedule_digest so a corrected
+    evaluation carries a DISTINCT identity (no `uq_evaluation_plan_digest`
+    collision) and is retained alongside the original."""
+
+    __tablename__ = "correction_run"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=False)
+    requested_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    corrected_evaluator_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluator_revision.id"), nullable=False)
+    corrected_fixture_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("fixture_revision.id"), nullable=False)
+    scoring_correction_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="running")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('running','completed','failed')", name="ck_correction_run_status"),
+        Index("ix_correction_run_campaign", "campaign_id"),
+    )
+
+
+class PublicationPreparationRow(Base):
+    """ENG-018 publication preparation and review record. Kept separate from the
+    strictly-immutable `PublicationRow` (which is inserted only at publish time)
+    so the prepare -> review -> publish flow never mutates a published snapshot.
+    """
+
+    __tablename__ = "publication_preparation"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=False)
+    prepared_by_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="prepared")
+    supersedes_publication_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
+    correction_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_publication_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('prepared','approved','rejected','published')", name="ck_publication_preparation_status"),
+        CheckConstraint("review_kind is null or review_kind in ('single_maintainer','independent')", name="ck_publication_preparation_review_kind"),
+        Index("ix_publication_preparation_campaign", "campaign_id"),
+    )
 
 
 class IdempotencyRecordRow(Base):

@@ -597,5 +597,169 @@ class PublicationEntrantConfiguration(BaseModel):
     manifest: EntrantRevision
 
 
+# ---- ENG-017: campaign administration + budgets ----------------------------
+
+
+class MatrixPreviewCell(BaseModel):
+    """One planned (task, entrant) cell in the exact matrix a freeze WOULD
+    produce for the current draft + supplied registry - computed by the pure
+    planner, never persisted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    entrant_id: str
+    repetitions: int
+
+
+class MatrixPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: UUID
+    trial_count: int
+    cohort_id: str
+    protocol_id: str
+    budget_profile_id: str
+    reserved_budget_usd: str | None
+    cells: list[MatrixPreviewCell]
+
+
+class BudgetReservationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reservation_id: str
+    enforcement: Literal["hard", "estimated_time_limited"]
+    reserved_usd: str | None
+    status: Literal["active", "released", "consumed"]
+
+
+class CampaignStateResponse(BaseModel):
+    """A campaign lifecycle transition's authoritative result: the server's
+    current campaign state, the reservation (if any), and a human-readable
+    notice about consequences (e.g. what cancellation does to in-flight work)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign: CampaignSummary
+    reservation: BudgetReservationSummary | None = None
+    notice: str | None = None
+
+
+class CampaignStateCount(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: str
+    count: int
+
+
+class CampaignProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: UUID
+    state: str
+    planned_trials: int
+    observed_trials: int
+    attempts_by_phase: list[CampaignStateCount]
+    attempts_by_terminal_status: list[CampaignStateCount]
+    work_items_by_state: list[CampaignStateCount]
+
+
+class InvalidAttemptEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: UUID
+    attempt_id: UUID
+    attempt_number: int
+    terminal_status: str
+
+
+# ---- ENG-018: publication preparation, review, corrections -----------------
+
+
+class PublicationPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supersedes_publication_id: UUID | None = None
+    correction_reason: str | None = None
+    correction_run_id: UUID | None = None
+
+
+class PublicationPreparationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    campaign_id: UUID
+    status: Literal["prepared", "approved", "rejected", "published"]
+    snapshot_digest: str
+    evidence_manifest_digest: str
+    review_kind: str | None
+    supersedes_publication_id: UUID | None
+    published_publication_id: UUID | None
+    created_at: str
+
+
+class PublicationReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    review_kind: Literal["single_maintainer", "independent"]
+    notes: str | None = None
+
+
+class PublicationWithdrawRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+
+
+class RegradeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registry: FreezeRegistry
+    reason: str | None = None
+
+
+class CorrectionRunSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    campaign_id: UUID
+    status: Literal["running", "completed", "failed"]
+    regrade_work_items: int
+    created_at: str
+
+
+class PublicationSignature(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    publication_id: UUID
+    signed_manifest: dict
+    manifest_signature: str
+    signing_public_key: str
+    signing_key_id: str
+    review_kind: str | None
+
+
+class PublicationExport(BaseModel):
+    """A redacted, self-verifiable publication bundle. Carries ONLY public
+    data: the exact snapshot, frozen cohort/task/entrant manifest identity, the
+    signed manifest, and per-trial PUBLIC (whitelist-redacted) run evidence -
+    never candidate source, logs, diagnostics, costs, or artifact references."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    publication_id: UUID
+    campaign_id: UUID
+    status: str
+    snapshot_digest: str
+    snapshot: dict
+    cohort: CohortIdentity | None
+    frozen_tasks: list[FrozenTaskEntry]
+    frozen_entrants: list[FrozenEntrantEntry]
+    signature: PublicationSignature | None
+    runs: list[PublicRunEvidence]
+    notice: str | None = None
+
+
 PublicRunEvidence.model_rebuild()
 PrivateRunEvidence.model_rebuild()
