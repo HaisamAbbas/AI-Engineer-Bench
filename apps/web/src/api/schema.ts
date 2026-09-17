@@ -45,7 +45,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get Campaign */
+        get: operations["get_campaign_v1_campaigns__campaign_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -53,6 +54,28 @@ export interface paths {
         head?: never;
         /** Patch Campaign */
         patch: operations["patch_campaign_v1_campaigns__campaign_id__patch"];
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Campaign Route
+         * @description frozen/running/paused -> cancelling: stop new dispatch and release the
+         *     budget reservation. Already-leased work finishes or expires naturally; the
+         *     worker finalizes the campaign to `cancelled` once nothing remains.
+         */
+        post: operations["cancel_campaign_route_v1_campaigns__campaign_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/campaigns/{campaign_id}/freeze": {
@@ -66,6 +89,172 @@ export interface paths {
         put?: never;
         /** Freeze */
         post: operations["freeze_v1_campaigns__campaign_id__freeze_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/invalid-attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Campaign Invalid Attempts */
+        get: operations["campaign_invalid_attempts_v1_campaigns__campaign_id__invalid_attempts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause Campaign
+         * @description running -> paused: leased work finishes, but no NEW work dispatches for
+         *     this campaign until it is resumed.
+         */
+        post: operations["pause_campaign_v1_campaigns__campaign_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Matrix
+         * @description Exact trial matrix a freeze WOULD produce for this draft + registry,
+         *     computed by the pure planner and NEVER persisted. Works on a draft campaign
+         *     so an operator can preview coverage/cost before committing to a freeze.
+         */
+        post: operations["preview_matrix_v1_campaigns__campaign_id__preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Campaign Progress */
+        get: operations["campaign_progress_v1_campaigns__campaign_id__progress_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/publications/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Prepare Publication */
+        post: operations["prepare_publication_v1_campaigns__campaign_id__publications_prepare_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/regrade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Regrade */
+        post: operations["regrade_v1_campaigns__campaign_id__regrade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume Campaign */
+        post: operations["resume_campaign_v1_campaigns__campaign_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/scoring-bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Scoring Bundle */
+        get: operations["scoring_bundle_v1_campaigns__campaign_id__scoring_bundle_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Campaign
+         * @description frozen -> running: reserve the declared budget (estimated, not a hard
+         *     provider hold), enqueue the frozen trial matrix, then flip to running.
+         */
+        post: operations["start_campaign_v1_campaigns__campaign_id__start_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -109,6 +298,23 @@ export interface paths {
          *     is meaningless (comparing something to itself) and is rejected.
          */
         get: operations["get_comparison_v1_comparisons_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/correction-runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Run */
+        get: operations["get_run_v1_correction_runs__run_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -268,6 +474,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/publications/preparations/{preparation_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Publication */
+        post: operations["review_publication_v1_publications_preparations__preparation_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/publications/{publication_id}/entrants/{slug}": {
         parameters: {
             query?: never;
@@ -298,6 +521,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/publications/{publication_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Publication */
+        get: operations["export_publication_v1_publications__publication_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/publications/{publication_id}/results": {
         parameters: {
             query?: never;
@@ -309,6 +549,40 @@ export interface paths {
         get: operations["get_publication_results_v1_publications__publication_id__results_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/publications/{publication_id}/signature": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Publication Signature */
+        get: operations["publication_signature_v1_publications__publication_id__signature_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/publications/{publication_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Withdraw Publication */
+        post: operations["withdraw_publication_v1_publications__publication_id__withdraw_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -518,6 +792,23 @@ export interface components {
             /** Verification Wall Seconds */
             verification_wall_seconds: number;
         };
+        /** BudgetReservationSummary */
+        BudgetReservationSummary: {
+            /**
+             * Enforcement
+             * @enum {string}
+             */
+            enforcement: "hard" | "estimated_time_limited";
+            /** Reservation Id */
+            reservation_id: string;
+            /** Reserved Usd */
+            reserved_usd: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "released" | "consumed";
+        };
         /**
          * BudgetRole
          * @enum {string}
@@ -556,6 +847,45 @@ export interface components {
         /** CampaignPatchRequest */
         CampaignPatchRequest: {
             draft: components["schemas"]["CampaignDraft"];
+        };
+        /** CampaignProgress */
+        CampaignProgress: {
+            /** Attempts By Phase */
+            attempts_by_phase: components["schemas"]["CampaignStateCount"][];
+            /** Attempts By Terminal Status */
+            attempts_by_terminal_status: components["schemas"]["CampaignStateCount"][];
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Observed Trials */
+            observed_trials: number;
+            /** Planned Trials */
+            planned_trials: number;
+            /** State */
+            state: string;
+            /** Work Items By State */
+            work_items_by_state: components["schemas"]["CampaignStateCount"][];
+        };
+        /** CampaignStateCount */
+        CampaignStateCount: {
+            /** Count */
+            count: number;
+            /** State */
+            state: string;
+        };
+        /**
+         * CampaignStateResponse
+         * @description A campaign lifecycle transition's authoritative result: the server's
+         *     current campaign state, the reservation (if any), and a human-readable
+         *     notice about consequences (e.g. what cancellation does to in-flight work).
+         */
+        CampaignStateResponse: {
+            campaign: components["schemas"]["CampaignSummary"];
+            /** Notice */
+            notice?: string | null;
+            reservation?: components["schemas"]["BudgetReservationSummary"] | null;
         };
         /** CampaignSummary */
         CampaignSummary: {
@@ -669,6 +999,28 @@ export interface components {
             status: string;
             /** Supersedes Id */
             supersedes_id: string | null;
+        };
+        /** CorrectionRunSummary */
+        CorrectionRunSummary: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Created At */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Regrade Work Items */
+            regrade_work_items: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "completed" | "failed";
         };
         /**
          * DependencyMode
@@ -864,6 +1216,57 @@ export interface components {
             publication_id: string;
             /** Reason */
             reason: string;
+        };
+        /** InvalidAttemptEntry */
+        InvalidAttemptEntry: {
+            /**
+             * Attempt Id
+             * Format: uuid
+             */
+            attempt_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Terminal Status */
+            terminal_status: string;
+            /**
+             * Trial Id
+             * Format: uuid
+             */
+            trial_id: string;
+        };
+        /** MatrixPreview */
+        MatrixPreview: {
+            /** Budget Profile Id */
+            budget_profile_id: string;
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Cells */
+            cells: components["schemas"]["MatrixPreviewCell"][];
+            /** Cohort Id */
+            cohort_id: string;
+            /** Protocol Id */
+            protocol_id: string;
+            /** Reserved Budget Usd */
+            reserved_budget_usd: string | null;
+            /** Trial Count */
+            trial_count: number;
+        };
+        /**
+         * MatrixPreviewCell
+         * @description One planned (task, entrant) cell in the exact matrix a freeze WOULD
+         *     produce for the current draft + supplied registry - computed by the pure
+         *     planner, never persisted.
+         */
+        MatrixPreviewCell: {
+            /** Entrant Id */
+            entrant_id: string;
+            /** Repetitions */
+            repetitions: number;
+            /** Task Id */
+            task_id: string;
         };
         /** MethodologyRevisionResponse */
         MethodologyRevisionResponse: {
@@ -1103,6 +1506,82 @@ export interface components {
         PublicationEntrantConfiguration: {
             manifest: components["schemas"]["EntrantRevision"];
         };
+        /**
+         * PublicationExport
+         * @description A redacted, self-verifiable publication bundle. Carries ONLY public
+         *     data: the exact snapshot, frozen cohort/task/entrant manifest identity, the
+         *     signed manifest, and per-trial PUBLIC (whitelist-redacted) run evidence -
+         *     never candidate source, logs, diagnostics, costs, or artifact references.
+         */
+        PublicationExport: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            cohort: components["schemas"]["CohortIdentity"] | null;
+            /** Frozen Entrants */
+            frozen_entrants: components["schemas"]["FrozenEntrantEntry"][];
+            /** Frozen Tasks */
+            frozen_tasks: components["schemas"]["FrozenTaskEntry"][];
+            /** Notice */
+            notice?: string | null;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Runs */
+            runs: components["schemas"]["PublicRunEvidence"][];
+            signature: components["schemas"]["PublicationSignature"] | null;
+            /** Snapshot */
+            snapshot: {
+                [key: string]: unknown;
+            };
+            /** Snapshot Digest */
+            snapshot_digest: string;
+            /** Status */
+            status: string;
+        };
+        /** PublicationPreparationSummary */
+        PublicationPreparationSummary: {
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Created At */
+            created_at: string;
+            /** Evidence Manifest Digest */
+            evidence_manifest_digest: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Published Publication Id */
+            published_publication_id: string | null;
+            /** Review Kind */
+            review_kind: string | null;
+            /** Snapshot Digest */
+            snapshot_digest: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "prepared" | "approved" | "rejected" | "published";
+            /** Supersedes Publication Id */
+            supersedes_publication_id: string | null;
+        };
+        /** PublicationPrepareRequest */
+        PublicationPrepareRequest: {
+            /** Correction Reason */
+            correction_reason?: string | null;
+            /** Correction Run Id */
+            correction_run_id?: string | null;
+            /** Supersedes Publication Id */
+            supersedes_publication_id?: string | null;
+        };
         /** PublicationResultsResponse */
         PublicationResultsResponse: {
             /**
@@ -1142,6 +1621,41 @@ export interface components {
             /** Supersedes Id */
             supersedes_id: string | null;
         };
+        /** PublicationReviewRequest */
+        PublicationReviewRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Notes */
+            notes?: string | null;
+            /**
+             * Review Kind
+             * @enum {string}
+             */
+            review_kind: "single_maintainer" | "independent";
+        };
+        /** PublicationSignature */
+        PublicationSignature: {
+            /** Manifest Signature */
+            manifest_signature: string;
+            /**
+             * Publication Id
+             * Format: uuid
+             */
+            publication_id: string;
+            /** Review Kind */
+            review_kind: string | null;
+            /** Signed Manifest */
+            signed_manifest: {
+                [key: string]: unknown;
+            };
+            /** Signing Key Id */
+            signing_key_id: string;
+            /** Signing Public Key */
+            signing_public_key: string;
+        };
         /** PublicationSummary */
         PublicationSummary: {
             /**
@@ -1160,6 +1674,17 @@ export interface components {
             snapshot_digest: string;
             /** Status */
             status: string;
+        };
+        /** PublicationWithdrawRequest */
+        PublicationWithdrawRequest: {
+            /** Reason */
+            reason: string;
+        };
+        /** RegradeRequest */
+        RegradeRequest: {
+            /** Reason */
+            reason?: string | null;
+            registry: components["schemas"]["FreezeRegistry"];
         };
         /** Requirement */
         Requirement: {
@@ -1483,6 +2008,37 @@ export interface operations {
             };
         };
     };
+    get_campaign_v1_campaigns__campaign_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     patch_campaign_v1_campaigns__campaign_id__patch: {
         parameters: {
             query?: never;
@@ -1507,6 +2063,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CampaignSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_campaign_route_v1_campaigns__campaign_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1557,6 +2144,301 @@ export interface operations {
             };
         };
     };
+    campaign_invalid_attempts_v1_campaigns__campaign_id__invalid_attempts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvalidAttemptEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pause_campaign_v1_campaigns__campaign_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_matrix_v1_campaigns__campaign_id__preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FreezeRegistry"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatrixPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    campaign_progress_v1_campaigns__campaign_id__progress_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignProgress"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_publication_v1_campaigns__campaign_id__publications_prepare_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationPrepareRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationPreparationSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    regrade_v1_campaigns__campaign_id__regrade_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegradeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionRunSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_campaign_v1_campaigns__campaign_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    scoring_bundle_v1_campaigns__campaign_id__scoring_bundle_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_campaign_v1_campaigns__campaign_id__start_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_comparison_v1_comparisons_get: {
         parameters: {
             query: {
@@ -1577,6 +2459,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ComparisonResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_v1_correction_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CorrectionRunSummary"];
                 };
             };
             /** @description Validation Error */
@@ -1797,6 +2710,41 @@ export interface operations {
             };
         };
     };
+    review_publication_v1_publications_preparations__preparation_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationPreparationSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_publication_entrant_configuration_v1_publications__publication_id__entrants__slug__get: {
         parameters: {
             query?: never;
@@ -1829,6 +2777,37 @@ export interface operations {
             };
         };
     };
+    export_publication_v1_publications__publication_id__export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationExport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_publication_results_v1_publications__publication_id__results_get: {
         parameters: {
             query?: never;
@@ -1847,6 +2826,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicationResultsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publication_signature_v1_publications__publication_id__signature_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationSignature"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_publication_v1_publications__publication_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicationWithdrawRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationExport"];
                 };
             };
             /** @description Validation Error */

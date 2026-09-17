@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "./client";
 import type { components } from "./schema";
 import { ApiRequestError } from "./client";
@@ -141,4 +141,50 @@ export function useCorrections(cursor?: string) {
     queryKey: ["corrections", cursor ?? null],
     queryFn: () => unwrap(api.GET("/v1/corrections", { params: { query: { cursor } } })),
   });
+}
+
+export * from "./publicationHooks";
+
+// Admin writes never optimistically invent lifecycle state. Poll/refetch the
+// authoritative response, including after conflicts from another operator.
+export function useCampaign(id: string | undefined) {
+  return useQuery({ queryKey: ["campaign", id], enabled: !!id, retry: false,
+    queryFn: () => unwrap(api.GET("/v1/campaigns/{campaign_id}", { params: { path: { campaign_id: id! } } })),
+    refetchInterval: 5000 });
+}
+export function useCampaignProgress(id: string | undefined) {
+  return useQuery({ queryKey: ["campaign-progress", id], enabled: !!id, retry: false,
+    queryFn: () => unwrap(api.GET("/v1/campaigns/{campaign_id}/progress", { params: { path: { campaign_id: id! } } })),
+    refetchInterval: 5000 });
+}
+export function useInvalidAttempts(id: string | undefined) {
+  return useQuery({ queryKey: ["invalid-attempts", id], enabled: !!id, retry: false,
+    queryFn: () => unwrap(api.GET("/v1/campaigns/{campaign_id}/invalid-attempts", { params: { path: { campaign_id: id! } } })),
+    refetchInterval: 5000 });
+}
+export type CampaignWrite =
+  | { action: "create"; body: components["schemas"]["CampaignCreateRequest"] }
+  | { action: "patch"; id: string; revision: number; body: components["schemas"]["CampaignPatchRequest"] }
+  | { action: "freeze"; id: string; body: components["schemas"]["FreezeRegistry"] }
+  | { action: "start" | "pause" | "resume" | "cancel"; id: string };
+export function useCampaignWrite() {
+  const client = useQueryClient();
+  return useMutation({ retry: false,
+    mutationFn: async (input: CampaignWrite) => {
+      if (input.action === "create") return unwrap(api.POST("/v1/campaigns", { body: input.body }));
+      const params = { path: { campaign_id: input.id } };
+      if (input.action === "patch") return unwrap(api.PATCH("/v1/campaigns/{campaign_id}", { params, body: input.body, headers: { "If-Match": String(input.revision) } }));
+      if (input.action === "freeze") return unwrap(api.POST("/v1/campaigns/{campaign_id}/freeze", { params, body: input.body }));
+      const result = await unwrap(api.POST(`/v1/campaigns/{campaign_id}/${input.action}`, { params }));
+      client.setQueryData(["campaign", input.id], result);
+      return result.campaign;
+    },
+    onSettled: async () => {
+      await Promise.all(["campaign", "campaign-progress", "invalid-attempts"].map(key => client.invalidateQueries({ queryKey: [key] })));
+    },
+  });
+}
+export function useMatrixPreview(id: string) {
+  return useMutation({ retry: false, mutationFn: (body: components["schemas"]["FreezeRegistry"]) =>
+    unwrap(api.POST("/v1/campaigns/{campaign_id}/preview", { params: { path: { campaign_id: id } }, body })) });
 }

@@ -1,8 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 
-// Primary/secondary navigation exactly as spec section 4 names it. Admin
-// navigation is intentionally absent - this app (ENG-016) is the public
-// read-only surface; admin/publication workflows are ENG-017/018 (Prompt 14).
+// Admin access is enforced by the API; navigation does not imply authorization.
 const PRIMARY_NAV = [
   { to: "/results", label: "Results" },
   { to: "/compare", label: "Compare" },
@@ -14,6 +12,7 @@ const PRIMARY_NAV = [
 const SECONDARY_NAV = [
   { to: "/releases", label: "Releases" },
   { to: "/corrections", label: "Corrections" },
+  { to: "/admin/campaigns", label: "Campaign admin" },
 ];
 
 export function Layout() {

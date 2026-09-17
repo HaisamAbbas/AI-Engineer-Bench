@@ -1,3 +1,10 @@
+.admin-page label { display: block; margin-block: 0.75rem; }
+.admin-page textarea { display: block; width: 100%; font-family: monospace; }
+.admin-page input:not([type="checkbox"]), .admin-page select { display: block; max-width: 100%; }
+.admin-page fieldset { min-width: 0; margin-block: 1rem; border: 1px solid var(--border); }
+.admin-page dd { overflow-wrap: anywhere; }
+.admin-page button { margin: 0.25rem; }
+
 /* Restrained light interface, dark readable text, one accent color, tabular
  * numbers, ample table space (spec section 4). Status is always conveyed by
  * text/icon as well as color - badges below carry a text label, not color

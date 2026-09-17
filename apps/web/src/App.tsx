@@ -14,6 +14,10 @@ import { ReleaseDetail } from "./pages/ReleaseDetail";
 import { Corrections } from "./pages/Corrections";
 import { RunLocally } from "./pages/RunLocally";
 import { NotFound } from "./pages/NotFound";
+import { CampaignAdmin } from "./pages/CampaignAdmin";
+import { CampaignProgress } from "./pages/CampaignProgress";
+import { PublicationReview } from "./pages/PublicationReview";
+
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,6 +46,10 @@ export function App() {
             <Route path="releases/:publicationId" element={<ReleaseDetail />} />
             <Route path="corrections" element={<Corrections />} />
             <Route path="docs" element={<RunLocally />} />
+            <Route path="admin/campaigns" element={<CampaignAdmin />} />
+            <Route path="admin/campaigns/:campaignId" element={<CampaignAdmin />} />
+            <Route path="admin/campaigns/:campaignId/progress" element={<CampaignProgress />} />
+            <Route path="admin/campaigns/:campaignId/publications" element={<PublicationReview />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

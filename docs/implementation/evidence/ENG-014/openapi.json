@@ -419,6 +419,51 @@
         "title": "BudgetProfile",
         "type": "object"
       },
+      "BudgetReservationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "enforcement": {
+            "enum": [
+              "hard",
+              "estimated_time_limited"
+            ],
+            "title": "Enforcement",
+            "type": "string"
+          },
+          "reservation_id": {
+            "title": "Reservation Id",
+            "type": "string"
+          },
+          "reserved_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Usd"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "released",
+              "consumed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reservation_id",
+          "enforcement",
+          "reserved_usd",
+          "status"
+        ],
+        "title": "BudgetReservationSummary",
+        "type": "object"
+      },
       "BudgetRole": {
         "enum": [
           "engineer",
@@ -537,6 +582,114 @@
           "draft"
         ],
         "title": "CampaignPatchRequest",
+        "type": "object"
+      },
+      "CampaignProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts_by_phase": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignStateCount"
+            },
+            "title": "Attempts By Phase",
+            "type": "array"
+          },
+          "attempts_by_terminal_status": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignStateCount"
+            },
+            "title": "Attempts By Terminal Status",
+            "type": "array"
+          },
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "observed_trials": {
+            "title": "Observed Trials",
+            "type": "integer"
+          },
+          "planned_trials": {
+            "title": "Planned Trials",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "work_items_by_state": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignStateCount"
+            },
+            "title": "Work Items By State",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "state",
+          "planned_trials",
+          "observed_trials",
+          "attempts_by_phase",
+          "attempts_by_terminal_status",
+          "work_items_by_state"
+        ],
+        "title": "CampaignProgress",
+        "type": "object"
+      },
+      "CampaignStateCount": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "count"
+        ],
+        "title": "CampaignStateCount",
+        "type": "object"
+      },
+      "CampaignStateResponse": {
+        "additionalProperties": false,
+        "description": "A campaign lifecycle transition's authoritative result: the server's\ncurrent campaign state, the reservation (if any), and a human-readable\nnotice about consequences (e.g. what cancellation does to in-flight work).",
+        "properties": {
+          "campaign": {
+            "$ref": "#/components/schemas/CampaignSummary"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "reservation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BudgetReservationSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "campaign"
+        ],
+        "title": "CampaignStateResponse",
         "type": "object"
       },
       "CampaignSummary": {
@@ -837,6 +990,47 @@
           "created_at"
         ],
         "title": "CorrectionEntry",
+        "type": "object"
+      },
+      "CorrectionRunSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "regrade_work_items": {
+            "title": "Regrade Work Items",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "running",
+              "completed",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "status",
+          "regrade_work_items",
+          "created_at"
+        ],
+        "title": "CorrectionRunSummary",
         "type": "object"
       },
       "DependencyMode": {
@@ -1223,6 +1417,117 @@
           "reason"
         ],
         "title": "IneligibleEntrantPanel",
+        "type": "object"
+      },
+      "InvalidAttemptEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "format": "uuid",
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "attempt_number": {
+            "title": "Attempt Number",
+            "type": "integer"
+          },
+          "terminal_status": {
+            "title": "Terminal Status",
+            "type": "string"
+          },
+          "trial_id": {
+            "format": "uuid",
+            "title": "Trial Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trial_id",
+          "attempt_id",
+          "attempt_number",
+          "terminal_status"
+        ],
+        "title": "InvalidAttemptEntry",
+        "type": "object"
+      },
+      "MatrixPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "budget_profile_id": {
+            "title": "Budget Profile Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/MatrixPreviewCell"
+            },
+            "title": "Cells",
+            "type": "array"
+          },
+          "cohort_id": {
+            "title": "Cohort Id",
+            "type": "string"
+          },
+          "protocol_id": {
+            "title": "Protocol Id",
+            "type": "string"
+          },
+          "reserved_budget_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Budget Usd"
+          },
+          "trial_count": {
+            "title": "Trial Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "trial_count",
+          "cohort_id",
+          "protocol_id",
+          "budget_profile_id",
+          "reserved_budget_usd",
+          "cells"
+        ],
+        "title": "MatrixPreview",
+        "type": "object"
+      },
+      "MatrixPreviewCell": {
+        "additionalProperties": false,
+        "description": "One planned (task, entrant) cell in the exact matrix a freeze WOULD\nproduce for the current draft + supplied registry - computed by the pure\nplanner, never persisted.",
+        "properties": {
+          "entrant_id": {
+            "title": "Entrant Id",
+            "type": "string"
+          },
+          "repetitions": {
+            "title": "Repetitions",
+            "type": "integer"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "entrant_id",
+          "repetitions"
+        ],
+        "title": "MatrixPreviewCell",
         "type": "object"
       },
       "MethodologyRevisionResponse": {
@@ -1861,6 +2166,228 @@
         "title": "PublicationEntrantConfiguration",
         "type": "object"
       },
+      "PublicationExport": {
+        "additionalProperties": false,
+        "description": "A redacted, self-verifiable publication bundle. Carries ONLY public\ndata: the exact snapshot, frozen cohort/task/entrant manifest identity, the\nsigned manifest, and per-trial PUBLIC (whitelist-redacted) run evidence -\nnever candidate source, logs, diagnostics, costs, or artifact references.",
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "cohort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CohortIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "frozen_entrants": {
+            "items": {
+              "$ref": "#/components/schemas/FrozenEntrantEntry"
+            },
+            "title": "Frozen Entrants",
+            "type": "array"
+          },
+          "frozen_tasks": {
+            "items": {
+              "$ref": "#/components/schemas/FrozenTaskEntry"
+            },
+            "title": "Frozen Tasks",
+            "type": "array"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRunEvidence"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicationSignature"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot": {
+            "additionalProperties": true,
+            "title": "Snapshot",
+            "type": "object"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publication_id",
+          "campaign_id",
+          "status",
+          "snapshot_digest",
+          "snapshot",
+          "cohort",
+          "frozen_tasks",
+          "frozen_entrants",
+          "signature",
+          "runs"
+        ],
+        "title": "PublicationExport",
+        "type": "object"
+      },
+      "PublicationPreparationSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "evidence_manifest_digest": {
+            "title": "Evidence Manifest Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "published_publication_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published Publication Id"
+          },
+          "review_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Kind"
+          },
+          "snapshot_digest": {
+            "title": "Snapshot Digest",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "prepared",
+              "approved",
+              "rejected",
+              "published"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "supersedes_publication_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Publication Id"
+          }
+        },
+        "required": [
+          "id",
+          "campaign_id",
+          "status",
+          "snapshot_digest",
+          "evidence_manifest_digest",
+          "review_kind",
+          "supersedes_publication_id",
+          "published_publication_id",
+          "created_at"
+        ],
+        "title": "PublicationPreparationSummary",
+        "type": "object"
+      },
+      "PublicationPrepareRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "correction_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Reason"
+          },
+          "correction_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correction Run Id"
+          },
+          "supersedes_publication_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supersedes Publication Id"
+          }
+        },
+        "title": "PublicationPrepareRequest",
+        "type": "object"
+      },
       "PublicationResultsResponse": {
         "additionalProperties": false,
         "properties": {
@@ -1974,6 +2501,92 @@
         "title": "PublicationResultsResponse",
         "type": "object"
       },
+      "PublicationReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "review_kind": {
+            "enum": [
+              "single_maintainer",
+              "independent"
+            ],
+            "title": "Review Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "review_kind"
+        ],
+        "title": "PublicationReviewRequest",
+        "type": "object"
+      },
+      "PublicationSignature": {
+        "additionalProperties": false,
+        "properties": {
+          "manifest_signature": {
+            "title": "Manifest Signature",
+            "type": "string"
+          },
+          "publication_id": {
+            "format": "uuid",
+            "title": "Publication Id",
+            "type": "string"
+          },
+          "review_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Kind"
+          },
+          "signed_manifest": {
+            "additionalProperties": true,
+            "title": "Signed Manifest",
+            "type": "object"
+          },
+          "signing_key_id": {
+            "title": "Signing Key Id",
+            "type": "string"
+          },
+          "signing_public_key": {
+            "title": "Signing Public Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "publication_id",
+          "signed_manifest",
+          "manifest_signature",
+          "signing_public_key",
+          "signing_key_id",
+          "review_kind"
+        ],
+        "title": "PublicationSignature",
+        "type": "object"
+      },
       "PublicationSummary": {
         "additionalProperties": false,
         "properties": {
@@ -2008,6 +2621,44 @@
           "created_at"
         ],
         "title": "PublicationSummary",
+        "type": "object"
+      },
+      "PublicationWithdrawRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "PublicationWithdrawRequest",
+        "type": "object"
+      },
+      "RegradeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "registry": {
+            "$ref": "#/components/schemas/FreezeRegistry"
+          }
+        },
+        "required": [
+          "registry"
+        ],
+        "title": "RegradeRequest",
         "type": "object"
       },
       "Requirement": {
@@ -2813,6 +3464,47 @@
       }
     },
     "/v1/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "get_campaign_v1_campaigns__campaign_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      },
       "patch": {
         "operationId": "patch_campaign_v1_campaigns__campaign_id__patch",
         "parameters": [
@@ -2876,6 +3568,50 @@
           }
         },
         "summary": "Patch Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/cancel": {
+      "post": {
+        "description": "frozen/running/paused -> cancelling: stop new dispatch and release the\nbudget reservation. Already-leased work finishes or expires naturally; the\nworker finalizes the campaign to `cancelled` once nothing remains.",
+        "operationId": "cancel_campaign_route_v1_campaigns__campaign_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Campaign Route",
         "tags": [
           "campaigns"
         ]
@@ -2945,6 +3681,448 @@
           }
         },
         "summary": "Freeze",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/invalid-attempts": {
+      "get": {
+        "operationId": "campaign_invalid_attempts_v1_campaigns__campaign_id__invalid_attempts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InvalidAttemptEntry"
+                  },
+                  "title": "Response Campaign Invalid Attempts V1 Campaigns  Campaign Id  Invalid Attempts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Invalid Attempts",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/pause": {
+      "post": {
+        "description": "running -> paused: leased work finishes, but no NEW work dispatches for\nthis campaign until it is resumed.",
+        "operationId": "pause_campaign_v1_campaigns__campaign_id__pause_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Pause Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/preview": {
+      "post": {
+        "description": "Exact trial matrix a freeze WOULD produce for this draft + registry,\ncomputed by the pure planner and NEVER persisted. Works on a draft campaign\nso an operator can preview coverage/cost before committing to a freeze.",
+        "operationId": "preview_matrix_v1_campaigns__campaign_id__preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreezeRegistry"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatrixPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Matrix",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/progress": {
+      "get": {
+        "operationId": "campaign_progress_v1_campaigns__campaign_id__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignProgress"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Progress",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/publications/prepare": {
+      "post": {
+        "operationId": "prepare_publication_v1_campaigns__campaign_id__publications_prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationPrepareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationPreparationSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Publication",
+        "tags": [
+          "publications"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/regrade": {
+      "post": {
+        "operationId": "regrade_v1_campaigns__campaign_id__regrade_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegradeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regrade",
+        "tags": [
+          "corrections"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/resume": {
+      "post": {
+        "operationId": "resume_campaign_v1_campaigns__campaign_id__resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/scoring-bundle": {
+      "get": {
+        "operationId": "scoring_bundle_v1_campaigns__campaign_id__scoring_bundle_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Scoring Bundle V1 Campaigns  Campaign Id  Scoring Bundle Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scoring Bundle",
+        "tags": [
+          "corrections"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/start": {
+      "post": {
+        "description": "frozen -> running: reserve the declared budget (estimated, not a hard\nprovider hold), enqueue the frozen trial matrix, then flip to running.",
+        "operationId": "start_campaign_v1_campaigns__campaign_id__start_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Campaign",
         "tags": [
           "campaigns"
         ]
@@ -3029,6 +4207,49 @@
         "summary": "Get Comparison",
         "tags": [
           "results"
+        ]
+      }
+    },
+    "/v1/correction-runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_v1_correction_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CorrectionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run",
+        "tags": [
+          "corrections"
         ]
       }
     },
@@ -3342,6 +4563,59 @@
         ]
       }
     },
+    "/v1/publications/preparations/{preparation_id}/review": {
+      "post": {
+        "operationId": "review_publication_v1_publications_preparations__preparation_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationPreparationSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Publication",
+        "tags": [
+          "publications"
+        ]
+      }
+    },
     "/v1/publications/{publication_id}/entrants/{slug}": {
       "get": {
         "description": "The EXACT entrant configuration THIS publication's frozen campaign\nused for `slug` - not whichever revision of that slug is newest right\nnow (review finding #2, second pass). Compare previously called\n`GET /entrants/by-slug/{slug}` for every panel, which always resolves\nthe most recent `EntrantRevisionRow` regardless of which publication\nthe panel is actually showing metrics for - a historical or\ncross-release comparison could silently combine one publication's\nmetrics with a DIFFERENT, newer entrant revision's model/capabilities.\nReads directly from `campaign.resolved[\"entrants\"]`, the same frozen\nmanifest `frozen_tasks`/`cohort` already come from - real data, not a\nsecond guess.",
@@ -3395,6 +4669,49 @@
         ]
       }
     },
+    "/v1/publications/{publication_id}/export": {
+      "get": {
+        "operationId": "export_publication_v1_publications__publication_id__export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Publication",
+        "tags": [
+          "publications"
+        ]
+      }
+    },
     "/v1/publications/{publication_id}/results": {
       "get": {
         "operationId": "get_publication_results_v1_publications__publication_id__results_get",
@@ -3435,6 +4752,102 @@
         "summary": "Get Publication Results",
         "tags": [
           "results"
+        ]
+      }
+    },
+    "/v1/publications/{publication_id}/signature": {
+      "get": {
+        "operationId": "publication_signature_v1_publications__publication_id__signature_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationSignature"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publication Signature",
+        "tags": [
+          "publications"
+        ]
+      }
+    },
+    "/v1/publications/{publication_id}/withdraw": {
+      "post": {
+        "operationId": "withdraw_publication_v1_publications__publication_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "publication_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Publication Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationWithdrawRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationExport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw Publication",
+        "tags": [
+          "publications"
         ]
       }
     },
