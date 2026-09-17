@@ -327,7 +327,8 @@ function ResultsTable({
       <button type="button" onClick={downloadJson}>
         Download JSON
       </button>
-      <table tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Results by entrant revision" tabIndex={0}>
+      <table>
         <caption>Results by entrant revision</caption>
         <thead>
           <tr>
@@ -392,6 +393,7 @@ function ResultsTable({
           ))}
         </tbody>
       </table>
+      </div>
       {selected.size >= 2 && (
         <Link to={`/compare?publication=${publicationId}&entrants=${[...selected].join(",")}`}>
           Compare {selected.size} selected entrants

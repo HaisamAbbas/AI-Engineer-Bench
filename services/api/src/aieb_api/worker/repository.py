@@ -19,6 +19,8 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import json
+import re
 
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
@@ -27,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
+    AttemptEventRow,
     AttemptRow,
     CampaignRow,
     CandidateRow,
@@ -38,8 +41,29 @@ from ..models import (
     WorkerArtifactBlobRow,
     WorkerArtifactReferenceRow,
 )
+from ..evidence_integrity import evidence_digest
 
 DEFAULT_LEASE_SECONDS = 60
+
+
+def append_attempt_event(session: Session, *, attempt_id: uuid.UUID, event_type: str, payload: dict[str, str | int | bool | None]) -> None:
+    """Append one ordered, immutable, public-safe lifecycle observation."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", event_type):
+        raise ValueError("attempt event type is invalid")
+    if any(
+        not isinstance(key, str) or len(key) > 128
+        or not (value is None or type(value) in (str, int, bool))
+        or isinstance(value, str) and len(value) > 2048
+        for key, value in payload.items()
+    ):
+        raise ValueError("attempt event payload is invalid")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    if len(encoded.encode("utf-8")) > 8192:
+        raise ValueError("attempt event payload exceeds the size limit")
+    sequence = session.execute(
+        select(func.coalesce(func.max(AttemptEventRow.sequence), -1) + 1).where(AttemptEventRow.attempt_id == attempt_id)
+    ).scalar_one()
+    session.add(AttemptEventRow(attempt_id=attempt_id, sequence=sequence, event_type=event_type, payload=payload))
 
 
 class EnqueueError(ValueError):
@@ -260,6 +284,7 @@ def record_candidate(
     candidate_row = CandidateRow(
         attempt_id=attempt_id, tree_digest=candidate.tree_digest, manifest_digest=candidate.manifest_digest,
         validation_status=candidate.validation_status, stored_candidate=candidate.stored_candidate,
+        stored_candidate_digest=evidence_digest(candidate.stored_candidate),
     )
     session.add(candidate_row)
     try:
@@ -275,11 +300,21 @@ def record_candidate(
             existing.manifest_digest != candidate.manifest_digest
             or existing.validation_status != candidate.validation_status
             or existing.stored_candidate != candidate.stored_candidate
+            or existing.stored_candidate_digest != evidence_digest(candidate.stored_candidate)
         ):
             raise CandidateConflictError(
                 f"attempt {attempt_id} tree_digest {candidate.tree_digest} is already recorded with different content"
             )
         return existing.id
+    append_attempt_event(
+        session,
+        attempt_id=attempt_id,
+        event_type="candidate.collected",
+        payload={
+            "changed_files": len(candidate.stored_candidate.get("file_references", [])),
+            "engineering_output_captured": bool(candidate.stored_candidate.get("engineering_stdout") or candidate.stored_candidate.get("engineering_stderr")),
+        },
+    )
     session.commit()
     return candidate_row.id
 
@@ -363,6 +398,11 @@ def record_evaluation(
         schedule_digest=evaluation.schedule_digest, verdict=evaluation.verdict, result=evaluation.result,
     )
     session.add(row)
+    attempt_id = session.execute(select(CandidateRow.attempt_id).where(CandidateRow.id == candidate_id)).scalar_one()
+    append_attempt_event(
+        session, attempt_id=attempt_id, event_type="evaluation.recorded",
+        payload={"verdict": evaluation.verdict or "unscored", "checks": len(evaluation.result.get("checks", {})) if isinstance(evaluation.result, dict) and isinstance(evaluation.result.get("checks"), dict) else 0},
+    )
     try:
         session.commit()
     except IntegrityError:
@@ -396,6 +436,7 @@ def record_evaluation(
 class LoadedCandidate:
     candidate_id: uuid.UUID
     stored_candidate: dict
+    stored_candidate_digest: str
     tree_digest: str
     manifest_digest: str
 
@@ -416,7 +457,8 @@ def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> LoadedCand
     if row is None:
         return None
     return LoadedCandidate(
-        candidate_id=row.id, stored_candidate=row.stored_candidate, tree_digest=row.tree_digest, manifest_digest=row.manifest_digest,
+        candidate_id=row.id, stored_candidate=row.stored_candidate, stored_candidate_digest=row.stored_candidate_digest,
+        tree_digest=row.tree_digest, manifest_digest=row.manifest_digest,
     )
 
 
@@ -534,6 +576,10 @@ def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, gener
         session.rollback()
         return False
     session.execute(update(AttemptRow).where(AttemptRow.id == attempt_id).values(phase="terminal", terminal_status=terminal_status))
+    append_attempt_event(
+        session, attempt_id=attempt_id, event_type="attempt.terminal",
+        payload={"terminal_status": terminal_status, "completed": done},
+    )
     session.commit()
     return True
 

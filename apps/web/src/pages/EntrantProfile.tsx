@@ -55,7 +55,8 @@ export function EntrantProfile() {
         <EmptyState title="This entrant does not appear in any published release yet." />
       )}
       {results.isSuccess && results.data.length > 0 && (
-        <table tabIndex={0}>
+        <div className="table-scroll" role="region" aria-label="Results by entrant revision" tabIndex={0}>
+        <table>
           <caption>Publications this entrant appears in</caption>
           <thead>
             <tr>
@@ -83,6 +84,7 @@ export function EntrantProfile() {
             })}
           </tbody>
         </table>
+        </div>
       )}
     </section>
   );

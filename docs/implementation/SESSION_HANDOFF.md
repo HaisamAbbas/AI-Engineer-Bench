@@ -2,8 +2,7 @@
 
 Updated: 2026-09-16
 Current phase: Prompt 13 (ENG-016, public website).
-ENG-015 remains IN_PROGRESS: the real PostgreSQL migration/backfill and a 109-test relevant regression suite pass locally; lifecycle tests also pass on Windows. Successful Ubuntu CI is still required to verify the Unix process-group branch.
-ENG-016 is COMPLETE: Prompt 13 now has persisted public run evidence, versioned Methodology data, task-ticket prose, candidate log/diff rendering, live HTTP/browser integration, full-page axe checks, desktop/mobile overflow checks, and reviewed screenshots. The synthetic browser evidence and test results are recorded under `docs/implementation/evidence/ENG-016/`.
+ENG-015 and ENG-016 are IN_PROGRESS. ENG-015 still needs a successful committed Ubuntu/PostgreSQL run. ENG-016's latest five review findings have been implemented and exercised against PostgreSQL, the frontend test/build gates, and real Edge browser checks. The previous false mobile report was replaced with a 26-case report that asserts both requested and visual viewport widths.
 
 ## Current state
 
@@ -667,6 +666,9 @@ Against a disposable PostgreSQL 16 database, `alembic upgrade head` succeeded an
 
 The website production build succeeded and Vitest passed 30 tests. Headless Microsoft Edge `153.0.4234.32` checked all 13 routes at 1440x1000 and 390x844: 26 checks, zero axe violations, and no horizontal overflow. All 26 route/viewport screenshots plus sample API responses are checked in at `docs/implementation/evidence/ENG-016/browser/`; Home desktop, task mobile, and redacted run mobile were manually inspected. These responses come from a clearly identified synthetic fixture in the disposable test database, not an official benchmark publication.
 
-## Next steps
+## Current review gates (2026-09-16)
 
-Wait for `.github/workflows/eng015-verification.yml` to pass on Ubuntu before marking ENG-015 complete; the CI job exercises the Unix process-group branch and repeats the PostgreSQL regression gates. ENG-016 is complete. ENG-012 remains blocked on provider/model authorization, credentials, and a spend cap; independent task reviews remain a precondition for an admitted-only ENG-013 release manifest.
+- ENG-015 remains IN_PROGRESS until `.github/workflows/eng015-verification.yml` passes on Ubuntu with its Unix process-group and PostgreSQL checks.
+- ENG-016 remains IN_PROGRESS pending review of the follow-up. Public run selection is pinned to an immutable manifest; Run Evidence exposes trace/actions, usage, configuration, artifacts, and invalid/superseded/partial states; candidate display payloads and versioned task ticket text are integrity-bound; and the task bundle includes its ticket. Real Edge verification covers all 13 routes at 1440px and 390px, with matching `innerWidth`/`visualViewport.width`, no horizontal page overflow, real API requests, and zero axe violations.
+- The initial commit and push for this review sequence is `e1a9e9b`; the verified implementation changes after that baseline are still uncommitted for review.
+- ENG-012 remains blocked on provider/model authorization, credentials, and a spend cap; independent task reviews remain a precondition for an admitted-only ENG-013 release manifest.

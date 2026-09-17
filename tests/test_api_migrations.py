@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
 import subprocess
 import sys
 import unittest
@@ -60,7 +61,7 @@ class MigrationCompatibilityTests(unittest.TestCase):
 
     def _seed_legacy_artifacts(self) -> dict[str, str]:
         engine = create_engine(DATABASE_URL)
-        evaluator_id, task_id, entrant_id = (str(uuid4()) for _ in range(3))
+        evaluator_id, task_id, task_v2_id, entrant_id = (str(uuid4()) for _ in range(4))
         campaign_id, trial_id, attempt_id, candidate_id, other_candidate_id = (str(uuid4()) for _ in range(5))
         references = {key: str(uuid4()) for key in ("claimed", "wrong_scope", "wrong_digest", "wrong_length", "ambiguous", "unclaimed")}
         blobs = {key: f"{letter}" * 64 for key, letter in zip(references, "abcdef", strict=True)}
@@ -99,6 +100,10 @@ class MigrationCompatibilityTests(unittest.TestCase):
                 INSERT INTO task_revision (id, slug, version, family_id, category, source_digest, manifest_digest, evaluator_id, manifest)
                 VALUES (:id, 'rag.document-freshness', '0.1.0', 'knowledge-service-a', 'rag', :source, :manifest_digest, :evaluator, '{}'::jsonb)
             """), {"id": task_id, "source": "s" * 64, "manifest_digest": "m" * 64, "evaluator": evaluator_id})
+            connection.execute(text("""
+                INSERT INTO task_revision (id, slug, version, family_id, category, source_digest, manifest_digest, evaluator_id, manifest)
+                VALUES (:id, 'rag.document-freshness', '0.2.0', 'knowledge-service-a', 'rag', :source, :manifest_digest, :evaluator, '{}'::jsonb)
+            """), {"id": task_v2_id, "source": "s" * 64, "manifest_digest": "n" * 64, "evaluator": evaluator_id})
             connection.execute(text("""
                 INSERT INTO entrant_revision (id, slug, version, track, config_digest, capabilities, manifest)
                 VALUES (:id, 'migration.entrant', 'v1', 'models', :digest, '{}'::jsonb, '{}'::jsonb)
@@ -158,7 +163,7 @@ class MigrationCompatibilityTests(unittest.TestCase):
                 "unclaimed": references["unclaimed"], "unclaimed_blob": blobs["unclaimed"], "scope": attempt_id,
             })
         engine.dispose()
-        return {"candidate": candidate_id, **{f"reference_{key}": value for key, value in references.items()}, **{f"blob_{key}": value for key, value in blobs.items()}}
+        return {"candidate": candidate_id, "task_v2": task_v2_id, **{f"reference_{key}": value for key, value in references.items()}, **{f"blob_{key}": value for key, value in blobs.items()}}
 
     def _assert_backfilled(self, rows: dict[str, str]) -> None:
         engine = create_engine(DATABASE_URL)
@@ -180,19 +185,41 @@ class MigrationCompatibilityTests(unittest.TestCase):
                 "ambiguous": rows["blob_ambiguous"], "unclaimed": rows["blob_unclaimed"],
             }).all()
             ticket = connection.execute(text("""
-                SELECT ticket_text FROM task_revision WHERE slug = 'rag.document-freshness' AND version = '0.1.0'
-            """)).scalar_one()
+                SELECT ticket_text, revision_digest, manifest FROM task_revision WHERE slug = 'rag.document-freshness' AND version = '0.1.0'
+            """)).one()
+            wrong_version = connection.execute(text("""
+                SELECT ticket_text, revision_digest, manifest FROM task_revision WHERE id = :id
+            """), {"id": rows["task_v2"]}).one()
             protocol = connection.execute(text("""
                 SELECT version, scoring_digest, manifest->>'id' FROM protocol_revision
                 WHERE version = 'migration-protocol-v1'
             """)).one()
+            candidate_evidence = connection.execute(text("""
+                SELECT stored_candidate, stored_candidate_digest FROM candidate WHERE id=:id
+            """), {"id": rows["candidate"]}).one()
         engine.dispose()
         reference_owners = dict(references)
         self.assertEqual(reference_owners[rows["reference_claimed"]], rows["candidate"])
         for key in ("wrong_scope", "wrong_digest", "wrong_length", "ambiguous", "unclaimed"):
             self.assertIsNone(reference_owners[rows[f"reference_{key}"]], key)
         blob_rows = {row.sha256: row for row in blobs}
-        self.assertIn("Updated documents can return old passages", ticket)
+        self.assertIn("Updated documents can return old passages", ticket[0])
+        self.assertEqual(len(ticket[1]), 64)
+        self.assertIsNone(wrong_version.ticket_text)
+        self.assertEqual(len(wrong_version.revision_digest), 64)
+        expected_revision = {
+            "schema_version": "aieb.task-revision-identity/v1",
+            "manifest": ticket.manifest,
+            "ticket_text": ticket.ticket_text,
+        }
+        self.assertEqual(
+            ticket.revision_digest,
+            hashlib.sha256(json.dumps(expected_revision, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest(),
+        )
+        self.assertEqual(
+            candidate_evidence.stored_candidate_digest,
+            hashlib.sha256(json.dumps(candidate_evidence.stored_candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest(),
+        )
         self.assertEqual(protocol, ("migration-protocol-v1", "p" * 64, "migration-protocol-v1"))
         self.assertEqual(blob_rows[rows["blob_claimed"]].retention_class, "evidence")
         self.assertIsNone(blob_rows[rows["blob_claimed"]].staged_until)

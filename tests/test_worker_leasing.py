@@ -72,6 +72,13 @@ class WorkerLeasingTests(unittest.TestCase):
 
         shutil.rmtree(self.work_root, ignore_errors=True)
 
+    def _force_candidate_corruption(self, session, candidate_id: uuid.UUID, stored: dict) -> None:
+        """Simulate privileged storage corruption past the normal DB guard."""
+        session.execute(text("ALTER TABLE candidate DISABLE TRIGGER candidate_evidence_immutable"))
+        session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate_id).values(stored_candidate=stored))
+        session.execute(text("ALTER TABLE candidate ENABLE TRIGGER candidate_evidence_immutable"))
+        session.commit()
+
     # ---- fixtures -------------------------------------------------------
 
     def _seed_task(self) -> None:
@@ -743,8 +750,7 @@ class WorkerLeasingTests(unittest.TestCase):
             stored = dict(candidate.stored_candidate)
             stored["manifest"] = dict(stored["manifest"])
             stored["manifest"]["full_tree_hash"] = "f" * 64  # diverges from candidate.tree_digest
-            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
-            session.commit()
+            self._force_candidate_corruption(session, candidate.id, stored)
 
         with self.session_factory() as session:
             verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
@@ -784,8 +790,7 @@ class WorkerLeasingTests(unittest.TestCase):
             stored["file_references"][0] = dict(stored["file_references"][0])
             stored["file_references"][0]["reference"] = dict(stored["file_references"][0]["reference"])
             stored["file_references"][0]["reference"]["id"] = str(uuid.uuid4())  # never actually stored
-            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
-            session.commit()
+            self._force_candidate_corruption(session, candidate.id, stored)
 
         with self.session_factory() as session:
             verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
@@ -795,7 +800,7 @@ class WorkerLeasingTests(unittest.TestCase):
         self.assertIsNone(result.verdict)
         with self.session_factory() as session:
             attempt = session.get(api_models.AttemptRow, verification.attempt_id)
-            self.assertEqual(attempt.terminal_status, "host_failure")
+            self.assertEqual(attempt.terminal_status, "infrastructure_invalid")
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])
 
@@ -823,8 +828,7 @@ class WorkerLeasingTests(unittest.TestCase):
                 stored["file_references"][0] = dict(stored["file_references"][0])
                 stored["file_references"][0]["reference"] = dict(stored["file_references"][0]["reference"])
                 stored["file_references"][0]["reference"]["id"] = []  # malformed: not a UUID string at all
-            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate=stored))
-            session.commit()
+            self._force_candidate_corruption(session, candidate.id, stored)
 
         with self.session_factory() as session:
             verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
@@ -850,8 +854,7 @@ class WorkerLeasingTests(unittest.TestCase):
 
         with self.session_factory() as session:
             candidate = session.execute(select(api_models.CandidateRow)).scalars().one()
-            session.execute(update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id).values(stored_candidate={}))
-            session.commit()
+            self._force_candidate_corruption(session, candidate.id, {})
 
         with self.session_factory() as session:
             verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")

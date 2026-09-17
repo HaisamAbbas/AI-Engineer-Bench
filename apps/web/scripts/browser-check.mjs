@@ -111,7 +111,7 @@ if (!executable) throw new Error("Set AIEB_BROWSER_EXECUTABLE to a local Chrome,
 const port = await freePort();
 const profile = mkdtempSync(path.join(tmpdir(), "aieb-eng016-browser-"));
 const browser = spawn(executable, [
-  "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+  "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check",
   "--disable-background-networking", "--remote-allow-origins=*", `--remote-debugging-port=${port}`,
   `--user-data-dir=${profile}`, "--window-size=1440,1000", "about:blank",
 ], { stdio: "ignore", windowsHide: true });
@@ -135,7 +135,8 @@ try {
     for (const viewport of [{ name: "desktop", width: 1440, height: 1000 }, { name: "mobile", width: 390, height: 844 }]) {
       await evaluate(cdp, "performance.clearResourceTimings()");
       await cdp.send("Emulation.setDeviceMetricsOverride", {
-        width: viewport.width, height: viewport.height, deviceScaleFactor: 1, mobile: viewport.name === "mobile",
+        width: viewport.width, height: viewport.height, screenWidth: viewport.width, screenHeight: viewport.height,
+        deviceScaleFactor: 1, mobile: false,
       });
       await cdp.send("Page.navigate", { url: new URL(route.path, webBase).href });
       const until = Date.now() + 15000;
@@ -154,6 +155,22 @@ try {
       if (route.path.startsWith("/runs/") && (!pageState.body.includes("Public redacted evidence") || pageState.body.includes("browser fixture completed"))) {
         throw new Error("Run page did not serve the redacted published evidence projection");
       }
+      let runEvidenceTabChecks = 0;
+      if (route.path.startsWith("/runs/")) {
+        for (const [tabName, expectedText] of [
+          ["Outcome", "Evaluation state"], ["Changes", "withheld from public evidence"],
+          ["Actions", "Observable trace and actions"], ["Application checks", "Application checks"],
+          ["Usage", "Usage"], ["Configuration", "Configuration"],
+        ]) {
+          await evaluate(cdp, `document.querySelector('[role="tab"]:is([id="tab-outcome"], [id="tab-changes"], [id="tab-actions"], [id="tab-checks"], [id="tab-usage"], [id="tab-configuration"])') && [...document.querySelectorAll('[role="tab"]')].find(x => x.innerText === ${JSON.stringify(tabName)})?.click()`);
+          const tabBody = await evaluate(cdp, "document.body.innerText");
+          if (!tabBody.includes(expectedText)) throw new Error(`Run Evidence ${tabName} tab did not show ${expectedText}`);
+          const tabAxe = await evaluate(cdp, `axe.run(document).then(r => r.violations.map(v => ({id:v.id, impact:v.impact, nodes:v.nodes.map(n => n.target)})))`, { awaitPromise: true });
+          if (tabAxe.length > 0) throw new Error(`Run Evidence ${tabName} tab: axe violations ${JSON.stringify(tabAxe)}`);
+          runEvidenceTabChecks += 1;
+        }
+        await evaluate(cdp, `document.getElementById('tab-outcome')?.click()`);
+      }
       const needsApi = !["/docs", "/route-not-found"].includes(route.path);
       let apiRequests = [];
       if (needsApi) {
@@ -165,16 +182,20 @@ try {
         }
       }
       if (needsApi && apiRequests.length === 0) throw new Error(`${route.path} did not make a real browser fetch to the API`);
-      const dimensions = await evaluate(cdp, `({width:innerWidth, scrollWidth:Math.max(document.documentElement.scrollWidth, document.body.scrollWidth), height:document.documentElement.scrollHeight})`);
+      const dimensions = await evaluate(cdp, `({width:innerWidth, visualViewportWidth:visualViewport?.width ?? null, screenWidth:screen.width, scrollWidth:Math.max(document.documentElement.scrollWidth, document.body.scrollWidth), height:document.documentElement.scrollHeight})`);
+      if (Math.abs(dimensions.width - viewport.width) > 1 || Math.abs((dimensions.visualViewportWidth ?? 0) - viewport.width) > 1) {
+        throw new Error(`${viewport.name} ${route.path}: browser viewport did not match requested width (${dimensions.width}px inner, ${dimensions.visualViewportWidth}px visual, expected ${viewport.width}px)`);
+      }
       if (dimensions.scrollWidth > dimensions.width + 1) {
-        throw new Error(`${viewport.name} ${route.path}: page overflows horizontally (${dimensions.scrollWidth}px > ${dimensions.width}px)`);
+        const overflowNodes = await evaluate(cdp, `([...document.querySelectorAll('body *')].filter(e=>!e.closest('.table-scroll')).map(e => { const r=e.getBoundingClientRect(); return {tag:e.tagName, id:e.id, className:typeof e.className==='string'?e.className:'', text:(e.innerText||'').slice(0,100), left:Math.round(r.left), right:Math.round(r.right), width:Math.round(r.width), clientWidth:e.clientWidth, scrollWidth:e.scrollWidth}; }).filter(e => e.right > innerWidth + 1 || e.scrollWidth > e.clientWidth + 1).sort((a,b) => b.right-a.right).slice(0,15))`);
+        throw new Error(`${viewport.name} ${route.path}: page overflows horizontally (${dimensions.scrollWidth}px > ${dimensions.width}px); nodes=${JSON.stringify(overflowNodes)}`);
       }
       const axe = await evaluate(cdp, `axe.run(document).then(r => r.violations.map(v => ({id:v.id, impact:v.impact, nodes:v.nodes.map(n => n.target)})))`, { awaitPromise: true });
       if (axe.length > 0) throw new Error(`${viewport.name} ${route.path}: axe violations ${JSON.stringify(axe)}`);
       const screenshot = await cdp.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, fromSurface: true });
       const screenshotName = `${name}-${viewport.name}.png`;
       writeFileSync(path.join(artifactDir, screenshotName), Buffer.from(screenshot.data, "base64"));
-      report.push({ path: route.path, viewport: viewport.name, screenshot: screenshotName, apiRequests: apiRequests.length, ...dimensions, axeViolations: axe.length });
+      report.push({ path: route.path, viewport: viewport.name, requestedWidth: viewport.width, screenshot: screenshotName, apiRequests: apiRequests.length, runEvidenceTabChecks, ...dimensions, axeViolations: axe.length });
     }
   }
   cdp.ws.close();

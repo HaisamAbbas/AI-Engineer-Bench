@@ -81,6 +81,7 @@ header nav ul {
 main {
   flex: 1;
   width: 100%;
+  min-width: 0;
   margin-inline: auto;
   padding: 1.5rem;
   max-width: 1100px;
@@ -98,11 +99,28 @@ table {
   margin-block: 1rem;
 }
 
+select {
+  max-width: 100%;
+}
+
+.table-scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  contain: paint;
+  overscroll-behavior-inline: contain;
+}
+
 @media (max-width: 700px) {
-  table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
+  .table-scroll table {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .table-scroll table th:first-child,
+  .table-scroll table td:first-child {
+    position: static;
   }
 }
 
@@ -184,6 +202,25 @@ pre {
 .task-ticket {
   max-width: 78ch;
   white-space: pre-wrap;
+}
+
+.evidence-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.evidence-tabs [aria-selected="true"] {
+  border-bottom: 3px solid var(--accent);
+  font-weight: 700;
+}
+
+.run-trace {
+  max-height: 32rem;
+  overflow: auto;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 700px) {

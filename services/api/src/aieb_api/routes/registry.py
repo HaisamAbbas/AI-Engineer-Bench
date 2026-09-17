@@ -16,6 +16,7 @@ disclosed gap, not silently invented.
 
 from __future__ import annotations
 
+import hashlib
 from uuid import UUID
 
 from aieb_core.models import EntrantRevision, TaskRevision
@@ -25,6 +26,8 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..errors import not_found
+from ..errors import service_unavailable
+from ..evidence_integrity import task_revision_digest
 from ..models import EntrantRevisionRow, ProtocolRevisionRow, TaskRevisionRow
 from ..pagination import clamp_limit, decode_cursor, page
 from ..revisions import validate_stored_manifest
@@ -75,7 +78,14 @@ def get_task_revision(slug: str, version: str, session: Session = Depends(get_se
     if row is None:
         raise not_found()
     manifest = validate_stored_manifest(TaskRevision, row.manifest, kind="task", row_id=row.id)
-    return TaskRevisionResponse(id=row.id, manifest=manifest, ticket_text=row.ticket_text)
+    expected = task_revision_digest(row.manifest, row.ticket_text)
+    if expected != row.revision_digest:
+        raise service_unavailable("stored task revision ticket or manifest failed its identity digest check")
+    ticket_digest = hashlib.sha256(row.ticket_text.encode("utf-8")).hexdigest() if row.ticket_text is not None else None
+    return TaskRevisionResponse(
+        id=row.id, manifest=manifest, ticket_text=row.ticket_text,
+        ticket_digest=ticket_digest, revision_digest=row.revision_digest,
+    )
 
 
 @router.get("/methodology", response_model=list[MethodologyRevisionSummary])

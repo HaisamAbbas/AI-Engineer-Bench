@@ -1403,10 +1403,30 @@
         "additionalProperties": false,
         "description": "Role-gated run evidence. Candidate text and evaluator output are\nintentionally available only to operator/reviewer/administrator roles.",
         "properties": {
+          "artifacts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RunArtifact"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
           "campaign_id": {
             "format": "uuid",
             "title": "Campaign Id",
             "type": "string"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
           },
           "checks": {
             "anyOf": [
@@ -1421,6 +1441,27 @@
               }
             ],
             "title": "Checks"
+          },
+          "configuration": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Configuration",
+            "type": "object"
           },
           "diagnostics": {
             "anyOf": [
@@ -1475,6 +1516,29 @@
             "title": "Entrant Revision Id",
             "type": "string"
           },
+          "evaluation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Id"
+          },
+          "evaluation_state": {
+            "default": "unscored",
+            "enum": [
+              "current",
+              "superseded",
+              "invalid",
+              "unscored"
+            ],
+            "title": "Evaluation State",
+            "type": "string"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1494,10 +1558,43 @@
             "title": "Repetition",
             "type": "integer"
           },
+          "superseded_evaluation_count": {
+            "default": 0,
+            "title": "Superseded Evaluation Count",
+            "type": "integer"
+          },
           "task_revision_id": {
             "format": "uuid",
             "title": "Task Revision Id",
             "type": "string"
+          },
+          "trace": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RunTraceEvent"
+            },
+            "title": "Trace",
+            "type": "array"
+          },
+          "trace_state": {
+            "default": "unavailable",
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Trace State",
+            "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "verdict": {
             "anyOf": [
@@ -1616,12 +1713,55 @@
             "title": "Checks",
             "type": "array"
           },
+          "configuration": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "default": {},
+            "title": "Configuration",
+            "type": "object"
+          },
           "entrant_id": {
             "title": "Entrant Id",
             "type": "string"
           },
           "entrant_version": {
             "title": "Entrant Version",
+            "type": "string"
+          },
+          "evaluation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Id"
+          },
+          "evaluation_state": {
+            "default": "unscored",
+            "enum": [
+              "current",
+              "invalid",
+              "unscored"
+            ],
+            "title": "Evaluation State",
             "type": "string"
           },
           "publication_id": {
@@ -1641,10 +1781,38 @@
             "title": "Task Version",
             "type": "string"
           },
+          "trace": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RunTraceEvent"
+            },
+            "title": "Trace",
+            "type": "array"
+          },
+          "trace_state": {
+            "default": "unavailable",
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Trace State",
+            "type": "string"
+          },
           "trial_id": {
             "format": "uuid",
             "title": "Trial Id",
             "type": "string"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "verdict": {
             "anyOf": [
@@ -1898,6 +2066,36 @@
         "title": "RoleBudget",
         "type": "object"
       },
+      "RunArtifact": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_ref_id": {
+            "format": "uuid",
+            "title": "Artifact Ref Id",
+            "type": "string"
+          },
+          "content_digest": {
+            "title": "Content Digest",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_ref_id",
+          "path",
+          "content_digest",
+          "size"
+        ],
+        "title": "RunArtifact",
+        "type": "object"
+      },
       "RunAttemptSummary": {
         "additionalProperties": false,
         "properties": {
@@ -1978,6 +2176,97 @@
           "unified_diff"
         ],
         "title": "RunFileDiff",
+        "type": "object"
+      },
+      "RunTraceEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Payload",
+            "type": "object"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sequence",
+          "event_type",
+          "payload"
+        ],
+        "title": "RunTraceEvent",
+        "type": "object"
+      },
+      "RunUsage": {
+        "additionalProperties": false,
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Tokens"
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Tokens"
+          }
+        },
+        "title": "RunUsage",
         "type": "object"
       },
       "SourceRef": {
@@ -2328,6 +2617,21 @@
           "manifest": {
             "$ref": "#/components/schemas/TaskRevision"
           },
+          "revision_digest": {
+            "title": "Revision Digest",
+            "type": "string"
+          },
+          "ticket_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticket Digest"
+          },
           "ticket_text": {
             "anyOf": [
               {
@@ -2342,7 +2646,8 @@
         },
         "required": [
           "id",
-          "manifest"
+          "manifest",
+          "revision_digest"
         ],
         "title": "TaskRevisionResponse",
         "type": "object"
@@ -3368,6 +3673,57 @@
           }
         },
         "summary": "Get Trial",
+        "tags": [
+          "authorized"
+        ]
+      }
+    },
+    "/v1/trials/{trial_id}/artifacts/{artifact_ref_id}/download": {
+      "get": {
+        "operationId": "download_candidate_artifact_v1_trials__trial_id__artifacts__artifact_ref_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "trial_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Trial Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_ref_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Artifact Ref Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Candidate Artifact",
         "tags": [
           "authorized"
         ]

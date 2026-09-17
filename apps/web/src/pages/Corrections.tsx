@@ -28,7 +28,8 @@ export function Corrections() {
       {items.length === 0 ? (
         <EmptyState title="No corrections have been made." />
       ) : (
-        <table tabIndex={0}>
+        <div className="table-scroll" role="region" aria-label="Correction history" tabIndex={0}>
+        <table>
           <caption>Append-only correction history (newest first). Reasons are not yet recorded - see release changelogs for what changed.</caption>
           <thead>
             <tr>
@@ -60,6 +61,7 @@ export function Corrections() {
             })}
           </tbody>
         </table>
+        </div>
       )}
       {corrections.data?.next_cursor && (
         <button type="button" onClick={goToNextPage}>

@@ -1,5 +1,13 @@
 # ENG-016 evidence: public website
 
+**Current review status (2026-09-16): IN_PROGRESS.** Follow-up implementation now pins public run
+evidence to an explicit immutable publication manifest, completes the Run Evidence states and
+sections, integrity-binds candidate display data and task tickets, and includes the ticket in task
+downloads. Microsoft Edge now verifies all 13 routes at 1440px and 390px; both `innerWidth` and
+`visualViewport.width` must match the requested width, the Results page has no horizontal page
+overflow, and axe reports no violations. The current report, screenshots, and live API response
+samples are in [`browser/`](browser/). ENG-016 stays IN_PROGRESS pending review of this follow-up.
+
 `apps/web` is a React 19 / TypeScript / Vite single-page app implementing Prompt 13's read-only
 public routes: `/`, `/results`, `/compare`, `/entrants/:slug`, `/tasks`, `/tasks/:slug/:version`,
 `/runs/:trialId`, `/methodology`, `/releases`, `/releases/:publicationId`, `/corrections`, `/docs`.
@@ -17,7 +25,9 @@ sixth time after a review found the fifth pass's own snapshot-digest fix was sti
 one case, plus a comparison-contract regression (see DECISIONS.md ENG016-015, and "Sixth-pass
 fixes" below), then a seventh time after a review found the sixth pass's `exclude_unset` fix was
 STILL incomplete for a present (not absent) stored value, plus a smaller contract gap (see
-DECISIONS.md ENG016-016, and "Seventh-pass fixes" below). The final acceptance work in the sections below closes the previously open ENG-016 product and verification gates. ENG-016 is COMPLETE. A few analysis limitations remain documented as out of scope for this website ticket.
+DECISIONS.md ENG016-016, and "Seventh-pass fixes" below). The latest follow-up closes those newly
+reported product and verification gaps, subject to review. ENG-016 remains IN_PROGRESS. A few
+analysis limitations remain documented as out of scope for this website ticket.
 
 ## CORS (the first-pass website could not actually be called from a browser)
 
@@ -347,13 +357,12 @@ by dropping the default.
 
 ## Prompt 13 acceptance work and remaining limits
 
-The previously open website acceptance gaps are implemented and exercised end to end:
+The latest review findings are implemented and exercised end to end:
 
-- `GET /v1/public/trials/{id}` returns a whitelist projection only when the trial belongs to a published or superseded campaign. The private endpoint still requires an authorized role and supplies the bounded engineering stdout/stderr, evaluator diagnostics, and stored candidate diffs. API tests verify the public body omits all of those private fields, and the browser fixture deliberately contains private values to catch leakage.
-- A `protocol_revision` table stores immutable, versioned protocol manifests. Public list/detail routes back the Methodology page, which exposes the actual versioned data and download.
-- `task_revision.ticket_text` stores the public task narrative; the migration backfills it from existing development task instructions. Task detail renders the prose safely as text and preserves headings, lists, and inline code.
-- Candidate output is bounded at capture and stored with candidate evidence. The authorized run page renders text logs and unified diffs safely; public run pages render only the redacted projection.
-- A real socket-level Uvicorn test checks HTTP JSON and CORS preflight behavior. A headless Edge run visits all 13 website routes at desktop and mobile sizes, makes real API requests, runs axe against the full page, checks for horizontal overflow, and saves screenshots for every route/viewport pair. Home desktop, Task detail mobile, and Run mobile were manually inspected for visual layout.
+- Every publication stores a digest-protected manifest naming each included trial's exact attempt, candidate, evaluation, and lifecycle trace, plus explicitly excluded trials. The public run route checks campaign/trial ownership and all pinned digests, and fails closed for legacy publications without a manifest. API tests verify exclusions, replacement attempts, and redaction.
+- Immutable, versioned `protocol_revision` rows back the Methodology list/detail routes. Task ticket prose is keyed to `(slug, version)` and included in the task revision digest and downloadable bundle.
+- Stored candidate display fields have a content digest checked before use. The authorized run page presents observable trace/actions, usage, configuration, logs, diffs, authorized artifact downloads, and current/invalid/superseded/unscored and partial-trace states.
+- The browser checker visits all 13 routes at 1440px and 390px. It asserts both `innerWidth` and `visualViewport.width` match each requested viewport; it checks page overflow, real API requests, and axe violations. Wide tables use named keyboard-accessible scroll regions. Microsoft Edge `153.0.4234.32` passed all 26 route/viewport checks with no axe violations or horizontal page overflow.
 
 The browser and captured API responses use one synthetic published-run fixture in a disposable PostgreSQL database. They demonstrate the real HTTP projection and redaction boundary; they are not official benchmark evidence or a production publication. The checked-in browser report lists each route, viewport, API request, page size, and axe result.
 
@@ -362,10 +371,10 @@ Analysis limits outside ENG-016 remain explicit: repetition-matched project-leve
 ## Verification
 
 - Real PostgreSQL migration chain: `alembic upgrade head` and the migration/backfill regression passed.
-- Backend regressions: 109 tests passed across `test_api_migrations`, `test_api_service`, `test_api_http_integration`, `test_attempt_lifecycle`, `test_candidate_artifacts`, and `test_worker_leasing`, with `AIEB_DATABASE_URL` pointing to disposable PostgreSQL 16.
-- Frontend: `npm run build` succeeded; `npm test` passed 30 tests across 12 files.
-- Real browser: Microsoft Edge `153.0.4234.32`, 13 routes x 2 viewports (1440x1000 and 390x844), 26 checks, zero axe violations, and zero horizontal overflow. Every app route made a real API request except the intentionally static `/docs` and not-found route.
-- Visual evidence and captured public responses: [`browser/`](browser/), including [`browser-check.json`](browser/browser-check.json), [`public-run-response.json`](browser/public-run-response.json), [`methodology-response.json`](browser/methodology-response.json), and all 26 route/viewport screenshots. Home desktop, Task detail mobile, and redacted Run mobile were manually inspected.
+- Real PostgreSQL 16 regressions: 112 passed and one skipped across `test_api_migrations`, `test_api_service`, `test_api_http_integration`, `test_api_cors`, `test_attempt_lifecycle`, `test_candidate_artifacts`, and `test_worker_leasing`.
+- Frontend: `npm run build` succeeded; `npm test` passed 31 tests across 12 files.
+- Real browser: Microsoft Edge `153.0.4234.32`, 13 routes x 2 viewports (1440x1000 and 390x844), 26 checks, exact requested/inner/visual viewport widths, zero axe violations, and zero horizontal overflow. Every app route made a real API request except the intentionally static `/docs` and not-found route. The Run Evidence page also passed six tab-content and axe checks at both widths.
+- Visual evidence and captured public responses: [`browser/`](browser/), including [`browser-check.json`](browser/browser-check.json), [`public-run-response.json`](browser/public-run-response.json), [`methodology-response.json`](browser/methodology-response.json), and all 26 route/viewport screenshots. Results mobile and redacted Run mobile were visually inspected.
 
 ## Commands
 

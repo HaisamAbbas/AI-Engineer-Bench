@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
+from ..evidence_integrity import evidence_digest
 from ..models import AuditEventRow, TaskRevisionRow, TrialRow
 from . import repository
 from .artifact_store import PostgresArtifactStore
@@ -450,6 +451,14 @@ def execute_leased_verification(
             )
         return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
 
+    if evidence_digest(loaded.stored_candidate) != loaded.stored_candidate_digest:
+        with session_factory() as session:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+            )
+        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+
     try:
         deserialized_candidate = _deserialize_stored_candidate(loaded.stored_candidate)
     except StoredCandidateUnavailableError:
@@ -620,6 +629,11 @@ def execute_leased_work(
     (repository.claim_work_item's default), so the same worker loop
     (worker/loop.py) is unchanged: it just calls this once per claimed item,
     regardless of which phase that item happens to be."""
+    with session_factory() as session:
+        repository.append_attempt_event(
+            session, attempt_id=leased.attempt_id, event_type="phase.started", payload={"phase": leased.work_type},
+        )
+        session.commit()
     if leased.work_type == "verification":
         return execute_leased_verification(
             session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,

@@ -8,6 +8,35 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localho
 
 export const api = createClient<paths>({ baseUrl: API_BASE_URL });
 
+let accessTokenProvider: (() => Promise<string | undefined> | string | undefined) | undefined;
+export function setAccessTokenProvider(provider: (() => Promise<string | undefined> | string | undefined) | undefined) {
+  accessTokenProvider = provider;
+}
+
+api.use({
+  async onRequest({ request }) {
+    const token = await accessTokenProvider?.();
+    if (token) request.headers.set("Authorization", `Bearer ${token}`);
+    return request;
+  },
+});
+
+export async function downloadAuthorizedArtifact(trialId: string, artifactRefId: string, filename: string): Promise<void> {
+  const token = await accessTokenProvider?.();
+  const response = await fetch(
+    `${API_BASE_URL}/v1/trials/${encodeURIComponent(trialId)}/artifacts/${encodeURIComponent(artifactRefId)}/download`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+  );
+  if (!response.ok) throw new ApiRequestError(response.status, "artifact_download_failed", "artifact download failed", undefined);
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export class ApiRequestError extends Error {
   constructor(
     public status: number,

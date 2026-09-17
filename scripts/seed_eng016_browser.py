@@ -20,6 +20,8 @@ from aieb_api import db, models
 from aieb_api.snapshots import snapshot_digest
 from aieb_runner.artifacts import CandidateDiff, StoredCandidate
 from aieb_api.worker.runner_bridge import _serialize_stored_candidate
+from aieb_api.publication_evidence import build_evidence_manifest
+from aieb_api.worker.repository import append_attempt_event
 
 
 def main() -> None:
@@ -121,14 +123,25 @@ def main() -> None:
         reviewer = models.User(oidc_subject="eng016-browser-reviewer", oidc_issuer="browser-fixture")
         session.add_all([candidate, fixture, reviewer])
         session.flush()
-        session.add(models.EvaluationRow(
+        evaluation = models.EvaluationRow(
             candidate_id=candidate.id, evaluator_id=evaluator.id, fixture_id=fixture.id,
             schedule_digest=candidate_manifest.digest(), verdict="pass",
             result={"checks": {"api-ready": True}, "diagnostics": {"summary": "fixture evaluation passed"}},
-        ))
+        )
+        session.add(evaluation)
+        session.flush()
+        for event_type, payload in (
+            ("phase.started", {"phase": "engineering"}),
+            ("candidate.collected", {"changed_files": 0, "engineering_output_captured": True}),
+            ("evaluation.recorded", {"verdict": "pass", "checks": 1}),
+            ("attempt.terminal", {"terminal_status": "pass", "completed": True}),
+        ):
+            append_attempt_event(session, attempt_id=attempt.id, event_type=event_type, payload=payload)
+            session.flush()
+        evidence_manifest = build_evidence_manifest(session, campaign.id, {trial.id: evaluation.id})
         publication = models.PublicationRow(
             campaign_id=campaign.id, snapshot_digest=snapshot_digest(snapshot), snapshot=snapshot,
-            reviewer_id=reviewer.id,
+            reviewer_id=reviewer.id, evidence_manifest=evidence_manifest,
         )
         session.add(publication)
         session.commit()

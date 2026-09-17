@@ -26,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import event
 
 from .db import Base
 
@@ -90,9 +91,10 @@ class TaskRevisionRow(Base):
     evaluator_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("evaluator_revision.id"), nullable=False)
     manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
     # Public ticket narrative from the task's instruction.md. Kept outside
-    # the canonical task manifest so editorial prose does not alter task
-    # identity or evaluator digests.
+    # the canonical task manifest, but bound into revision_digest alongside
+    # the manifest so the exact published ticket is part of revision identity.
     ticket_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
@@ -249,6 +251,24 @@ class AttemptRow(Base):
     )
 
 
+class AttemptEventRow(Base):
+    """Append-only lifecycle observations available to Run Evidence."""
+
+    __tablename__ = "attempt_event"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "sequence", name="uq_attempt_event_sequence"),
+        Index("ix_attempt_event_chronology", "attempt_id", "sequence"),
+    )
+
+
 class WorkItemRow(Base):
     __tablename__ = "work_item"
 
@@ -285,12 +305,27 @@ class CandidateRow(Base):
     # different worker, possibly after this one crashed) needs the actual
     # file references to call reconstruct_candidate(), not just its digest.
     stored_candidate: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    stored_candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("attempt_id", "tree_digest", name="uq_candidate_attempt_tree"),
         CheckConstraint("validation_status in ('pending','valid','rejected')", name="ck_candidate_validation_status"),
     )
+
+
+@event.listens_for(TaskRevisionRow, "before_insert")
+def _bind_task_revision_identity(_mapper, _connection, target: TaskRevisionRow) -> None:
+    from .evidence_integrity import task_revision_digest
+
+    target.revision_digest = task_revision_digest(target.manifest, target.ticket_text)
+
+
+@event.listens_for(CandidateRow, "before_insert")
+def _bind_candidate_display_evidence(_mapper, _connection, target: CandidateRow) -> None:
+    from .evidence_integrity import evidence_digest
+
+    target.stored_candidate_digest = evidence_digest(target.stored_candidate)
 
 
 class EvaluationRow(Base):
@@ -303,11 +338,26 @@ class EvaluationRow(Base):
     schedule_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    evaluation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("candidate_id", "evaluator_id", "fixture_id", "schedule_digest", name="uq_evaluation_plan_digest"),
         CheckConstraint("verdict is null or verdict in ('pass','fail','contract_violation','indeterminate')", name="ck_evaluation_verdict"),
+    )
+
+
+@event.listens_for(EvaluationRow, "before_insert")
+def _bind_evaluation_evidence(_mapper, _connection, target: EvaluationRow) -> None:
+    from .evidence_integrity import evaluation_digest
+
+    target.evaluation_digest = evaluation_digest(
+        candidate_id=target.candidate_id,
+        evaluator_id=target.evaluator_id,
+        fixture_id=target.fixture_id,
+        schedule_digest=target.schedule_digest,
+        verdict=target.verdict,
+        result=target.result,
     )
 
 
@@ -339,6 +389,7 @@ class UsageRequestRow(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=True)
     reservation_usd: Mapped[str | None] = mapped_column(Numeric(20, 6), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -348,6 +399,7 @@ class UsageRequestRow(Base):
             "actor_role in ('engineer','dev_application','verifier_application','verifier_judge')",
             name="ck_usage_request_actor_role",
         ),
+        Index("ix_usage_request_attempt", "attempt_id"),
     )
 
 
@@ -378,12 +430,29 @@ class PublicationRow(Base):
     supersedes_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("publication.id"), nullable=True)
     reviewer_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Versioned immutable manifest maps trial IDs to explicit inclusion and
+    # exact attempt/candidate/evaluation IDs. NULL legacy publications are
+    # deliberately ineligible for public run evidence.
+    evidence_manifest: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    evidence_manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         CheckConstraint("status in ('published','withdrawn','superseded')", name="ck_publication_status"),
+        CheckConstraint(
+            "(evidence_manifest IS NULL) = (evidence_manifest_digest IS NULL)",
+            name="ck_publication_evidence_manifest_digest_pair",
+        ),
         Index("ix_publication_chronology", "created_at"),
     )
+
+
+@event.listens_for(PublicationRow, "before_insert")
+def _bind_publication_evidence_manifest(_mapper, _connection, target: PublicationRow) -> None:
+    if target.evidence_manifest is not None:
+        from .evidence_integrity import evidence_digest
+
+        target.evidence_manifest_digest = evidence_digest(target.evidence_manifest)
 
 
 class ReviewRow(Base):

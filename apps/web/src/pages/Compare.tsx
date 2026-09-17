@@ -243,7 +243,8 @@ function TaskRateDeltas({
             <h3>
               {left} vs {right}
             </h3>
-      <table tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label={`Per-task rate difference for ${left} and ${right}`} tabIndex={0}>
+      <table>
               <caption>Per-task rate difference ({left} minus {right})</caption>
               <thead>
                 <tr>
@@ -264,6 +265,7 @@ function TaskRateDeltas({
                 ))}
               </tbody>
             </table>
+      </div>
           </div>
         );
       })}

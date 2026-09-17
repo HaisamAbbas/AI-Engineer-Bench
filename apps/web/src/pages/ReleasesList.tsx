@@ -22,7 +22,8 @@ export function ReleasesList() {
       <h1>Releases</h1>
       {items.length === 0 && <EmptyState title="No releases have been published yet." />}
       {items.length > 0 && (
-      <table tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Published releases" tabIndex={0}>
+      <table>
           <caption>Published releases (newest first)</caption>
           <thead>
             <tr>
@@ -46,6 +47,7 @@ export function ReleasesList() {
             })}
           </tbody>
         </table>
+      </div>
       )}
       {releases.data?.next_cursor && (
         <button type="button" onClick={goToNextPage}>

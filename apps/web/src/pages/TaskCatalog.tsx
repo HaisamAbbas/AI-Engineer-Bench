@@ -57,7 +57,8 @@ export function TaskCatalog() {
       {items.length === 0 && <EmptyState title="No tasks are catalogued yet." />}
       {items.length > 0 && filtered.length === 0 && <EmptyState title="No tasks match this search." />}
       {filtered.length > 0 && (
-      <table tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Public task catalog" tabIndex={0}>
+      <table>
           <caption>Public task catalog</caption>
           <thead>
             <tr>
@@ -82,6 +83,7 @@ export function TaskCatalog() {
             ))}
           </tbody>
         </table>
+      </div>
       )}
       {tasks.data.next_cursor && (
         <button type="button" onClick={goToNextPage}>

@@ -32,6 +32,7 @@ if DATABASE_URL:
     import jwt
     from fastapi.testclient import TestClient
     from sqlalchemy import select, text, update
+    from sqlalchemy.exc import IntegrityError
 
     from aieb_api import auth, db
     from aieb_api.app import create_app
@@ -500,8 +501,9 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 404)  # role passes; trial itself does not exist
 
     def test_public_run_evidence_is_published_only_and_redacts_candidate_material(self) -> None:
-        from aieb_core.models import CandidateManifest
-        from aieb_runner.artifacts import CandidateDiff, StoredCandidate
+        import hashlib
+        from aieb_core.models import CandidateFile, CandidateManifest
+        from aieb_runner.artifacts import ArtifactReference, BlobRef, CandidateDiff, StoredCandidate
         from aieb_api.worker.runner_bridge import _serialize_stored_candidate
 
         self._seed_task()
@@ -521,12 +523,18 @@ class ApiServiceTests(unittest.TestCase):
             attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="terminal", terminal_status="pass")
             session.add(attempt)
             session.flush()
+            artifact_bytes = b"authorized candidate artifact"
+            artifact_blob = BlobRef(hashlib.sha256(artifact_bytes).hexdigest(), len(artifact_bytes))
+            artifact_reference = ArtifactReference(
+                id=uuid.uuid4(), blob=artifact_blob, access_scope=str(attempt.id), visibility="restricted",
+            )
             manifest = CandidateManifest(
                 schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64,
-                full_tree_hash="2" * 64, files=(),
+                full_tree_hash="2" * 64,
+                files=(CandidateFile(path="src/app.py", operation="modify", sha256=artifact_blob.sha256, byte_length=len(artifact_bytes)),),
             )
             stored = StoredCandidate(
-                manifest, (), (CandidateDiff("src/app.py", "modify", "--- a/src/app.py\n+++ b/src/app.py\n"),),
+                manifest, (("src/app.py", artifact_reference),), (CandidateDiff("src/app.py", "modify", "--- a/src/app.py\n+++ b/src/app.py\n"),),
                 engineering_stdout="private candidate log", engineering_stderr="private stderr",
             )
             candidate = api_models.CandidateRow(
@@ -535,33 +543,147 @@ class ApiServiceTests(unittest.TestCase):
             )
             session.add(candidate)
             session.flush()
+            session.add_all([
+                api_models.WorkerArtifactBlobRow(
+                    sha256=artifact_blob.sha256, byte_length=len(artifact_bytes), data=artifact_bytes,
+                    retention_class="evidence", staged_until=None,
+                ),
+                api_models.WorkerArtifactReferenceRow(
+                    id=artifact_reference.id, blob_sha256=artifact_blob.sha256, candidate_id=candidate.id,
+                    access_scope=str(attempt.id), visibility="restricted",
+                ),
+            ])
+            with self.assertRaises(IntegrityError):
+                with session.begin_nested():
+                    session.execute(
+                        update(api_models.CandidateRow).where(api_models.CandidateRow.id == candidate.id)
+                        .values(stored_candidate={"engineering_stdout": "forged"})
+                    )
             fixture = api_models.FixtureRevisionRow(digest="f" * 64, visibility="public", family_id=task.family_id)
             session.add(fixture)
             session.flush()
             session.add(api_models.EvaluationRow(
+                # This evaluation is the one the immutable publication will
+                # select, even after a replacement attempt is recorded.
                 candidate_id=candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id,
                 schedule_digest=manifest.digest(), verdict="pass",
                 result={"checks": {"api-ready": True, "secret-fixture-check": True}, "diagnostics": {"private": "do not publish"}},
             ))
-            campaign_id, trial_id = campaign.id, trial.id
+            session.flush()
+            evaluation_row = session.execute(
+                select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate.id)
+            ).scalar_one()
+            with self.assertRaises(IntegrityError):
+                with session.begin_nested():
+                    session.execute(
+                        update(api_models.EvaluationRow).where(api_models.EvaluationRow.id == evaluation_row.id)
+                        .values(result={"checks": {"api-ready": False}})
+                    )
+            session.add(api_models.UsageRequestRow(actor_role="engineer", request_id="run-evidence-usage", attempt_id=attempt.id))
+            session.flush()
+            usage_request = session.execute(
+                select(api_models.UsageRequestRow).where(api_models.UsageRequestRow.request_id == "run-evidence-usage")
+            ).scalar_one()
+            session.add(api_models.UsageReceiptRow(
+                usage_request_id=usage_request.id, physical_retry=0, reported_cost_usd="0.02",
+                input_tokens=10, output_tokens=3,
+            ))
+            from aieb_api.worker.repository import append_attempt_event
+            append_attempt_event(session, attempt_id=attempt.id, event_type="phase.started", payload={"phase": "engineering"})
+            session.flush()
+            selected_evaluation = session.execute(
+                select(api_models.EvaluationRow).where(api_models.EvaluationRow.candidate_id == candidate.id)
+            ).scalar_one()
+            selected_evaluation_id = selected_evaluation.id
+            replacement = api_models.AttemptRow(trial_id=trial.id, number=2, phase="terminal", terminal_status="infrastructure_invalid")
+            session.add(replacement)
+            session.flush()
+            append_attempt_event(session, attempt_id=replacement.id, event_type="phase.started", payload={"phase": "verification"})
+            replacement_artifact_reference = ArtifactReference(
+                id=uuid.uuid4(), blob=artifact_blob, access_scope=str(replacement.id), visibility="restricted",
+            )
+            replacement_stored = StoredCandidate(
+                manifest, (("src/app.py", replacement_artifact_reference),),
+                (CandidateDiff("src/app.py", "modify", "--- a/src/app.py\n+++ b/src/app.py\n"),),
+                engineering_stdout="private candidate log", engineering_stderr="private stderr",
+            )
+            replacement_candidate = api_models.CandidateRow(
+                attempt_id=replacement.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(),
+                validation_status="valid", stored_candidate=_serialize_stored_candidate(replacement_stored),
+            )
+            session.add(replacement_candidate)
+            session.flush()
+            session.add(api_models.WorkerArtifactReferenceRow(
+                id=replacement_artifact_reference.id, blob_sha256=artifact_blob.sha256, candidate_id=replacement_candidate.id,
+                access_scope=str(replacement.id), visibility="restricted",
+            ))
+            session.add(api_models.EvaluationRow(
+                candidate_id=replacement_candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id,
+                schedule_digest="replacement-schedule", verdict="fail", result={"checks": {"api-ready": False}},
+            ))
+            replacement_usage = api_models.UsageRequestRow(
+                actor_role="engineer", request_id="replacement-usage", attempt_id=replacement.id,
+            )
+            session.add(replacement_usage)
+            session.flush()
+            session.add(api_models.UsageReceiptRow(
+                usage_request_id=replacement_usage.id, physical_retry=0, reported_cost_usd="0.05",
+                input_tokens=12, output_tokens=4,
+            ))
+            excluded_trial = api_models.TrialRow(
+                id=uuid.uuid4(), campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id,
+                repetition=1, cell_digest="e" * 64,
+            )
+            session.add(excluded_trial)
+            campaign_id, trial_id, excluded_trial_id = campaign.id, trial.id, excluded_trial.id
             session.commit()
-        publication_id = self._seed_publication(self._analysis_snapshot({}), campaign_id=campaign_id)
+        publication_id = self._seed_publication(
+            self._analysis_snapshot({}), campaign_id=campaign_id,
+            selected_evaluations={trial_id: selected_evaluation_id},
+        )
+        with db.session_factory()() as session:
+            with self.assertRaises(IntegrityError):
+                with session.begin_nested():
+                    session.execute(
+                        update(api_models.PublicationRow).where(api_models.PublicationRow.id == publication_id)
+                        .values(evidence_manifest={"schema_version": "forged"})
+                    )
 
         public = self.client.get(f"/v1/public/trials/{trial_id}")
         self.assertEqual(public.status_code, 200)
         public_body = public.json()
         self.assertEqual(public_body["publication_id"], str(publication_id))
+        self.assertEqual(public_body["attempt"]["number"], 1)
+        self.assertEqual(public_body["evaluation_id"], str(selected_evaluation_id))
         self.assertEqual(public_body["verdict"], "pass")
+        self.assertEqual(public_body["usage"], {"input_tokens": 10, "output_tokens": 3, "cost_usd": None})
+        self.assertEqual(public_body["trace_state"], "partial")
+        self.assertEqual(public_body["trace"][0]["event_type"], "phase.started")
         self.assertEqual(public_body["checks"], [{"requirement_id": "api-ready", "passed": True}])
         for private_key in ("diffs", "diagnostics", "engineering_stdout", "engineering_stderr", "artifact_ref_id"):
             self.assertNotIn(private_key, public_body)
+        self.assertEqual(self.client.get(f"/v1/public/trials/{excluded_trial_id}").status_code, 404)
 
         private = self.client.get(f"/v1/trials/{trial_id}", headers=_auth_header(("reviewer",)))
         self.assertEqual(private.status_code, 200)
         private_body = private.json()
         self.assertEqual(private_body["engineering_stdout"], "private candidate log")
-        self.assertEqual(private_body["diagnostics"], {"private": "do not publish"})
+        self.assertEqual(private_body["usage"]["input_tokens"], 12)
+        self.assertEqual(private_body["usage"]["cost_usd"], "0.050000")
+        self.assertEqual(private_body["trace_state"], "partial")
+        self.assertIsNone(private_body["diagnostics"])
+        self.assertEqual(private_body["evaluation_state"], "invalid")
+        self.assertIsNone(private_body["verdict"])
+        self.assertIsNone(private_body["checks"])
         self.assertEqual(private_body["diffs"][0]["path"], "src/app.py")
+        self.assertEqual(private_body["artifacts"][0]["path"], "src/app.py")
+        downloaded = self.client.get(
+            f"/v1/trials/{trial_id}/artifacts/{private_body['artifacts'][0]['artifact_ref_id']}/download",
+            headers=_auth_header(("reviewer",)),
+        )
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(downloaded.content, artifact_bytes)
+        self.assertEqual(downloaded.headers["x-content-sha256"], artifact_blob.sha256)
 
         # A real trial without any publication is not a public existence oracle.
         with db.session_factory()() as session:
@@ -577,6 +699,20 @@ class ApiServiceTests(unittest.TestCase):
             private_trial_id = private_trial.id
         hidden = self.client.get(f"/v1/public/trials/{private_trial_id}")
         self.assertEqual(hidden.status_code, 404)
+
+        legacy_campaign_id = uuid.uuid4()
+        legacy_trial_id = uuid.uuid4()
+        with db.session_factory()() as session:
+            legacy_campaign = api_models.CampaignRow(id=legacy_campaign_id, name="legacy published", state="completed", draft={"x": 3})
+            session.add(legacy_campaign)
+            session.flush()
+            session.add(api_models.TrialRow(
+                id=legacy_trial_id, campaign_id=legacy_campaign.id, task_revision_id=task.id,
+                entrant_revision_id=entrant.id, repetition=0, cell_digest="f" * 64,
+            ))
+            session.commit()
+        self._seed_publication(self._analysis_snapshot({}), campaign_id=legacy_campaign_id)
+        self.assertEqual(self.client.get(f"/v1/public/trials/{legacy_trial_id}").status_code, 404)
 
     # ---- auth fails closed / role enforcement --------------------------
 
@@ -626,6 +762,8 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["manifest"]["id"], "rag.document-freshness")
         self.assertIn("Repair stale document ingestion", response.json()["ticket_text"])
+        self.assertEqual(len(response.json()["ticket_digest"]), 64)
+        self.assertEqual(len(response.json()["revision_digest"]), 64)
 
     def test_methodology_revisions_are_public_and_versioned(self) -> None:
         manifest = {
@@ -649,6 +787,16 @@ class ApiServiceTests(unittest.TestCase):
     def test_get_unknown_task_revision_is_404(self) -> None:
         response = self.client.get("/v1/tasks/does.not.exist/revisions/0.1.0")
         self.assertEqual(response.status_code, 404)
+
+    def test_task_ticket_change_without_revision_digest_is_rejected(self) -> None:
+        self._seed_task()
+        with db.session_factory()() as session:
+            session.execute(text("ALTER TABLE task_revision DISABLE TRIGGER task_revision_immutable"))
+            session.execute(text("UPDATE task_revision SET ticket_text='changed ticket' WHERE slug='rag.document-freshness'"))
+            session.execute(text("ALTER TABLE task_revision ENABLE TRIGGER task_revision_immutable"))
+            session.commit()
+        response = self.client.get("/v1/tasks/rag.document-freshness/revisions/0.1.0")
+        self.assertEqual(response.status_code, 503)
 
     def test_task_catalog_lists_public_projection_and_filters_by_category(self) -> None:
         """ENG-016: the public task catalog page needs a real listing endpoint,
@@ -1101,8 +1249,12 @@ class ApiServiceTests(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def _seed_publication(self, snapshot: dict, *, snapshot_digest: str | None = None, campaign_id: uuid.UUID | None = None) -> uuid.UUID:
+    def _seed_publication(
+        self, snapshot: dict, *, snapshot_digest: str | None = None, campaign_id: uuid.UUID | None = None,
+        selected_evaluations: dict[uuid.UUID, uuid.UUID] | None = None,
+    ) -> uuid.UUID:
         from aieb_api.snapshots import snapshot_digest as content_hash
+        from aieb_api.publication_evidence import build_evidence_manifest
 
         with db.session_factory()() as session:
             if campaign_id is None:
@@ -1113,11 +1265,13 @@ class ApiServiceTests(unittest.TestCase):
             user = api_models.User(oidc_subject=f"reviewer-{uuid.uuid4().hex[:8]}", oidc_issuer="test")
             session.add(user)
             session.flush()
+            evidence_manifest = build_evidence_manifest(session, campaign_id, selected_evaluations or {}) if selected_evaluations is not None else None
             publication = api_models.PublicationRow(
                 campaign_id=campaign_id,
                 snapshot_digest=snapshot_digest if snapshot_digest is not None else content_hash(snapshot),
                 snapshot=snapshot,
                 reviewer_id=user.id,
+                evidence_manifest=evidence_manifest,
             )
             session.add(publication)
             session.commit()

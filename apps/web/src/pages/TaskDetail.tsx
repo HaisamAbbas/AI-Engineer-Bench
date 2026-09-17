@@ -15,9 +15,17 @@ export function TaskDetail() {
 
   const manifest = task.data.manifest;
   const ticketText = task.data.ticket_text;
+  const ticketDigest = task.data.ticket_digest;
+  const revisionDigest = task.data.revision_digest;
 
   function downloadBundle() {
-    const blob = new Blob([JSON.stringify(manifest, null, 2)], { type: "application/json" });
+    const bundle = {
+      manifest,
+      ticket_text: ticketText,
+      ticket_digest: ticketDigest,
+      revision_digest: revisionDigest,
+    };
+    const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -60,7 +68,8 @@ export function TaskDetail() {
       )}
 
       <h2>Public requirements</h2>
-      <table tabIndex={0}>
+      <div className="table-scroll" role="region" aria-label="Public task requirements" tabIndex={0}>
+      <table>
         <caption>Requirements this task's public contract commits to</caption>
         <thead>
           <tr>
@@ -79,6 +88,7 @@ export function TaskDetail() {
           ))}
         </tbody>
       </table>
+      </div>
 
       <h2>Run command</h2>
       <pre tabIndex={0}>

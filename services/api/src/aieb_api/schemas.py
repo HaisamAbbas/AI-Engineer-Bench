@@ -70,6 +70,8 @@ class TaskRevisionResponse(BaseModel):
     id: UUID
     manifest: TaskRevision
     ticket_text: str | None = None
+    ticket_digest: str | None = None
+    revision_digest: str
 
 
 class EntrantRevisionResponse(BaseModel):
@@ -127,6 +129,50 @@ class PublicRunEvidence(BaseModel):
     attempt: RunAttemptSummary | None
     verdict: Literal["pass", "fail", "contract_violation", "indeterminate"] | None
     checks: list[PublicRequirementCheck]
+    evaluation_id: UUID | None = None
+    evaluation_state: Literal["current", "invalid", "unscored"] = "unscored"
+    trace_state: Literal["complete", "partial", "unavailable"] = "unavailable"
+    trace: list[RunTraceEvent] = []
+    usage: RunUsage | None = None
+    configuration: dict[str, str | list[str] | None] = {}
+
+
+class RunTraceEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sequence: int
+    event_type: str
+    payload: dict[str, str | int | bool | None]
+    created_at: str | None = None
+
+
+class RunUsage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: str | None = None
+
+
+class PublishedEvidenceSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: UUID
+    included: bool
+    attempt_id: UUID | None = None
+    candidate_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    candidate_digest: str | None = None
+    evaluation_digest: str | None = None
+    trace_digest: str | None = None
+
+
+class PublishedEvidenceManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["aieb.published-evidence/v1"]
+    campaign_id: UUID
+    selections: list[PublishedEvidenceSelection]
 
 
 class RunFileDiff(BaseModel):
@@ -138,6 +184,15 @@ class RunFileDiff(BaseModel):
     binary: bool = False
     truncated: bool = False
     baseline_available: bool = True
+
+
+class RunArtifact(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    artifact_ref_id: UUID
+    path: str
+    content_digest: str
+    size: int
 
 
 class PrivateRunEvidence(BaseModel):
@@ -159,6 +214,15 @@ class PrivateRunEvidence(BaseModel):
     engineering_stderr: str | None = None
     engineering_logs_truncated: bool = False
     diffs: list[RunFileDiff]
+    candidate_id: UUID | None = None
+    evaluation_id: UUID | None = None
+    evaluation_state: Literal["current", "superseded", "invalid", "unscored"] = "unscored"
+    superseded_evaluation_count: int = 0
+    trace_state: Literal["complete", "partial", "unavailable"] = "unavailable"
+    trace: list[RunTraceEvent] = []
+    usage: RunUsage | None = None
+    configuration: dict[str, str | list[str] | None] = {}
+    artifacts: list[RunArtifact] = []
 
 
 class TaskCellStats(BaseModel):
@@ -475,3 +539,7 @@ class PublicationEntrantConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     manifest: EntrantRevision
+
+
+PublicRunEvidence.model_rebuild()
+PrivateRunEvidence.model_rebuild()

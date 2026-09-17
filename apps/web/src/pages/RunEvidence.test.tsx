@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { RunEvidence } from "./RunEvidence";
 import { renderWithProviders } from "../test/renderWithProviders";
 import { mockApi } from "../test/mockApi";
@@ -25,8 +26,9 @@ describe("RunEvidence", () => {
     renderWithProviders(<RunEvidence />, { route: "/runs/trial-1", path: "/runs/:trialId" });
     await waitFor(() => expect(screen.getByText(/Public redacted evidence/)).toBeInTheDocument());
     expect(screen.getByText("task-a v1.0.0")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Application checks" }));
     expect(screen.getByText("ready: Pass")).toBeInTheDocument();
-    expect(screen.queryByText(/Candidate diff/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Candidate diff" })).not.toBeInTheDocument();
   });
 
   it("renders authorized candidate output and stored unified diffs as text", async () => {
@@ -44,8 +46,11 @@ describe("RunEvidence", () => {
     });
     (window as unknown as { __pwned?: boolean }).__pwned = false;
     renderWithProviders(<RunEvidence />, { route: "/runs/trial-2", path: "/runs/:trialId" });
+    await userEvent.click(await screen.findByRole("tab", { name: "Changes" }));
     await waitFor(() => expect(screen.getByRole("heading", { name: "Candidate diff" })).toBeInTheDocument());
-    expect(screen.getAllByText(hostile)).toHaveLength(3);
+    expect(screen.getAllByText(hostile)).toHaveLength(2);
+    await userEvent.click(screen.getByRole("tab", { name: "Application checks" }));
+    expect(screen.getAllByText(hostile)).toHaveLength(1);
     expect(document.querySelector("img")).toBeNull();
     expect((window as unknown as { __pwned?: boolean }).__pwned).toBe(false);
   });
@@ -54,5 +59,31 @@ describe("RunEvidence", () => {
     mockApi({ "/v1/trials/{trial_id}": { status: 404, error: notFound } });
     renderWithProviders(<RunEvidence />, { route: "/runs/trial-3", path: "/runs/:trialId" });
     await waitFor(() => expect(screen.getByText(/No public or authorized run/)).toBeInTheDocument());
+  });
+
+  it("labels partial public traces, invalid attempts, and unavailable usage", async () => {
+    mockApi({
+      "/v1/trials/{trial_id}": {
+        status: 403,
+        error: { error: { code: "forbidden", message: "requires authorization", request_id: "r1", field_errors: {}, retryable: false } },
+      },
+      "/v1/public/trials/{trial_id}": { data: {
+        trial_id: "trial-4", publication_id: "publication-4", task_id: "task-a", task_version: "1.0.0",
+        entrant_id: "agent-a", entrant_version: "2.0.0", repetition: 0,
+        attempt: { number: 1, phase: "terminal", terminal_status: "infrastructure_invalid" },
+        verdict: null, checks: [], evaluation_id: null, evaluation_state: "invalid",
+        trace_state: "partial", trace: [{ sequence: 0, event_type: "phase.started", payload: { phase: "engineering" }, created_at: null }],
+        usage: null, configuration: {},
+      } },
+    });
+    renderWithProviders(<RunEvidence />, { route: "/runs/trial-4", path: "/runs/:trialId" });
+    await userEvent.click(await screen.findByRole("tab", { name: "Actions" }));
+    expect(screen.getByRole("status")).toHaveTextContent(/trace is partial/i);
+    expect(screen.getByText(/phase.started/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Usage" }));
+    expect(screen.getByText("Usage was not recorded for this evaluation.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: "Outcome" }));
+    expect(screen.getByText("invalid")).toBeInTheDocument();
+    expect(screen.getByText("Not scored")).toBeInTheDocument();
   });
 });
