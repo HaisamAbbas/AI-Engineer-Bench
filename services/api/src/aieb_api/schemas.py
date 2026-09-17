@@ -11,7 +11,7 @@ from typing import Generic, Literal, TypeVar, Union
 from uuid import UUID
 
 from aieb_core.models import ApplicationProfile, BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 ItemT = TypeVar("ItemT")
 
@@ -154,17 +154,49 @@ class RunUsage(BaseModel):
     cost_usd: str | None = None
 
 
-class PublishedEvidenceSelection(BaseModel):
+class IncludedEvidenceSelection(BaseModel):
+    """A trial pinned INTO a publication. Every identifying id AND digest is
+    required and non-null: "this trial is included" and "this trial carries a
+    complete, verifiable pinned identity" are made the same fact (review
+    finding #1). A prior single flat model let `included=True` coexist with
+    attempt/candidate/evaluation and all digests `None`, so the public route
+    could serve a legitimate-looking published run that pinned nothing at all;
+    Pydantic accepted that shape. The `Literal[True]` tag and the required
+    fields together make that shape unrepresentable."""
+
     model_config = ConfigDict(extra="forbid")
 
     trial_id: UUID
-    included: bool
-    attempt_id: UUID | None = None
-    candidate_id: UUID | None = None
-    evaluation_id: UUID | None = None
-    candidate_digest: str | None = None
-    evaluation_digest: str | None = None
-    trace_digest: str | None = None
+    included: Literal[True]
+    attempt_id: UUID
+    candidate_id: UUID
+    evaluation_id: UUID
+    candidate_digest: str
+    evaluation_digest: str
+    trace_digest: str
+
+
+class ExcludedEvidenceSelection(BaseModel):
+    """A trial explicitly excluded from a publication. It carries no pinned
+    identity, and `extra="forbid"` with only these two fields means an
+    excluded selection can never smuggle a half-populated (attempt/candidate/
+    evaluation) identity past validation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trial_id: UUID
+    included: Literal[False]
+
+
+# A plain (non-discriminated) union, for the same OpenAPI/openapi-typescript
+# reason ComparisonEntrantPanel documents: a boolean-tagged Pydantic
+# discriminator serializes its mapping keys as the strings "True"/"False",
+# which openapi-typescript then turns into string-literal `included` types
+# instead of the JSON booleans every real payload carries. Pydantic's smart
+# union disambiguates the two shapes on the boolean `included` value on its
+# own, and each variant still renders its correct `const: true`/`const:
+# false` in the schema.
+PublishedEvidenceSelection = Union[IncludedEvidenceSelection, ExcludedEvidenceSelection]
 
 
 class PublishedEvidenceManifest(BaseModel):
@@ -172,7 +204,31 @@ class PublishedEvidenceManifest(BaseModel):
 
     schema_version: Literal["aieb.published-evidence/v1"]
     campaign_id: UUID
+    # The digest of the AnalysisSnapshot this manifest was published beside
+    # (review finding #2). Binding the selection manifest to the snapshot as
+    # one immutable, digest-checked unit prevents the snapshot from being
+    # swapped for a different one after publication without detection: the
+    # public read path verifies this equals the publication's own
+    # snapshot_digest, so the two objects can only ever be served as the pair
+    # that was published together. It does NOT prove the snapshot's rates were
+    # originally derived from the selected evaluations (that semantic
+    # derivation check is deferred to ENG-018) - only that the published pair
+    # cannot be altered undetected afterward.
+    snapshot_digest: str
     selections: list[PublishedEvidenceSelection]
+
+    @model_validator(mode="after")
+    def _unique_trial_coverage(self) -> "PublishedEvidenceManifest":
+        """Every campaign trial appears at most once. Duplicate trial ids
+        (whether two included, two excluded, or a contradictory
+        included+excluded pair) make coverage ambiguous, so they are rejected
+        rather than resolved by insertion order (review finding #1)."""
+        seen: set[UUID] = set()
+        for selection in self.selections:
+            if selection.trial_id in seen:
+                raise ValueError("published evidence selection lists a trial more than once")
+            seen.add(selection.trial_id)
+        return self
 
 
 class RunFileDiff(BaseModel):

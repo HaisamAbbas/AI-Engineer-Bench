@@ -50,9 +50,10 @@ from ..models import (
 from ..evidence_integrity import attempt_trace_digest, evidence_digest, evaluation_digest, task_revision_digest
 from ..revisions import validate_stored_manifest
 from ..schemas import (
-    PrivateRunEvidence, PublishedEvidenceManifest, PublicRequirementCheck, PublicRunEvidence,
-    RunArtifact, RunAttemptSummary, RunFileDiff, RunTraceEvent, RunUsage,
+    IncludedEvidenceSelection, PrivateRunEvidence, PublishedEvidenceManifest, PublicRequirementCheck,
+    PublicRunEvidence, RunArtifact, RunAttemptSummary, RunFileDiff, RunTraceEvent, RunUsage,
 )
+from ..snapshots import snapshot_digest as compute_snapshot_digest
 from ..worker.runner_bridge import StoredCandidateUnavailableError, _deserialize_stored_candidate
 from ..worker.artifact_store import PostgresArtifactStore
 from .. import db
@@ -181,10 +182,24 @@ def get_public_trial(trial_id: UUID, session: Session = Depends(get_session)) ->
         raise service_unavailable("published run selection is malformed") from exc
     if published_manifest.campaign_id != trial.campaign_id:
         raise service_unavailable("published run selection belongs to a different campaign")
+    # The manifest and the snapshot are one bound unit (review finding #2):
+    # the selection may only be served beside the exact snapshot it was
+    # published with, so the snapshot cannot be swapped for a different one
+    # after publication without detection. (This does not prove the snapshot
+    # was originally derived from the selected evaluations - that semantic
+    # check is deferred to ENG-018.)
+    if published_manifest.snapshot_digest != publication.snapshot_digest:
+        raise service_unavailable("published run selection is not bound to this publication's snapshot")
     selections = [selection for selection in published_manifest.selections if selection.trial_id == trial_id]
-    if len(selections) != 1 or not selections[0].included:
+    if len(selections) != 1:
         raise not_found()
     selection = selections[0]
+    # An excluded selection has no pinned identity to serve; a valid included
+    # selection now carries every attempt/candidate/evaluation id and digest
+    # by construction (IncludedEvidenceSelection makes them required), so the
+    # downstream projection can rely on them being present.
+    if not isinstance(selection, IncludedEvidenceSelection):
+        raise not_found()
     attempt = session.get(AttemptRow, selection.attempt_id) if selection.attempt_id else None
     if selection.attempt_id is not None and attempt is None:
         raise service_unavailable("published attempt selection no longer exists")
@@ -234,11 +249,14 @@ def get_public_trial(trial_id: UUID, session: Session = Depends(get_session)) ->
     verdict = evaluation.verdict if evaluation is not None and evaluation.verdict in {"pass", "fail", "contract_violation", "indeterminate"} else None
     trace_state, trace = _attempt_trace_projection(
         session, attempt, evaluation.result if evaluation else None,
-        expected_digest=selection.trace_digest, include_result_trace=False,
+        expected_digest=selection.trace_digest, include_result_trace=False, public=True,
     )
+    # Public usage comes ONLY from the immutable, digest-bound evaluation
+    # result (review finding #5). The live usage_request/usage_receipt rows
+    # are neither immutable nor pinned in the publication's evidence digest,
+    # so a receipt added or edited after publication would silently change an
+    # already-published response - they are never a source of public usage.
     public_usage = _usage_projection(evaluation.result if evaluation else None, public=True)
-    if public_usage is None and attempt is not None:
-        public_usage = _receipt_usage_projection(session, attempt.id, public=True)
     configuration = _configuration_projection(task_row, entrant_row)
     return PublicRunEvidence(
         trial_id=trial.id,
@@ -313,9 +331,40 @@ def _trace_projection(result: object) -> tuple[str, list[RunTraceEvent]]:
     return ("complete" if complete else "partial"), events
 
 
+# Public run evidence exposes lifecycle events only through an explicit
+# whitelist of event types and, per type, an explicit whitelist of payload
+# keys (review finding #4). append_attempt_event() itself accepts arbitrary
+# (validated-scalar) event names and payload keys, so held-out text, secrets,
+# or raw responses could in principle be written into an event; the public
+# projection must never echo those verbatim. Anything not named here - an
+# unknown event type, or an unknown key on a known event - is dropped rather
+# than passed through. The trace-digest check above still runs against the
+# FULL stored trace, so redaction changes only what is served, never the
+# integrity guarantee.
+_PUBLIC_TRACE_EVENTS: dict[str, frozenset[str]] = {
+    "phase.started": frozenset({"phase"}),
+    "candidate.collected": frozenset({"changed_files", "engineering_output_captured"}),
+    "evaluation.recorded": frozenset({"verdict", "checks"}),
+    "attempt.terminal": frozenset({"terminal_status", "completed"}),
+}
+_PUBLIC_TRACE_VALUE_MAX = 512
+
+
+def _public_trace_payload(event_type: str, payload: object) -> dict[str, str | int | bool | None]:
+    allowed = _PUBLIC_TRACE_EVENTS.get(event_type, frozenset())
+    if not allowed or not isinstance(payload, dict):
+        return {}
+    projected: dict[str, str | int | bool | None] = {}
+    for key, value in payload.items():
+        if key not in allowed or not (value is None or type(value) in (str, int, bool)):
+            continue
+        projected[key] = value[:_PUBLIC_TRACE_VALUE_MAX] if isinstance(value, str) else value
+    return projected
+
+
 def _attempt_trace_projection(
     session: Session, attempt: AttemptRow | None, result: object, *, expected_digest: str | None = None,
-    include_result_trace: bool = True,
+    include_result_trace: bool = True, public: bool = False,
 ) -> tuple[str, list[RunTraceEvent]]:
     if attempt is None:
         return _trace_projection(result) if include_result_trace else ("unavailable", [])
@@ -325,6 +374,20 @@ def _attempt_trace_projection(
     event_data = [{"sequence": row.sequence, "event_type": row.event_type, "payload": row.payload} for row in rows]
     if expected_digest is not None and attempt_trace_digest(event_data) != expected_digest:
         raise service_unavailable("published observable trace differs from its selected trace digest")
+    if public:
+        # Whitelist-redacted public projection: only known event types
+        # survive, each carrying only its known payload keys. include_result_
+        # trace is always False for the public path, so there is no live
+        # evaluation-result trace to merge here.
+        public_events = [
+            RunTraceEvent(
+                sequence=row.sequence, event_type=row.event_type,
+                payload=_public_trace_payload(row.event_type, row.payload), created_at=row.created_at.isoformat(),
+            )
+            for row in rows
+            if row.event_type in _PUBLIC_TRACE_EVENTS
+        ]
+        return ("partial" if public_events else "unavailable"), public_events
     events = [
         RunTraceEvent(sequence=row.sequence, event_type=row.event_type, payload=row.payload, created_at=row.created_at.isoformat())
         for row in rows

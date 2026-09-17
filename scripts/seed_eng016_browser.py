@@ -138,7 +138,7 @@ def main() -> None:
         ):
             append_attempt_event(session, attempt_id=attempt.id, event_type=event_type, payload=payload)
             session.flush()
-        evidence_manifest = build_evidence_manifest(session, campaign.id, {trial.id: evaluation.id})
+        evidence_manifest = build_evidence_manifest(session, campaign.id, {trial.id: evaluation.id}, snapshot=snapshot)
         publication = models.PublicationRow(
             campaign_id=campaign.id, snapshot_digest=snapshot_digest(snapshot), snapshot=snapshot,
             reviewer_id=reviewer.id, evidence_manifest=evidence_manifest,

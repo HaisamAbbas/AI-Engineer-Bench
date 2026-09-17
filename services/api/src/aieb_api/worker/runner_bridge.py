@@ -630,10 +630,18 @@ def execute_leased_work(
     (worker/loop.py) is unchanged: it just calls this once per claimed item,
     regardless of which phase that item happens to be."""
     with session_factory() as session:
-        repository.append_attempt_event(
-            session, attempt_id=leased.attempt_id, event_type="phase.started", payload={"phase": leased.work_type},
+        # Fenced (review finding #6): the phase.started trace write must not
+        # land if this worker was already fenced out (its lease reassigned) -
+        # the earlier unfenced append let a stale worker mutate the
+        # authoritative trace after reassignment. If the fence refuses, this
+        # worker no longer owns the item; do not proceed to execute it.
+        started = repository.append_attempt_event_fenced(
+            session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
+            attempt_id=leased.attempt_id, event_type="phase.started", payload={"phase": leased.work_type},
+            lease_seconds=lease_seconds,
         )
-        session.commit()
+    if not started:
+        return ExecutionResult(finalized=False, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
     if leased.work_type == "verification":
         return execute_leased_verification(
             session_factory, leased, worker_id=worker_id, work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,

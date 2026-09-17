@@ -564,10 +564,17 @@ class ApiServiceTests(unittest.TestCase):
             session.flush()
             session.add(api_models.EvaluationRow(
                 # This evaluation is the one the immutable publication will
-                # select, even after a replacement attempt is recorded.
+                # select, even after a replacement attempt is recorded. Usage
+                # lives IN the evaluation result (the only immutable,
+                # digest-bound source public usage is served from) rather than
+                # in a mutable usage_receipt row.
                 candidate_id=candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id,
                 schedule_digest=manifest.digest(), verdict="pass",
-                result={"checks": {"api-ready": True, "secret-fixture-check": True}, "diagnostics": {"private": "do not publish"}},
+                result={
+                    "checks": {"api-ready": True, "secret-fixture-check": True},
+                    "diagnostics": {"private": "do not publish"},
+                    "usage": {"input_tokens": 10, "output_tokens": 3, "cost_usd": "0.02"},
+                },
             ))
             session.flush()
             evaluation_row = session.execute(
@@ -1265,7 +1272,7 @@ class ApiServiceTests(unittest.TestCase):
             user = api_models.User(oidc_subject=f"reviewer-{uuid.uuid4().hex[:8]}", oidc_issuer="test")
             session.add(user)
             session.flush()
-            evidence_manifest = build_evidence_manifest(session, campaign_id, selected_evaluations or {}) if selected_evaluations is not None else None
+            evidence_manifest = build_evidence_manifest(session, campaign_id, selected_evaluations or {}, snapshot=snapshot) if selected_evaluations is not None else None
             publication = api_models.PublicationRow(
                 campaign_id=campaign_id,
                 snapshot_digest=snapshot_digest if snapshot_digest is not None else content_hash(snapshot),
@@ -1305,6 +1312,71 @@ class ApiServiceTests(unittest.TestCase):
         response = self.client.get(f"/v1/publications/{publication_id}/results")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["snapshot"], snapshot)
+
+    def _seed_scored_trial(self, *, terminal_status: str, verdict: str, campaign_state: str = "completed") -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+        """Seed one terminal, valid-candidate trial whose attempt carries the
+        given terminal_status and whose single evaluation carries the given
+        verdict. Returns (campaign_id, trial_id, evaluation_id) for driving
+        build_evidence_manifest directly."""
+        from aieb_core.models import CandidateManifest
+        from aieb_runner.artifacts import StoredCandidate
+        from aieb_api.worker.runner_bridge import _serialize_stored_candidate
+
+        self._seed_task()
+        self._seed_entrant()
+        with db.session_factory()() as session:
+            task = session.execute(select(api_models.TaskRevisionRow).where(api_models.TaskRevisionRow.slug == "rag.document-freshness")).scalar_one()
+            entrant = session.execute(select(api_models.EntrantRevisionRow).where(api_models.EntrantRevisionRow.slug == "agent-a")).scalar_one()
+            campaign = api_models.CampaignRow(name=f"scored-{uuid.uuid4().hex[:8]}", state=campaign_state, draft={"x": 1})
+            session.add(campaign)
+            session.flush()
+            trial = api_models.TrialRow(
+                campaign_id=campaign.id, task_revision_id=task.id, entrant_revision_id=entrant.id, repetition=0, cell_digest="c" * 64,
+            )
+            session.add(trial)
+            session.flush()
+            attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="terminal", terminal_status=terminal_status)
+            session.add(attempt)
+            session.flush()
+            manifest = CandidateManifest(
+                schema_version="aieb.candidate/v1", id=uuid.uuid4(), base_revision_digest="1" * 64, full_tree_hash="2" * 64, files=(),
+            )
+            candidate = api_models.CandidateRow(
+                attempt_id=attempt.id, tree_digest=manifest.full_tree_hash, manifest_digest=manifest.digest(),
+                validation_status="valid", stored_candidate=_serialize_stored_candidate(StoredCandidate(manifest, (), ())),
+            )
+            fixture = api_models.FixtureRevisionRow(digest="4" * 64, visibility="public", family_id=task.family_id)
+            session.add_all([candidate, fixture])
+            session.flush()
+            evaluation = api_models.EvaluationRow(
+                candidate_id=candidate.id, evaluator_id=task.evaluator_id, fixture_id=fixture.id,
+                schedule_digest=manifest.digest(), verdict=verdict, result={"checks": {"api-ready": True}},
+            )
+            session.add(evaluation)
+            session.commit()
+            return campaign.id, trial.id, evaluation.id
+
+    def test_build_evidence_manifest_rejects_a_terminal_status_that_disagrees_with_the_selected_verdict(self) -> None:
+        """A `fail` attempt paired with a `pass` evaluation is an integrity
+        inconsistency, not a valid selection: terminal_status must equal the
+        pinned evaluation's own verdict (review finding: terminal status was
+        not restricted to the selected verdict)."""
+        from aieb_api.publication_evidence import build_evidence_manifest
+
+        campaign_id, trial_id, evaluation_id = self._seed_scored_trial(terminal_status="fail", verdict="pass")
+        with db.session_factory()() as session:
+            with self.assertRaises(ValueError):
+                build_evidence_manifest(session, campaign_id, {trial_id: evaluation_id}, snapshot=self._analysis_snapshot({"agent-a": 1.0}))
+
+    def test_build_evidence_manifest_rejects_a_non_verdict_terminal_status(self) -> None:
+        """A non-verdict terminal status (here scorer_error) is never
+        publishable even when a scored evaluation exists under it."""
+        from aieb_api.publication_evidence import build_evidence_manifest
+
+        campaign_id, trial_id, evaluation_id = self._seed_scored_trial(terminal_status="scorer_error", verdict="pass")
+        with db.session_factory()() as session:
+            with self.assertRaises(ValueError):
+                build_evidence_manifest(session, campaign_id, {trial_id: evaluation_id}, snapshot=self._analysis_snapshot({"agent-a": 1.0}))
 
     def test_publication_results_reject_a_snapshot_that_does_not_match_its_recorded_digest(self) -> None:
         # Review finding #14: nothing recomputed snapshot_digest against the

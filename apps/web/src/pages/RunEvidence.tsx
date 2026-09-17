@@ -1,6 +1,6 @@
 /** Published runs use a redacted whitelist; private evidence requires an
  * operator, reviewer, or administrator role. */
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { useTrial, type PrivateRun, type PublicRun } from "../api/hooks";
 import { ApiRequestError, downloadAuthorizedArtifact } from "../api/client";
@@ -104,8 +104,29 @@ function PrivateEvidence({ data, active, setActive }: { data: PrivateRun; active
 }
 
 function EvidenceTabs({ active, onChange }: { active: EvidenceTab; onChange: (tab: EvidenceTab) => void }) {
-  return <div role="tablist" aria-label="Run evidence sections" className="evidence-tabs">
-    {tabs.map(([id, label]) => <button key={id} id={`tab-${id}`} role="tab" aria-selected={active === id} tabIndex={active === id ? 0 : -1} onClick={() => onChange(id)}>{label}</button>)}
+  // Implements the ARIA tabs keyboard pattern (review finding #7): with a
+  // roving tabindex only the active tab is in the tab order, so keyboard-only
+  // users move between tabs with the arrow/Home/End keys rather than Tab.
+  // Without this handler the other tabs (tabIndex=-1) were unreachable.
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const activeIndex = tabs.findIndex(([id]) => id === active);
+  const move = (index: number) => {
+    const [id] = tabs[index];
+    onChange(id);
+    buttons.current[index]?.focus();
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const count = tabs.length;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") { event.preventDefault(); move((activeIndex + 1) % count); }
+    else if (event.key === "ArrowLeft" || event.key === "ArrowUp") { event.preventDefault(); move((activeIndex - 1 + count) % count); }
+    else if (event.key === "Home") { event.preventDefault(); move(0); }
+    else if (event.key === "End") { event.preventDefault(); move(count - 1); }
+  };
+  return <div role="tablist" aria-label="Run evidence sections" className="evidence-tabs" onKeyDown={onKeyDown}>
+    {tabs.map(([id, label], index) => <button
+      key={id} id={`tab-${id}`} role="tab" aria-selected={active === id} aria-controls={`panel-${id}`}
+      tabIndex={active === id ? 0 : -1} ref={(node) => { buttons.current[index] = node; }} onClick={() => onChange(id)}
+    >{label}</button>)}
   </div>;
 }
 

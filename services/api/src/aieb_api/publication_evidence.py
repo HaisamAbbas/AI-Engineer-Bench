@@ -2,23 +2,63 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .evidence_integrity import attempt_trace_digest, evidence_digest, evaluation_digest
-from .models import AttemptEventRow, AttemptRow, CandidateRow, EvaluationRow, TrialRow
+from .models import AttemptEventRow, AttemptRow, CampaignRow, CandidateRow, EvaluationRow, TrialRow
+from .snapshots import snapshot_digest as compute_snapshot_digest
+
+# A campaign may only be published once it has reached a terminal outcome:
+# `completed` (full coverage) or `incomplete` (published with disclosed
+# incomplete coverage, spec section 28). A draft/frozen/running/paused/
+# cancelling campaign is still mutable and must never be published.
+_PUBLISHABLE_CAMPAIGN_STATES = {"completed", "incomplete"}
+
+# The only terminal statuses that represent a real scientific verdict. A
+# publishable attempt's terminal_status must be one of these AND must equal
+# the pinned evaluation's own verdict.
+_SCORED_VERDICTS = {"pass", "fail", "contract_violation", "indeterminate"}
 
 
-def build_evidence_manifest(session: Session, campaign_id: UUID, selected_evaluations: dict[UUID, UUID]) -> dict:
-    """Pin every campaign trial to one evaluation or explicitly exclude it.
+def build_evidence_manifest(
+    session: Session, campaign_id: UUID, selected_evaluations: dict[UUID, UUID], *, snapshot: dict[str, Any]
+) -> dict:
+    """Pin every campaign trial to one evaluation or explicitly exclude it,
+    and bind the whole selection to the published snapshot.
 
     `selected_evaluations` maps included trial IDs to the exact evaluation
     IDs approved for publication. Every other campaign trial is represented
     as excluded; unknown trials, cross-trial evaluations, and bad persisted
     digests are rejected before a caller can persist the publication.
+
+    `snapshot` is the exact AnalysisSnapshot dict being published. Its digest
+    is embedded in the returned manifest so the snapshot and the selection
+    are one immutable, cross-checked unit (review finding #2): the public
+    read path refuses to serve a run whose manifest snapshot_digest does not
+    match the publication's own snapshot_digest, so the snapshot cannot be
+    swapped for a different one after publication without detection. This
+    binding does NOT prove the snapshot's rates were originally derived from
+    the selected evaluations - that semantic derivation check is deferred to
+    ENG-018 - it only guarantees the published pair cannot be altered
+    undetected afterward.
+
+    Only a terminal, scientifically-eligible attempt may be included (review
+    finding #3): the attempt must be `terminal` (so finalize() has already
+    run and will not append a further trace event that invalidates the pinned
+    trace digest), its terminal_status must be a real scored verdict rather
+    than infrastructure_invalid/cancelled/unresolved, and the selected
+    evaluation must carry a non-null verdict.
     """
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None:
+        raise ValueError("publication selection references an unknown campaign")
+    if campaign.state not in _PUBLISHABLE_CAMPAIGN_STATES:
+        raise ValueError("a campaign can only be published after it has completed (or completed with incomplete coverage)")
+
     trials = session.execute(select(TrialRow).where(TrialRow.campaign_id == campaign_id)).scalars().all()
     by_id = {trial.id: trial for trial in trials}
     unknown = set(selected_evaluations) - set(by_id)
@@ -38,8 +78,19 @@ def build_evidence_manifest(session: Session, campaign_id: UUID, selected_evalua
             raise ValueError("selected evaluation does not belong to its publication trial")
         if candidate.validation_status != "valid":
             raise ValueError("publication selection contains an invalid candidate")
-        if attempt.terminal_status in {"infrastructure_invalid", "cancelled"}:
-            raise ValueError("publication selection contains an invalid or cancelled attempt")
+        if attempt.phase != "terminal":
+            raise ValueError("publication selection contains a nonterminal attempt")
+        if evaluation.verdict is None:
+            raise ValueError("publication selection contains an unscored evaluation")
+        # The attempt's terminal status must be a real scientific verdict AND
+        # must be exactly the verdict of the selected evaluation. A non-verdict
+        # terminal status (infrastructure_invalid, cancelled, scorer_error, or
+        # any other attribution) is never publishable, and an attempt whose
+        # terminal status disagrees with the evaluation being pinned (e.g. a
+        # `fail` attempt paired with a `pass` evaluation) is an integrity
+        # inconsistency, not a valid selection.
+        if attempt.terminal_status not in _SCORED_VERDICTS or attempt.terminal_status != evaluation.verdict:
+            raise ValueError("publication selection's terminal status is not the selected evaluation's scored verdict")
         if evidence_digest(candidate.stored_candidate) != candidate.stored_candidate_digest:
             raise ValueError("selected candidate display evidence failed its content digest check")
         actual_eval_digest = evaluation_digest(
@@ -66,4 +117,9 @@ def build_evidence_manifest(session: Session, campaign_id: UUID, selected_evalua
             "evaluation_digest": evaluation.evaluation_digest,
             "trace_digest": trace_digest,
         })
-    return {"schema_version": "aieb.published-evidence/v1", "campaign_id": str(campaign_id), "selections": selections}
+    return {
+        "schema_version": "aieb.published-evidence/v1",
+        "campaign_id": str(campaign_id),
+        "snapshot_digest": compute_snapshot_digest(snapshot),
+        "selections": selections,
+    }

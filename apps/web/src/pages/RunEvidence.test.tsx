@@ -31,6 +31,38 @@ describe("RunEvidence", () => {
     expect(screen.queryByRole("heading", { name: "Candidate diff" })).not.toBeInTheDocument();
   });
 
+  it("moves between tabs with the arrow keys for keyboard-only users", async () => {
+    mockApi({
+      "/v1/trials/{trial_id}": {
+        status: 403,
+        error: { error: { code: "forbidden", message: "requires authorization", request_id: "r1", field_errors: {}, retryable: false } },
+      },
+      "/v1/public/trials/{trial_id}": {
+        data: {
+          trial_id: "trial-kbd", publication_id: "publication-1", task_id: "task-a", task_version: "1.0.0",
+          entrant_id: "agent-a", entrant_version: "2.0.0", repetition: 0,
+          attempt: { number: 1, phase: "terminal", terminal_status: "pass" }, verdict: "pass",
+          checks: [{ requirement_id: "ready", passed: true }],
+          evaluation_id: null, evaluation_state: "unscored", trace_state: "unavailable", trace: [],
+          usage: null, configuration: {},
+        },
+      },
+    });
+    renderWithProviders(<RunEvidence />, { route: "/runs/trial-kbd", path: "/runs/:trialId" });
+    const outcomeTab = await screen.findByRole("tab", { name: "Outcome" });
+    outcomeTab.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    const changesTab = screen.getByRole("tab", { name: "Changes" });
+    expect(changesTab).toHaveAttribute("aria-selected", "true");
+    expect(changesTab).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Outcome" })).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: "Configuration" })).toHaveAttribute("aria-selected", "true");
+    await userEvent.keyboard("{Home}");
+    expect(screen.getByRole("tab", { name: "Outcome" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("renders authorized candidate output and stored unified diffs as text", async () => {
     const hostile = '<img src=x onerror="window.__pwned=true">\x1b[31mred\x1b[0m';
     mockApi({

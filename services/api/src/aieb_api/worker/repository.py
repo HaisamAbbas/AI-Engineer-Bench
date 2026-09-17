@@ -249,6 +249,32 @@ def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id:
     return fenced is not None
 
 
+def append_attempt_event_fenced(
+    session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID,
+    event_type: str, payload: dict[str, str | int | bool | None], lease_seconds: int = DEFAULT_LEASE_SECONDS,
+) -> bool:
+    """Append a lifecycle event ONLY while this worker/generation still holds
+    the lease, in the same fenced transaction as the lease touch (review
+    finding #6).
+
+    Trace writes are authoritative evidence, so a stale worker returning after
+    its lease was reassigned must not be able to mutate the trace. The fenced
+    UPDATE takes the same work_item row lock the reconciler's
+    SELECT ... FOR UPDATE SKIP LOCKED contends for, so an already-fenced
+    worker's event write is refused (returns False, nothing committed) instead
+    of racing in after reassignment. Returns True when the event was appended
+    and committed. Sequence collisions between genuinely concurrent writers
+    are a hard error at the database (uq_attempt_event_sequence), never a
+    silently overwritten event.
+    """
+    if not _fenced_lease_touch(session, work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_seconds=lease_seconds):
+        session.rollback()
+        return False
+    append_attempt_event(session, attempt_id=attempt_id, event_type=event_type, payload=payload)
+    session.commit()
+    return True
+
+
 def record_candidate(
     session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, attempt_id: uuid.UUID,
     candidate: CandidateOutcome, lease_seconds: int = DEFAULT_LEASE_SECONDS,
