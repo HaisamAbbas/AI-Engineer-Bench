@@ -1,5 +1,6 @@
 import createClient from "openapi-fetch";
 import type { paths } from "./schema";
+import { accessToken } from "./oidc";
 
 // Every number the UI renders comes from this client's responses (or the
 // shared analysis package via the API) - never independently recomputed in
@@ -8,7 +9,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localho
 
 export const api = createClient<paths>({ baseUrl: API_BASE_URL });
 
-let accessTokenProvider: (() => Promise<string | undefined> | string | undefined) | undefined;
+let accessTokenProvider: (() => Promise<string | undefined> | string | undefined) | undefined = accessToken;
 export function setAccessTokenProvider(provider: (() => Promise<string | undefined> | string | undefined) | undefined) {
   accessTokenProvider = provider;
 }

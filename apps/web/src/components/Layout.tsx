@@ -1,4 +1,6 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { useState } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { accessToken, beginSignIn, clearSession, configuredOidc } from "../api/oidc";
 
 // Admin access is enforced by the API; navigation does not imply authorization.
 const PRIMARY_NAV = [
@@ -16,6 +18,22 @@ const SECONDARY_NAV = [
 ];
 
 export function Layout() {
+  const location = useLocation();
+  const oidc = configuredOidc();
+  const signedIn = accessToken() !== undefined;
+  const [authError, setAuthError] = useState<string>();
+  const [signingIn, setSigningIn] = useState(false);
+  async function signIn() {
+    setAuthError(undefined);
+    setSigningIn(true);
+    try {
+      await beginSignIn(location.pathname + location.search);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Sign-in failed");
+    } finally {
+      setSigningIn(false);
+    }
+  }
   return (
     <div className="app-shell">
       <a href="#main-content" className="skip-link">
@@ -25,6 +43,17 @@ export function Layout() {
         <NavLink to="/" className="brand" end>
           AI Engineer Bench
         </NavLink>
+        {oidc !== undefined &&
+          (signedIn ? (
+            <button type="button" onClick={() => { clearSession(); window.location.reload(); }}>
+              Sign out
+            </button>
+          ) : (
+            <button type="button" disabled={signingIn} onClick={() => void signIn()}>
+              Sign in
+            </button>
+          ))}
+        {authError && <p role="alert">{authError}</p>}
         <nav aria-label="Primary">
           <ul>
             {PRIMARY_NAV.map((item) => (

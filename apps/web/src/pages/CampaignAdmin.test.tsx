@@ -49,7 +49,7 @@ describe("CampaignAdmin", () => {
     expect(screen.getByText(/Leased work finishes or expires/)).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("I understand the cancellation consequences"));
     fireEvent.click(cancel);
-    await waitFor(() => expect(post).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}/cancel", { params: { path: { campaign_id: "camp" } } }));
+    await waitFor(() => expect(post).toHaveBeenCalledWith("/v1/campaigns/{campaign_id}/cancel", { params: { path: { campaign_id: "camp" } }, headers: {} }));
     expect(screen.getByText("running")).toBeInTheDocument();
     expect(cancel).toBeDisabled();
     state = "cancelling";
