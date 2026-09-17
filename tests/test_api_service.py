@@ -1895,6 +1895,57 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(snapshot["cost_per_resolution"], 2.0)
         self.assertEqual(snapshot["infrastructure_attrition"], 0.5)
 
+    def test_correction_snapshot_selects_run_without_changing_original(self) -> None:
+        from aieb_api.aggregation import aggregate_campaign_snapshot, CampaignNotAggregatable
+
+        campaign_id = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        with db.session_factory()() as session:
+            original = self._aggregation_attempts(session, campaign_id)[0]
+            candidate = session.execute(select(api_models.CandidateRow).where(
+                api_models.CandidateRow.attempt_id == original.id,
+            )).scalar_one()
+            evaluation = session.execute(select(api_models.EvaluationRow).where(
+                api_models.EvaluationRow.candidate_id == candidate.id,
+            )).scalar_one()
+            original_identity = (original.phase, original.terminal_status, candidate.stored_candidate, evaluation.result)
+            run = api_models.CorrectionRunRow(
+                campaign_id=campaign_id, corrected_evaluator_id=evaluation.evaluator_id,
+                corrected_fixture_id=evaluation.fixture_id, scoring_correction_digest="7" * 64,
+                status="completed", reason="fixture scoring correction",
+            )
+            session.add(run)
+            corrected = api_models.AttemptRow(trial_id=original.trial_id, number=2, phase="terminal", terminal_status="fail")
+            session.add(corrected)
+            session.flush()
+            corrected_candidate = api_models.CandidateRow(
+                attempt_id=corrected.id, tree_digest=candidate.tree_digest, manifest_digest=candidate.manifest_digest,
+                stored_candidate=candidate.stored_candidate, validation_status="valid",
+            )
+            session.add(corrected_candidate)
+            session.flush()
+            session.add(api_models.EvaluationRow(
+                candidate_id=corrected_candidate.id, evaluator_id=evaluation.evaluator_id,
+                fixture_id=evaluation.fixture_id, schedule_digest="8" * 64, correction_run_id=run.id,
+                verdict="fail", result={"checks": {"api-ready": False}},
+            ))
+            session.commit()
+            baseline = aggregate_campaign_snapshot(session, campaign_id)
+            revised = aggregate_campaign_snapshot(session, campaign_id, correction_run_id=run.id)
+            self.assertEqual(baseline["suite_rate"], 1.0)
+            self.assertEqual(revised["suite_rate"], 0.5)
+            self.assertTrue(revised["complete_for_rank"])
+            self.assertEqual(aggregate_campaign_snapshot(session, campaign_id), baseline)
+            session.refresh(original); session.refresh(candidate); session.refresh(evaluation)
+            self.assertEqual((original.phase, original.terminal_status, candidate.stored_candidate, evaluation.result), original_identity)
+            for invalid_run in (uuid.uuid4(),):
+                with self.assertRaises(CampaignNotAggregatable):
+                    aggregate_campaign_snapshot(session, campaign_id, correction_run_id=invalid_run)
+            run.status = "running"
+            session.commit()
+            with self.assertRaises(CampaignNotAggregatable):
+                aggregate_campaign_snapshot(session, campaign_id, correction_run_id=run.id)
+
+
     def test_aggregate_campaign_snapshot_first_scored_attempt_is_final(self) -> None:
         from aieb_api.aggregation import aggregate_campaign_snapshot, campaign_observations
 
