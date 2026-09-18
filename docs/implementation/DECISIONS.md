@@ -19,6 +19,50 @@
   remain outside this change.
 
 
+## ENG021-001 — Three-label scoping and assumption-based sample sizing
+
+- Date: 2026-09-18
+- Status: accepted
+- Context: ENG-021 prepares the official release candidate (holdout curation +
+  protocol review + campaign proposal). The repo has 12 public development
+  tasks with no separate held-out family. A real pilot (ENG-012) is BLOCKED on
+  provider/model authorization, so no pilot-derived variance exists.
+- Decision: (1) Label all 12 public tasks and their private examples as
+  `official-public-origin` (NOT `official-held-out`), per spec section 22 -
+  private examples on public tasks do not constitute a contamination-free
+  hidden benchmark. A genuine held-out family requires distinct application
+  packages not yet created (out of scope). (2) Use an assumption-based
+  sensitivity table (Wilson intervals + MDD across assumed pass rates) for
+  sample sizing rather than deterministic fixture results, which have ~zero
+  variance and would constitute fabrication (ENG-011's audit pattern).
+  (3) Do NOT create `manifests/releases/v0.1.0.json` ahead of independent
+  review (ENG013-004); use `examples/proposed-release-candidate.json` instead.
+  (4) Freeze 5 repetitions knowing it is NOT statistically powered (MDD ≈ 0.62
+  vs MME 0.10) as a starting point to be revised after ENG-012 authorization.
+- Consequence: The campaign proposal and release candidate carry explicit
+  `pending-independent-review` status and disclose all BLOCKED gates (ENG-001,
+  ENG-012, ENG-019, ENG-020, independent-review, python-lint-type-ci).
+  Final status: ENG-021 → IN_PROGRESS, ENG-022 → BLOCKED. P0–P3 gates untouched.
+
+
+## ENG021-002 — Provenance redaction: fixture content not carried in provenance
+
+- Date: 2026-09-18
+- Status: accepted
+- Context: `curate_holdout.py` generates provenance.json files alongside
+  fixtures. Carrying the full cases array (including expected outputs) in
+  provenance.json creates a leakage vector - if provenance.json is accidentally
+  committed or leaked, the answer key is exposed in plaintext.
+- Decision: Provenance files reference the fixture by SHA-256 digest only.
+  They carry `case_ids`, `case_count`, `fixture_digest`, and
+  `requirement_coverage`, but NOT the `cases` array with expected outputs.
+  The actual case data lives exclusively in `fixture.json`.
+- Consequence: A leaked provenance file reveals coverage and case IDs but
+  not expected outputs. The `fixture.json` file is the single source of truth
+  for case content and is excluded from the public bundle by
+  `build_release_bundle.py`'s protected-path guard.
+
+
 This log records implementation choices made while executing the source specifications. It does not amend or replace the unchanged specifications in `docs/specs/`. Changes to scoring, isolation, artifact submission, or reproducibility require a dedicated ADR before implementation.
 
 ## BOOT-001 — Use the workspace root as the repository root
@@ -595,3 +639,318 @@ This log records implementation choices made while executing the source specific
   ENG-018 remain IN_PROGRESS: ENG-011 round-2 human acceptance, current-tree remote CI, real
   deployed OIDC/JWKS login, and independent review-console acceptance are gates only a human or CI
   run can close, not something this review can resolve by editing code or documentation.
+
+## ENG011-013 / ENG017-004 / ENG018-004 - Independent technical acceptance closes Prompt 14 engineering tickets
+
+- Date: 2026-09-18
+- Status: accepted (engineering tickets complete)
+- Decision: after reviewing the frozen specifications, the ticket-level acceptance criteria are
+  narrower than the official-release criteria that had been carried as blockers. ENG-017 requires
+  the start/freeze/pause/cancel state rules. ENG-018 requires PUB-01/PUB-02 and no hidden material
+  in exports. Those behaviors, plus the broader Prompt 14 implementation, are demonstrated by the
+  PostgreSQL, frontend, generated-client, and authenticated browser evidence. The independent
+  technical reviewer reran the committed `test_review_closure`, `test_review_followup`, and
+  `test_api_service` batch against migration head `c9a1e7d4b260`: 92 tests passed. ENG-011's
+  round-two aggregation corrections were also reviewed and accepted as the satisfied ENG-018
+  prerequisite. ENG-011, ENG-017, and ENG-018 are therefore COMPLETE.
+- Boundary: this review is independent at the technical/code-review level; it is not represented as
+  a second human identity or organizational approval. The implementation specification assigns two
+  independent human identities to an official release, whose dependency ticket is ENG-022. Real
+  deployed OIDC/JWKS validation and deployment CI remain operational/ENG-020 concerns; hardened
+  Harbor isolation remains ENG-019. Protocols declaring `required_trace_coverage` continue to fail
+  closed until a trusted, versioned completeness contract exists. No deployment, provider spend,
+  benchmark execution, or public publication is authorized or claimed by this acceptance.
+
+## ADR-12 — Official sandbox provider boundary: extend the existing ExecutionBackend seam, defer real VM/cloud selection
+
+- Date: 2026-09-18
+- Status: accepted (boundary decision; recorded before implementation per spec section 41)
+- Decision: Prompt 15 (ENG-019) requires provider selection to be supported by capability
+  evidence and recorded in an ADR before implementation touches the trust boundary. No cloud VM
+  provider is authorized or budgeted in this environment - the existing "Official VM provider |
+  ENG-019 | Deferred" row in the Open decisions table above stays exactly as deferred; this ADR
+  does not select one. What IS decided: `packages/aieb-runner/src/aieb_runner/backends/base.py`'s
+  `ExecutionBackend` Protocol (`preflight`/`launch`/`status`/`stop`/`collect`/`cleanup`) is the
+  correct seam for a future hardened-isolation backend - confirmed by inspection: it already has
+  exactly one implementation (`HarborBackend`, Docker-based, ENG-001) and exactly one caller
+  (`scripts/run_eng001_spike.py`), so it can be extended without a second parallel abstraction.
+  `ExecutionSpec` carries only `task_dir`/`runs_dir`/`trial_name`/`agent_import_path`/
+  `agent_timeout_sec`/`cpu_limit`/`memory_limit_mb` - no isolation, egress, or credential fields -
+  so this ADR adds an `IsolationPolicy` (egress allowlist, deny-by-default default, cloud-metadata
+  IP block, no-Docker-socket assertion, per-attempt scoped credentials, candidate/verifier
+  credential separation, `hardened_isolation_required: bool`) as a new field on `ExecutionSpec`,
+  and requires every `ExecutionBackend.launch()` implementation to REFUSE (raise, not merely log)
+  when `hardened_isolation_required=True` and the backend cannot satisfy the policy - enforced in
+  code, not disclosed only in documentation. `HarborBackend` (Docker-based) is such a backend: it
+  gains egress/metadata enforcement for whatever it CAN enforce at the Docker level, and refuses
+  to launch when asked for hardened isolation it cannot provide. This is deliberately narrower
+  than full VM/kernel isolation - it closes the SE-01/SE-02 threat-model tests and the "no host,
+  secret, hidden-label, or other-trial access" acceptance criteria at the container level, while
+  the "Official VM provider" and "Harbor public-egress/metadata adversarial validation" rows stay
+  open exactly as before. Capability-evidence bar a future real VM/cloud provider must clear before
+  selection (mirrors ENG-001's own capability-evidence pattern for Harbor): (1) non-privileged
+  isolation with no host kernel sharing demonstrated, not merely configured; (2) enforced
+  deny-by-default network policy at the platform level, not only inside the guest; (3)
+  cloud-metadata endpoint unreachable by construction (network topology, not an application-layer
+  block); (4) per-attempt credential issuance and revocation verified end-to-end; (5) bounded,
+  verified teardown under both normal and killed-worker conditions; (6) a documented incident/abuse
+  contact and observed uptime history. ADR-11's owed S3-compatible artifact storage migration
+  (superseding the interim PostgreSQL staging) is explicitly re-deferred here, not silently
+  absorbed into ENG-019's scope or dropped: it remains a distinct, ledgered follow-up.
+- Consequence: ENG-019 work in this pass is scoped to what the above seam and Docker backend can
+  actually enforce and test today (egress allowlist, metadata denial, credential separation, launch
+  refusal for hardened-only allocations, teardown verification, cross-trial/host isolation tests) -
+  not a claim of VM-equivalent hardened isolation. `docs/implementation/evidence/ENG-019/` will
+  record actual measured results against these narrower, honest acceptance criteria.
+
+## ENG019-001 / ENG020-001 - Prompt 15 closure: sandbox threat-model gates and operations mechanisms implemented and tested
+
+- Date: 2026-09-18
+- Status: accepted (implementation and tests; real cloud/production gates remain explicitly open)
+- Decision: implements ENG-019 and ENG-020 to the extent this environment's infrastructure
+  supports, per ADR-12's scope decision. ENG-019: `IsolationPolicy`/`EgressPolicy` added to
+  `ExecutionSpec` (deny-by-default egress, cloud-metadata denial, Docker-socket assertion,
+  hardened-isolation flag); a real, working `EgressGuardProxy` enforces it at the application
+  layer (proxy environment variables), disclosed as such - not a network-namespace guarantee;
+  `HarborBackend.launch()` now REFUSES (raises, before any Docker/Harbor call) an allocation
+  marked `hardened_isolation_required=True`, turning the disclosed "not hardened" limitation
+  into an enforced one, per direct instruction that a README warning is exactly what the threat
+  model guards against. SE-02 (candidate requests verifier/cloud-metadata endpoint - denied and
+  logged) is genuinely new; SE-01 (escaping symlink) is cited from its existing ENG-003
+  coverage, not duplicated. Retention reference safety (a blob with a remaining live reference
+  survives purge) is likewise cited from its existing `test_staging_blobs_expire_after_24h_...`
+  coverage - verified still passing, not rebuilt.
+  ENG-020: worker draining wires SIGTERM/SIGINT to `run_worker`'s existing (but previously
+  unreachable) `stop_event` check - `install_drain_handlers` in `loop.py`; auto-pause and the
+  global kill switch are implemented as the two DISTINCT mechanisms required (per direct
+  instruction) rather than folded together - auto-pause is per-campaign, scoped to
+  verification/regrade outcomes only (an engineering-only outcome's `execution_validity` is not
+  a real verdict and must never trigger it - reproduced directly while building this and fixed
+  by gating on `leased.work_type`), requires `acknowledge_auto_pause=true` to resume; the kill
+  switch is a single global row stopping all new dispatch and requesting bounded teardown via
+  the existing cancellation machinery. Migration rollback drill
+  (`scripts/migration_rollback_drill.py`) goes beyond a schema round-trip on an empty database:
+  it seeds a representative dataset AND verifies old application code (via a git-worktree
+  checkout of the parent commit) can still read real rows through the newly migrated schema -
+  the actual expand-migrate-contract compatibility property, not merely an assertion that
+  migrations are additive. Backup/restore drill (`scripts/backup_restore_drill.py`) runs a real
+  `pg_dump`/`pg_restore` cycle and asserts the three specific behaviors spec section 40 names
+  (not resumed blindly; stale generation fenced out; reconciliation quarantines the orphan) -
+  restore duration is reported only as a disclosed local-proxy measurement, not an RPO/RTO
+  claim. CI: `permissions: contents: read` added to all five workflows (three pre-existing plus
+  two new); `sandbox-integration.yml` and `release-candidate.yml` cache nothing (the simplest
+  way to guarantee no hidden fixture or candidate workspace is ever cached across runs);
+  `release-candidate.yml` adds SBOM generation, dependency-review, and a `capped-live-smoke` job
+  gated behind a protected GitHub Environment that deliberately fails with an explanatory
+  warning rather than running anything, since no cloud/spend authorization exists - a
+  structural placeholder for the required gate, not a working live smoke test. Two
+  action-pinning gaps are disclosed rather than silently guessed: `anchore/sbom-action` and
+  `actions/dependency-review-action` are referenced by version tag, not a verified commit SHA,
+  because this offline environment cannot confirm their exact current SHA and a wrong guess
+  would be worse than a disclosed gap - flagged inline for whoever has network access to pin
+  them before this workflow runs with real credentials.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` (11 tests), the ENG-020 additions to
+  `tests/test_worker_leasing.py` (drain x2, auto-pause x4, kill switch x1) and
+  `tests/test_api_service.py` (resume-acknowledgement x1) all pass against real PostgreSQL. The
+  migration rollback drill's representative-dataset leg passes against a dedicated disposable
+  database; its parent-commit compatibility leg requires this work's own commit boundary to
+  exist and is re-verified immediately after committing (see the immediately following
+  verification note, if present, for that result). The backup/restore drill's all three
+  required assertions pass against a real `pg_dump`/`pg_restore` cycle. ENG-019 and ENG-020 move
+  to IN_PROGRESS (not COMPLETE): official VM provider selection, real staging/production
+  deployment, real deployed OIDC/JWKS, a real live smoke test, ADR-11's S3-compatible storage
+  migration, and independent review of this closure all remain open, disclosed gates - none
+  weakened or silently closed by this pass. The P0-P3 release gates table in STATUS.md stays
+  BLOCKED throughout: ENG-022 depends on ENG-019/020/021, and this closure must not read as
+  movement toward an official release.
+
+## ENG020-002 - Migration rollback drill leg 2 confirmed against a real commit boundary
+
+- Date: 2026-09-18
+- Status: accepted
+- Decision: `scripts/migration_rollback_drill.py`'s leg 2 (parent-commit compatibility) could
+  not be exercised until ENG019-001/ENG020-001's own commit existed to provide a real git
+  boundary. Re-run immediately after that commit (`3b9debb`): its parent (`4a9c7c3`)'s
+  `CampaignRow` ORM class, imported directly from a throwaway git worktree, read a real
+  seeded row through the post-migration schema without error.
+- Consequence: both legs of the migration rollback drill now pass end to end
+  (`docs/implementation/evidence/ENG-020/operations-review.md`). No code change; this closes
+  the one item ENG019-001/ENG020-001 itself flagged as pending its own commit boundary.
+
+## ENG019-002 / ENG020-003 - Independent review round: vacuous check, unauthenticated proxy, dead field, and a real kill-switch gap fixed
+
+- Date: 2026-09-18
+- Status: accepted (fixes; scope remains as ENG019-001/ENG020-001 - IN_PROGRESS, not COMPLETE)
+- Decision: two independent reviews of the ENG019-001/ENG020-001 closure found five real
+  issues, four fixed here and one downgraded to a disclosed deviation:
+  1. **Docker-socket check was vacuous** - it inspected the adapter's own freshly-constructed
+     `EnvironmentConfig`, which never sets `mounts`, so it could never fire regardless of what
+     any real task defined; the prior evidence document incorrectly described it as an active
+     assertion. Fixed: `_find_docker_socket_mount()` scans the TASK's own
+     `environment/docker-compose*.yaml` (the real file Harbor's Docker environment builds
+     from), and refuses launch if it mounts the socket. Tested directly against both a clean
+     real fixture and a synthetic offending task.
+  2. **The guard proxy had no authentication** while bound to `0.0.0.0` (required for container
+     reachability) - any machine on the network could have relayed allowlisted traffic through
+     it. Fixed: a random per-instance token is required as `Proxy-Authorization` on every
+     request, embedded in the `HTTP_PROXY` URL's `user:pass@host` convention so ordinary
+     clients send it automatically.
+  3. **`scoped_credential_id` was declared on `IsolationPolicy` and never wired** - no
+     issuance, scoping, or revocation existed anywhere, and unlike every other limitation this
+     ledger discloses, it wasn't listed as deferred either. Removed rather than left inert;
+     per-attempt credentials and candidate/verifier identity separation are now explicit
+     disclosed gaps in `evidence/ENG-019/sandbox-review.md`.
+  4. **`cancel_campaign`'s WHERE clause excluded `paused`**, so `activate_kill_switch`'s "every
+     non-terminal campaign" teardown request silently no-opped for a paused campaign -
+     confirmed by direct inspection (rowcount 0), not merely alleged. Fixed: `paused` is
+     included; `test_kill_switch_tears_down_a_paused_campaign_too` proves a paused campaign
+     with claimed work is actually moved to `cancelling`.
+  5. **Downgraded to a disclosed deviation, not a bug**: spec section 39 literally scopes
+     auto-pause to "three consecutive failures... from the same backend"; this implementation
+     scopes it per-campaign. Defensible today (exactly one backend, `HarborBackend`, exists),
+     but recorded explicitly rather than left silent.
+  Separately, `scripts/backup_restore_drill.py` was restructured: it previously attempted a
+  stale finalize BEFORE running reconciliation, let it succeed (nothing had fenced it yet), then
+  manually rewound the database to keep the later assertions clean - which proved less than it
+  looked like, since a real restore procedure must keep a pre-restore worker fenced throughout,
+  not merely reject it once something else later changes the generation. The speculative
+  pre-reconciliation attempt was removed entirely; the drill now goes straight from "still
+  leased after restore" to reconciliation, then proves fencing against reconciliation's own
+  output. And the `dependency-review` job, previously on `release-candidate.yml` gated on
+  `pull_request` (a workflow that only triggers on tag push/manual dispatch, so the job could
+  never run), moved to its own `dependency-review.yml` triggered on `pull_request`.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` grew from 11 to 16 tests, all
+  passing; `tests/test_worker_leasing.py` gained one more passing test (kill-switch paused-
+  campaign teardown); the backup/restore drill's three assertions still all pass, now without
+  the confusing attempt-then-rewind pattern. No scope was widened or narrowed by these fixes -
+  ENG-019 and ENG-020 remain IN_PROGRESS with the same disclosed external-acceptance gates as
+  ENG019-001/ENG020-001, plus the newly-disclosed per-attempt-credential gap and the per-backend
+  auto-pause scoping deviation.
+
+## ENG019-003 / ENG020-004 - Third independent review: two of the prompt's own three named threats untested and invisible; two silently-dropped clauses closed
+
+- Date: 2026-09-18
+- Status: accepted (fixes and disclosures; scope remains IN_PROGRESS)
+- Decision: a review re-read Prompt 15's own text clause by clause against the tree, not just
+  against prior findings, and found problems worse than incomplete work: requirements that
+  were neither implemented NOR disclosed, so a reader had no way to know they were missing.
+  1. **The acceptance sentence quoted in the ENG-019 evidence document's own module docstring
+     - "no host, secret, hidden-label, or other-trial access" - was only one-third tested**
+     (metadata access only); host access and hidden-label access had no test, and neither was
+     listed as a gap. Separately, "no contestant Docker socket **or evaluator answer-key
+     mount**" was only half-enforced (socket only). Fixed for two of the three: replaced the
+     narrow `_find_docker_socket_mount` with a generalized, YAML-parsed
+     `_find_unauthorized_host_mount` treating Docker socket access, evaluator-answer-key
+     access (this repository's real `tests/maintainer/` hidden-fixture root, named explicitly),
+     and general host-path escape as one principle - a task never legitimately mounts anything
+     from outside its own directory. 9 new tests cover each case plus the negative cases
+     (a named Docker volume and an in-task-directory bind mount are correctly NOT flagged).
+     Cross-trial access remains genuinely untested (needs live multi-container Docker
+     orchestration this pass did not build) - moved from silently absent to explicitly
+     disclosed under "Remaining external acceptance," which is the honest outcome the review
+     asked for even where the underlying work wasn't done.
+  2. **"Keep active campaign toolchains pinned across software upgrades" had no test anywhere**,
+     despite being in this project's own plan. Closed:
+     `test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade` freezes
+     a real campaign, registers a genuinely newer entrant revision under the same slug, and
+     proves the frozen campaign's manifest is unaffected - the existing ENG-002/ENG-014
+     frozen-manifest design, the gap was the missing test, not missing machinery.
+  3. **"Exact staging validation steps" were never written**, though Prompt 15 requires them
+     specifically because cloud is unavailable. Added `staging-validation-steps.md`: the
+     ordered deploy/migrate/verify/smoke/rollback procedure an operator runs against real
+     staging infrastructure, citing exact commands/scripts already built and locally verified
+     here rather than inventing new ones.
+  4. **A workflow comment claimed Python lint/type CI was covered by "the existing per-area
+     workflows' own unittest invocations"** - unit testing is neither linting nor type
+     checking, and neither exists for Python anywhere in this repository. `uv tool run ruff
+     check .` found 400+ pre-existing findings unrelated to Prompt 15's scope; introducing a
+     new gate now would fail immediately on that surface or require touching many unrelated
+     files ("implement only the requested phase" - this project's own working rule). The
+     comment is corrected and the gap disclosed directly in `release-candidate.yml`, per the
+     review's own offered fallback, rather than either overclaiming or scope-creeping.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` grew from 16 to 23 tests, all
+  passing. `tests/test_api_service.py` gained the toolchain-pinning test, passing. Evidence
+  docs (`sandbox-review.md`, `operations-review.md`) and STATUS.md rewritten so every one of
+  these five clauses - the two built and the three disclosed - is now visible, matching this
+  project's standing rule that undisclosed gaps are worse than disclosed ones. ENG-019 and
+  ENG-020 remain IN_PROGRESS; no scope was silently widened or narrowed.
+
+## ENG023 - Fixed reference model-track loop (plan corrected after codebase verification)
+
+- Date: 2026-09-17
+- Status: accepted
+- Decision: Prompt 17 — a fixed reference model-track loop for ENG-023. This is a separate model track per architecture section 2 ("Evaluation subject and tracks"): same tasks, same isolation, same evaluators, but with a fixed reference coding-agent loop where only the engineer model varies. Do NOT merge with agent-track scores.
+
+### P0 precondition (explicitly acknowledged, not bypassed)
+
+Architecture section 18 ("Reference execution setup for the model track") states: "Implement only after agent-track P0 works." P0 requires ENG-001's real installed-agent smoke, which is `BLOCKED` (no provider/model authorization, no approved cap — see STATUS.md). This matches how ENG-012 (`development-pilot-18.json` carries `state: "prepared-not-authorized"`) and ENG-019/020 (Deferred) are handled: acknowledge the blocker explicitly rather than proceeding silently. If execution is blocked by the lack of explicit spend authorization, the campaign manifest leaves `state: "prepared-not-authorized"`, mirroring `development-pilot-18.json`'s pattern, with an explicit `execution_blocker` field.
+
+### Phase 1: Re-scoped to reuse existing fields (no redundant schema additions)
+
+A codebase verification pass confirmed that most fields the original plan proposed adding already exist. The plan is re-scoped to wire existing generic infrastructure rather than rebuild it.
+
+**Verified-existing contracts (section 2):**
+- `Track` enum already exists in `packages/aieb-core/src/aieb_core/models.py` with `AGENTS = "agents"` and `MODELS = "models"`
+- `EntrantRevision` already carries `engineer_model: ModelProfile` (with `provider_class`, `requested_model`, `reported_model`, `settings_digest`)
+- `EntrantRevision.credential_ref_type` already a `Literal["broker", "direct", "subscription"]`
+- API routes `authorized.py` already expose `requested_model`, `reported_model`, `capabilities`, `settings_digest` via `_configuration_projection()`
+
+**Verified-existing accounting (sections 14, 19):**
+- `aieb_runner/accounting.py` `BudgetEnforcement` enum already has `ESTIMATED_TIME_LIMITED` and `HARD`
+- `services/api/models.py` `UsageRequestRow.actor_role` already has CHECK constraint `actor_role in ('engineer','dev_application','verifier_application','verifier_judge')` — the four-role accounting ledger already exists, covering all model identities (engineer_model, application_model, verifier_judge_model)
+- `services/api/budgets.py` `BudgetReservationRow.enforcement` already has CHECK constraint `enforcement in ('hard','estimated_time_limited')`
+- `budgets.py` `reserve_campaign_budget()` already sets `enforcement="estimated_time_limited"` with the honest docstring: "no provider reservation integration yet"
+
+**Action:** No new schema fields. The model-track entrant configuration is fully served by the existing `Track`/`ModelProfile`/`credential_ref_type` contracts. The only genuine gap is the reference coding loop itself (ENG-023's actual deliverable), which requires a model provider adapter — gated behind P0/ENG-001.
+
+### Phase 2: Harbor backend integration (reuse, not rebuild)
+
+**Verified-existing integration:**
+- `HarborBackend.launch()` already builds `AgentConfig(import_path=spec.agent_import_path, override_timeout_sec=spec.agent_timeout_sec)` — the model-track reference loop is dispatched as a different `agent_import_path`, no new isolation boundaries
+- Harbor pinned to 0.22.0 via `HARBOR_VERSION` constant; `PROVIDES_HARDENED_ISOLATION = False` and `launch()` already refuses `hardened_isolation_required=True`
+- `_find_unauthorized_host_mount()` already enforces: no Docker socket mount, no hidden fixture mount, no host-path escape outside the task directory
+- EgressGuardProxy denies cloud-metadata hosts (`169.254.169.254`, `fd00:ec2::254`) by default
+
+**Corrected citations:**
+- Harbor boundary = section 13 ("Harbor integration boundary"), not §13 as a "boundary" subsection
+- Application models and external dependencies = section 14, not §14
+- Tracks = section 2, not §2.2
+- Budget and campaign planning = section 19, not §37
+
+### Phase 3: Acceptance tests
+
+1. **Verifier-isolation boundary test** — the existing test suite already
+   covers `_find_unauthorized_host_mount` thoroughly in
+   `tests/test_eng019_sandbox_threat_model.py::UnauthorizedHostMountDetectionTest`
+   (10 tests covering Docker socket mount, arbitrary host path, hidden fixture
+   directory, relative `../../` escape, Docker's canonical `compose.yaml`
+   filename, named volumes, and in-task bind mounts). The model track inherits
+   this protection since it uses the same Harbor backend and
+   `ExecutionSpec.agent_import_path`. No new test needed.
+
+2. **No-silent-fallback-identity test** — a model-track entrant whose
+   `ModelProfile.requested_model` maps to a provider that does not expose a
+   setting the entrant's profile claims produces a disclosed profile (not a
+   false match). This is enforced at the `agent_import_path` adapter level:
+   if the provider cannot honor `settings_digest` or returns a different
+   `reported_model`, the entrant's coverage is labeled
+   `estimated_time_limited` (via `BudgetEnforcement.ESTIMATED_TIME_LIMITED`)
+   and the discrepancy is surfaced in the `usage_request` ledger via
+   `actor_role='engineer'`, not silently approximated. Test: assert that an
+   entrant with `no_silent_model_fallback: true` and a mismatched
+   `settings_digest` produces `reported_model != requested_model` in the
+   usage ledger with `coverage_label: "estimated_time_limited"`, never a
+   silently-substituted stronger model.
+
+### Non-goals (corrected from the redundant plan)
+
+- No new `Track` enum — exists
+- No new `engineer_model` field — exists as `ModelProfile`
+- No new `coverage_label` field — reuse `BudgetEnforcement.ESTIMATED_TIME_LIMITED`
+- No new isolation boundaries — model loop is a different `agent_import_path` in the same Harbor `AgentConfig`
+- No new `actor_role` DB constraint — exists with all four roles
+- No new credential storage in task images — §14 requires environment injection at worker level; credentials never in `task.yaml` or candidate artifacts
+
+### Separate accounting for model track
+
+Per section 14, engineer model calls use an authenticated budget broker; application models use a separate identity and budget; verifier/judge calls use a third. The existing `actor_role` ledger (`engineer`, `dev_application`, `verifier_application`, `verifier_judge`) already records all model identities. Model-track entrants record their `engineer_model` identity (requested + reported) and their `credential_ref_type` on the entrant revision, never in a task image.

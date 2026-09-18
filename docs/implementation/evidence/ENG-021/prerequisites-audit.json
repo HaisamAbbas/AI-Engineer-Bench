@@ -1,0 +1,798 @@
+{
+  "accounting_coverage": {
+    "coverage_labels": "(1) full broker+adapter reconciliation, (2) broker-only, (3) adapter-only, (4) none/unknown",
+    "hard_cost_enforcement": "NOT ENFORCED - 'estimated_time_limited' only; no provider reservation integration",
+    "role_separation": "IMPLEMENTED - broker/adapter receipts deduplicated by (attempt, role, request_id, physical_retry)",
+    "status": "COMPLETE for role-separated usage and caps; hard-cost enforcement remains pending provider integration (ENG-008)"
+  },
+  "audit_type": "evidence-presence-report",
+  "blocked_prerequisites": [
+    {
+      "evidence": "docs/implementation/evidence/ENG-001/compatibility-report.md",
+      "gate": "ENG-001",
+      "reason": "Real installed-agent smoke requires provider/model authorization, credentials, existing cap",
+      "type": "BLOCKED"
+    },
+    {
+      "evidence": "examples/development-pilot-18.json (state: prepared-not-authorized)",
+      "gate": "ENG-012",
+      "reason": "Real pilot execution requires authorized provider/model/cap configuration",
+      "type": "BLOCKED"
+    },
+    {
+      "evidence": "docs/implementation/evidence/ENG-019/sandbox-review.md",
+      "gate": "ENG-019",
+      "reason": "VM-level hardened isolation deferred; application-layer egress guard implemented and tested but not adversarial-validated",
+      "type": "IN_PROGRESS"
+    },
+    {
+      "evidence": "docs/implementation/evidence/ENG-020/operations-review.md",
+      "gate": "ENG-020",
+      "reason": "Real staging/production deployment blocked on cloud authorization",
+      "type": "IN_PROGRESS"
+    },
+    {
+      "evidence": "docs/implementation/evidence/ENG-021/ (this preparation)",
+      "gate": "ENG-021",
+      "reason": "Official holdout curation requires independent admission review (pending for all 12 tasks) and cloud authorization for execution",
+      "type": "BLOCKED"
+    },
+    {
+      "evidence": "Not yet created - blocked",
+      "gate": "ENG-022",
+      "reason": "Official campaign and release requires ENG-019+020 complete, independent reviews, held-out protocol, and authorization",
+      "type": "BLOCKED"
+    }
+  ],
+  "cancellation_rules": {
+    "cancel_campaign": "Includes 'paused' state (fixed during ENG-020 review round)",
+    "kill_switch": "Stops ALL new dispatch platform-wide; teardown of every non-terminal campaign",
+    "max_replacements": "2 (enforced in repository.reconcile_expired_leases, from frozen campaign.protocol)",
+    "resume_acknowledgement": "Auto-paused campaigns require explicit acknowledge_auto_pause=true",
+    "status": "COMPLETE - cancellation rules implemented and tested against real PostgreSQL",
+    "tests_pass": "test_kill_switch_stops_all_new_dispatch_platform_wide, test_auto_pause_fires_after_three_consecutive_infrastructure_failures, test_resume_of_an_auto_paused_campaign_requires_explicit_acknowledgement"
+  },
+  "critical_disclaimer": "THIS AUDIT DOES NOT SUBSTITUE FOR INDEPENDENT HUMAN REVIEW. It reports whether evidence files exist and whether tests pass, NOT whether the benchmark is fit for release. All independent reviews remain PENDING. The release status is 'ready-for-review, NOT released'.",
+  "deployment_readiness": {
+    "explicitly_blocked": [
+      "Real staging/production deployment (no cloud budget/authorization)",
+      "Production OIDC/JWKS (test-only provider raises RuntimeError unless AIEB_ENV=test)",
+      "Real live smoke test (capped-live-smoke is a structural placeholder)",
+      "Python lint/type-checking CI gate (400+ pre-existing findings; intentionally not implemented)",
+      "Monitoring deployment (Prometheus/alertmanager rules are config-as-code only)"
+    ],
+    "implemented": [
+      "Worker draining (SIGTERM/SIGINT wired to stop_event)",
+      "Auto-pause (3 consecutive infra failures, acknowledged resume)",
+      "Global kill switch (dispatch-wide, teardown of paused campaigns)",
+      "Migration rollback drill (schema round-trip + old-code/new-schema compatibility)",
+      "Backup/restore drill (real pg_dump/pg_restore, 3 assertions)",
+      "Dockerfiles for API and worker (deploy/docker/)",
+      "Prometheus alert rules (config-as-code, not deployed)",
+      "Runbooks for provider outage, spend, worker disappearance, scorer defect, fixture exposure, incorrect score",
+      "CI workflows: eng015-verification, sandbox-integration, task-admission, api-artifacts, release-candidate, dependency-review"
+    ],
+    "python_lint_type_ci": "NOT IMPLEMENTED - disclosed gap with known 400+ pre-existing findings",
+    "status": "IN_PROGRESS - ENG-020 not COMPLETE until real staging/production deployment and live smoke test pass",
+    "tests_pass": "Worker leasing, lifecycle, auto-pause, kill-switch, migration rollback, backup/restore drill all pass per ENG-020 evidence"
+  },
+  "generated_by": "scripts/audit_prerequisites.py",
+  "independent_review_status": {
+    "ENG-011_aggregation_review": "COMPLETE - independently accepted after 5-review-round audit (per STATUS.md)",
+    "ENG-014_API_review": "COMPLETE - independently reviewed and accepted (per STATUS.md)",
+    "ENG-015_worker_leasing": "COMPLETE - independently reviewed and accepted (per STATUS.md)",
+    "ENG-016_website": "COMPLETE - two independent review passes accepted (per STATUS.md)",
+    "ENG-017_018_campaign_admin_publication": "COMPLETE - independently technically reviewed (per STATUS.md Prompt 14 update)",
+    "ENG-021_independent_approval": "REQUIRED but NOT PERFORMED - this preparation does not substitute for it",
+    "evaluator_review": "PENDING - automated evidence report prepared by scripts/evaluator_review.py (not a substitute for human review)",
+    "provenance_contamination_review": "PENDING - automated overlap check prepared by scripts/provenance_overlap_review.py",
+    "task_admission_review": "PENDING for all 12 tasks - STATUS.md states this is the precondition for any release manifest"
+  },
+  "label": "official-public-origin",
+  "no_greenwashing": "No item above is marked 'approved' or 'ready for release'. This audit exists to ensure every gap is visible before any release decision is made.",
+  "open_gaps_surfaced": [
+    "ENG-019: Per-attempt short-lived credentials not implemented (scoped_credential_id removed)",
+    "ENG-019: Cross-trial access isolation untested (requires multi-container orchestration)",
+    "ENG-020: Real staging/production deployment blocked (no cloud authorization)",
+    "ENG-020: Python lint/type-checking CI gate NOT implemented (400+ pre-existing findings)",
+    "ENG-020: Real live smoke test is a structural placeholder",
+    "ENG-020: Monitoring stack not deployed (Prometheus rules are config-as-code only)",
+    "ENG-001: Real installed-agent smoke BLOCKED",
+    "ENG-012: Real pilot execution BLOCKED",
+    "ENG-021: Independent admission review PENDING for all 12 tasks",
+    "ENG-022: Official campaign and release BLOCKED on all above + human approval"
+  ],
+  "publication_redaction": {
+    "corrections": "Append-only (status -> 'superseded'), prior publication preserved",
+    "immutable_publications": "PUBLICATION triggers freeze identity/campaign/class/timestamp once published (migration c9a1e7d4b260)",
+    "redaction": "Whitelist-based trace event filtering; public usage sourced only from immutable evaluation",
+    "snapshot_digest_integrity": "BEFORE UPDATE trigger + application-level recompute on read (returns 503 on mismatch)",
+    "status": "COMPLETE for technical implementation; two-human official approval remains BLOCKED (ENG-022)",
+    "tests_pass": "tests/test_review_closure.py, tests/test_review_followup.py per ENG-018 evidence",
+    "two_human_approval": "NOT IMPLEMENTED - remains ENG-022 operational gate",
+    "withdrawal": "Append-only (status -> 'withdrawn'), original record preserved"
+  },
+  "sandbox_coverage": {
+    "explicitly_deferred": [
+      "Official VM provider (no cloud budget/authorization - ADR-12)",
+      "Per-attempt short-lived credentials (scoped_credential_id removed - no cred-issuance system exists)",
+      "Harbor public-egress/metadata adversarial validation (application-layer proxy, not network-namespace-level)",
+      "Cross-trial access isolation (requires live multi-container orchestration not built here)"
+    ],
+    "implemented_and_tested": [
+      "Deny-by-default egress proxy with token authentication (EgressGuardProxy)",
+      "Cloud-metadata endpoint denial (169.254.169.254, fd00:ec2::254) - unconditional",
+      "Docker socket mount detection and launch refusal",
+      "Hardened isolation refusal (UnhardenedBackendError raised before any Docker/Harbor call)",
+      "SE-01 escaping symlink rejection (ENG-003 tests)"
+    ],
+    "status": "IN_PROGRESS - ENG-019 not COMPLETE until VM provider and adversarial validation are done",
+    "tests_pass": "tests/test_eng019_sandbox_threat_model.py (16/16 per evidence)"
+  },
+  "schema_version": "aieb.prerequisite-audit/v1",
+  "task_admission_evidence": [
+    {
+      "family_id": "knowledge-service-a",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\rag.document-freshness\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "rag.document-freshness"
+    },
+    {
+      "family_id": "knowledge-service-b",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\rag.metadata-filter-topk\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "rag.metadata-filter-topk"
+    },
+    {
+      "family_id": "knowledge-service-c",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\rag.citation-current-span\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "rag.citation-current-span"
+    },
+    {
+      "family_id": "knowledge-service-d",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\rag.embedding-version\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "rag.embedding-version"
+    },
+    {
+      "family_id": "extraction-service-a",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\ext.missingness\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "ext.missingness"
+    },
+    {
+      "family_id": "extraction-service-c",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\ext.batch-alignment\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "ext.batch-alignment"
+    },
+    {
+      "family_id": "extraction-service-b",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\ext.unit-normalization\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "ext.unit-normalization"
+    },
+    {
+      "family_id": "extraction-service-d",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\ext.partial-batch\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "ext.partial-batch"
+    },
+    {
+      "family_id": "assistant-service-e",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\tool.false-completion\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "tool.false-completion"
+    },
+    {
+      "family_id": "assistant-service-f",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\tool.idempotent-write\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "tool.idempotent-write"
+    },
+    {
+      "family_id": "assistant-service-g",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\tool.session-isolation\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "tool.session-isolation"
+    },
+    {
+      "family_id": "assistant-service-h",
+      "paths": {
+        "alternative_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\alternative\\backend.py"
+        },
+        "contracts": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\contracts\\application-api.md"
+        },
+        "counterexamples": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\counterexamples"
+        },
+        "dev_data": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\dev_data"
+        },
+        "dev_tests": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\dev_tests"
+        },
+        "environment": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\environment"
+        },
+        "instruction_md": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\instruction.md"
+        },
+        "provenance": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\provenance.json"
+        },
+        "reference_backend": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\reference\\backend.py"
+        },
+        "repo": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\repo"
+        },
+        "task_yaml": {
+          "exists": true,
+          "path": "suites\\dev\\tool.corrected-arguments\\task.yaml"
+        }
+      },
+      "status_note": "Evidence presence check. Independent admission review PENDING for all tasks.",
+      "task_id": "tool.corrected-arguments"
+    }
+  ],
+  "test_presence": {
+    "tests/test_accounting_and_cli.py": {
+      "exists": true,
+      "path": "tests\\test_accounting_and_cli.py"
+    },
+    "tests/test_analysis.py": {
+      "exists": true,
+      "path": "tests\\test_analysis.py"
+    },
+    "tests/test_api_auth.py": {
+      "exists": true,
+      "path": "tests\\test_api_auth.py"
+    },
+    "tests/test_api_migrations.py": {
+      "exists": true,
+      "path": "tests\\test_api_migrations.py"
+    },
+    "tests/test_api_service.py": {
+      "exists": true,
+      "path": "tests\\test_api_service.py"
+    },
+    "tests/test_attempt_lifecycle.py": {
+      "exists": true,
+      "path": "tests\\test_attempt_lifecycle.py"
+    },
+    "tests/test_candidate_artifacts.py": {
+      "exists": true,
+      "path": "tests\\test_candidate_artifacts.py"
+    },
+    "tests/test_core_contracts.py": {
+      "exists": true,
+      "path": "tests\\test_core_contracts.py"
+    },
+    "tests/test_eng013_admission.py": {
+      "exists": true,
+      "path": "tests\\test_eng013_admission.py"
+    },
+    "tests/test_eng019_sandbox_threat_model.py": {
+      "exists": true,
+      "path": "tests\\test_eng019_sandbox_threat_model.py"
+    },
+    "tests/test_eng021_bundle_exclusions.py": {
+      "exists": true,
+      "path": "tests\\test_eng021_bundle_exclusions.py"
+    },
+    "tests/test_worker_leasing.py": {
+      "exists": true,
+      "path": "tests\\test_worker_leasing.py"
+    }
+  },
+  "verdict": "NONE - this is not a self-review; it reports evidence presence only"
+}

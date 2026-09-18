@@ -12,6 +12,13 @@ node_modules/
 apps/web/dist/
 apps/web/*.tsbuildinfo
 
+# Holdout fixture output convention — curate_holdout.py refuses to write under
+# the repo root, but guard against stray runs or manual placement.
+/.tmp_test/
+/.tmp_test2/
+/.tmp_holdout_test/
+/AI-Engineer-Bench/
+
 # Supplied source attachments are preserved at the workspace root. Canonical
 # unchanged repository copies live in docs/specs/.
 /AI-Engineer-Bench-Architecture-v0.1.md

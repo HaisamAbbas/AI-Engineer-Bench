@@ -1,0 +1,86 @@
+{
+  "schema_version": "aieb.campaign-prepared/v1",
+  "id": "model-track-01",
+  "track": "models",
+  "state": "prepared-not-authorized",
+  "execution_blocker": "P0 precondition (architecture section 18: 'Implement only after agent-track P0 works') not met: ENG-001 real installed-agent smoke is blocked on provider/model authorization, credentials, and an approved spend cap.",
+  "cohort": {
+    "schema_version": "aieb.cohort/v1",
+    "id": "cohort-model-track-local-01",
+    "track": "models",
+    "suite_id": "dev",
+    "protocol_id": "protocol-dev-v1",
+    "budget_profile_id": "budget-dev-model-track-01",
+    "dependency_mode": "fixture",
+    "application_model_profile": {
+      "dependency_mode": "fixture",
+      "entrypoint": ["python", "-m", "uvicorn", "knowledge_service:app", "--host", "0.0.0.0", "--port", "8000"],
+      "contract_digest": "021b4f0e8a3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+      "model_profile_id": "claude-3-5-sonnet-20250122-application"
+    },
+    "hardware_class": "local",
+    "required_capabilities": ["python-3.12", "docker-isolation"]
+  },
+  "budget": {
+    "schema_version": "aieb.budget/v2",
+    "id": "budget-dev-model-track-01",
+    "engineer_wall_seconds": 1800,
+    "verification_wall_seconds": 600,
+    "engineer_cpu": 2,
+    "engineer_memory_mb": 512,
+    "environment_upper_bound_usd": "5.00",
+    "per_role_budget_usd": [
+      {"role": "engineer", "limit_usd": "2.00"},
+      {"role": "dev_application", "limit_usd": "0.00"},
+      {"role": "verifier_application", "limit_usd": "0.00"},
+      {"role": "verifier_judge", "limit_usd": "0.50"}
+    ],
+    "enforcement": "estimated_time_limited",
+    "enforcement_reason": "No provider reservation integration (ENG-008); time-limited estimate only, not a hard hold."
+  },
+  "protocol": {
+    "schema_version": "aieb.protocol/v1",
+    "id": "protocol-dev-v1",
+    "scoring_digest": "a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5",
+    "max_replacements": 2,
+    "required_trace_coverage": false,
+    "hard_cost_ranking": false
+  },
+  "tasks": ["rag.document-freshness"],
+  "entrants": [
+    {
+      "schema_version": "aieb.entrant/v1",
+      "id": "model-claude-sonnet-4-6",
+      "track": "models",
+      "agent_implementation": "aieb-runner.model_loop:ModelTrackReferenceLoop",
+      "agent_version": "0.1.0-fixed-reference",
+      "engineer_model": {
+        "provider_class": "anthropic",
+        "requested_model": "claude-sonnet-4-20250514",
+        "reported_model": null,
+        "settings_digest": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6"
+      },
+      "prompt_digest": "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7",
+      "tools_digest": "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8",
+      "capabilities": ["python-3.12", "docker-isolation", "shell-exec", "read-only-files", "bounded-retry"],
+      "credential_ref_type": "broker"
+    }
+  ],
+  "repetitions": 3,
+  "order_seed": 18,
+  "max_concurrent_trials": 5,
+  "optimistic_revision": 0,
+  "agent_import_path": "aieb_runner.model_loop:ModelTrackReferenceLoop",
+  "isolation_policy": {
+    "egress_allowlist": ["host.docker.internal:8000", "host.docker.internal:8001"],
+    "denied_metadata_hosts": ["169.254.169.254", "fd00:ec2::254"],
+    "deny_docker_socket": true,
+    "hardened_isolation_required": false
+  },
+  "coverage_label": "estimated_time_limited",
+  "no_silent_model_fallback": true,
+  "separate_cohort_from_agent_track": true,
+  "frozen_at": "2026-09-17T00:00:00Z",
+  "frozen_by": "verified-plan-after-codebase-audit",
+  "notes": "Prepared, not authorized. This manifest reuses existing model-track infrastructure: Track enum (AGENTS/MODELS) in models.py, ModelProfile on EntrantRevision, actor_role DB constraint (engineer/dev_application/verifier_application/verifier_judge), BudgetEnforcement.ESTIMATED_TIME_LIMITED, and ExecutionSpec.agent_import_path flowing to Harbor AgentConfig.import_path. The only genuinely new component is the model-provider reference coding loop (ENG-023), gated on P0/ENG-001. No new isolation boundaries, schema fields, or budget models were added. Citations reference real architecture sections (2, 13, 14, 18, 19), not fabricated decimal subsections."
+}

@@ -261,7 +261,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resume Campaign */
+        /**
+         * Resume Campaign
+         * @description ENG-020 (spec sections 39/48): a campaign the auto-pause mechanism paused requires
+         *     `acknowledge_auto_pause=True` to resume - a plain resume (as for a manual pause) is
+         *     refused, so the operator review the mechanism exists for cannot be skipped by habit.
+         */
         post: operations["resume_campaign_v1_campaigns__campaign_id__resume_post"];
         delete?: never;
         options?: never;
@@ -2158,6 +2163,20 @@ export interface components {
              */
             severity: "mandatory" | "diagnostic";
         };
+        /**
+         * ResumeCampaignRequest
+         * @description ENG-020: resuming a campaign the auto-pause mechanism paused (spec sections 39/48)
+         *     requires an explicit, informed acknowledgement - a same-click resume as a manual pause
+         *     would defeat the point of pausing for operator review in the first place. Ignored (and
+         *     unnecessary) when resuming a manually-paused campaign.
+         */
+        ResumeCampaignRequest: {
+            /**
+             * Acknowledge Auto Pause
+             * @default false
+             */
+            acknowledge_auto_pause: boolean;
+        };
         /** RoleBudget */
         RoleBudget: {
             /** Limit Usd */
@@ -2892,7 +2911,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ResumeCampaignRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

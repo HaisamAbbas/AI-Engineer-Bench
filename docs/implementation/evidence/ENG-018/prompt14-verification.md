@@ -2,6 +2,10 @@
 
 Date: 2026-09-17. Branch: `prompt-14-eng017-eng018`.
 
+Final status (2026-09-18): COMPLETE after independent technical acceptance.
+See `review-closure.md`. Historical `IN_PROGRESS` and open-list statements below
+are retained as dated execution history, not the current ticket status.
+
 **Latest working-tree review:** [Nine-point closure and real-browser acceptance](review-closure.md)
 records the subsequent fixes, 110-test backend batch, 88-test frontend suite,
 and authenticated browser/API flow. Open-item lists below describe their dated

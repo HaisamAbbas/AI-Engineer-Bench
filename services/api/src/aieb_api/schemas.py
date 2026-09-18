@@ -850,3 +850,27 @@ class PublicationExport(BaseModel):
 
 PublicRunEvidence.model_rebuild()
 PrivateRunEvidence.model_rebuild()
+
+
+class ResumeCampaignRequest(BaseModel):
+    """ENG-020: resuming a campaign the auto-pause mechanism paused (spec sections 39/48)
+    requires an explicit, informed acknowledgement - a same-click resume as a manual pause
+    would defeat the point of pausing for operator review in the first place. Ignored (and
+    unnecessary) when resuming a manually-paused campaign."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    acknowledge_auto_pause: bool = False
+
+
+class KillSwitchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+
+
+class KillSwitchStatus(BaseModel):
+    active: bool
+    reason: str | None = None
+    activated_at: str | None = None
+    campaigns_teardown_requested: int | None = None

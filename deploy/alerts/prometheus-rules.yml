@@ -1,0 +1,71 @@
+# ENG-020: alert rule definitions matching spec section 39's observability targets.
+#
+# This is CONFIGURATION AS CODE ONLY - it is not deployed to any Prometheus/Alertmanager
+# instance, because no monitoring infrastructure exists in this environment (no cloud
+# budget/authorization; see ADR-12, DECISIONS.md "Official VM provider | Deferred"). It assumes
+# `aieb_api`/`aieb_worker` expose the named metrics via a Prometheus exporter - that exporter
+# does not exist yet either; this file documents the alerting INTENT a real deployment must
+# wire up, not a working monitoring stack.
+groups:
+  - name: aieb-operational-targets
+    rules:
+      - alert: WorkerHeartbeatLossExceedsTarget
+        # spec section 39: "heartbeat loss detection <90s".
+        expr: aieb_worker_heartbeat_age_seconds > 90
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "A worker's heartbeat is older than the 90s detection target"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#worker-disappears"
+
+      - alert: CampaignConsecutiveInfrastructureFailures
+        # Mirrors the auto-pause threshold in services/api/src/aieb_api/worker/repository.py
+        # (AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD) - by the time this fires, the campaign
+        # has already been auto-paused; the alert exists so a human notices and reviews it.
+        expr: aieb_campaign_consecutive_infrastructure_failures >= 3
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A campaign auto-paused after repeated infrastructure failures"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#provider-outage"
+
+      - alert: UnresolvedBudgetReservationAge
+        # spec section 39: "Alert on unresolved reservation age, budget reconciliation drift".
+        expr: aieb_budget_reservation_age_seconds{status="active"} > 86400
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A budget reservation has been active for over 24 hours without settling"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#spend-exceeds-reservation"
+
+      - alert: OrphanWorkerArtifactsAccumulating
+        # spec section 39: "Alert on ... orphan resources".
+        expr: increase(aieb_reconciler_worker_artifacts_purged_total[1h]) > 100
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The reconciler is purging an unusually large number of orphaned staging artifacts"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#worker-disappears"
+
+      - alert: KillSwitchActive
+        expr: aieb_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: "The global spend/dispatch kill switch is active - all new dispatch is stopped"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#spend-exceeds-reservation"
+
+      - alert: SetupFailureRateElevated
+        # spec section 39: "instrument ... setup failure ... invalidity by entrant".
+        expr: rate(aieb_attempt_infrastructure_invalid_total[15m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated infrastructure-invalid rate across recent attempts"
+          runbook: "docs/implementation/evidence/ENG-020/runbooks.md#provider-outage"

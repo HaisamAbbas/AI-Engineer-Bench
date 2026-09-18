@@ -1,0 +1,28 @@
+name: Sandbox integration
+on:
+  pull_request:
+    paths:
+      - "packages/aieb-runner/src/aieb_runner/backends/**"
+      - "tests/test_eng019_sandbox_threat_model.py"
+      - ".github/workflows/sandbox-integration.yml"
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  isolation-and-egress-contract:
+    # ENG-019 (spec section 42: "Sandbox integration | Runner/isolation changes | Teardown,
+    # deadline freeze, egress/host denial, worker crash | No"). Runs the EgressGuardProxy and
+    # ExecutionBackend refusal contract tests directly - no Docker/Harbor required, and
+    # nothing here caches a hidden fixture or a candidate workspace across runs (spec section
+    # 42's "never cache hidden fixtures or candidate workspaces" - this job caches nothing at
+    # all, deliberately, rather than caching selectively and risking a mistake).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: uv sync --all-packages --locked
+      - name: Run ENG-019 sandbox/threat-model contract tests
+        run: uv run python -m unittest tests.test_eng019_sandbox_threat_model -v
+      - name: Run the ENG-003 SE-01 escaping-symlink regression (cited, not duplicated)
+        run: uv run python -m unittest tests.test_candidate_artifacts.CandidateArtifactsTest.test_rejects_symlink_escape -v

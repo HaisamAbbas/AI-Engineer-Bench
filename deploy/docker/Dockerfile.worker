@@ -1,0 +1,23 @@
+# ENG-020 deployment configuration (spec section 40). Written and buildable, NOT deployed.
+# Worker identities must never be able to administer the API database (spec section 40:
+# "Worker identities cannot administer the API database; use narrow service
+# credentials/repository permissions") - enforced by which AIEB_DATABASE_URL role is injected
+# at deployment time, not by anything in this image.
+FROM python:3.12.10-slim AS base
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.27 /uv /uvx /usr/local/bin/
+
+COPY pyproject.toml uv.lock ./
+COPY packages ./packages
+COPY services/api ./services/api
+
+RUN uv sync --all-packages --locked --no-dev
+
+RUN useradd --create-home --uid 10002 aieb-worker
+USER aieb-worker
+
+# ENG-020: SIGTERM/SIGINT now drain cleanly (services/api/src/aieb_api/worker/loop.py -
+# install_drain_handlers) - an orchestrator's graceful-shutdown signal lets the in-flight work
+# item finish and finalize before the process exits, instead of orphaning its lease.
+CMD ["uv", "run", "--directory", "services/api", "python", "-m", "aieb_api.worker.loop"]

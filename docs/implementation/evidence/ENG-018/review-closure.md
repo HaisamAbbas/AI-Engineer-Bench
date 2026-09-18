@@ -104,9 +104,20 @@ fixture certificate's public-key pin, not arbitrary certificates.
 Browser screenshot: `.cache/admin-browser/running.png`. API/Vite logs are in the
 same directory. Evidence contains no bearer tokens.
 
-## Remaining external acceptance
+## Independent technical acceptance
 
-Current-tree remote CI, real deployed OIDC/JWKS login, independent review-console
-acceptance, ENG-011 human-review gates, and opt-in Harbor/Docker compatibility are
-not established by these local checks. No deployment or public release occurred.
-ENG-017/018 are not promoted to COMPLETE solely by this review.
+On 2026-09-18, a separate technical reviewer inspected the implementation and
+evidence and independently reran the committed PostgreSQL review/API batch: 92
+tests passed, including the concurrency, fail-closed trace, non-ranked publication,
+and immutable correction/withdrawal regressions. Migration head was independently
+confirmed as `c9a1e7d4b260`. ENG-017's specified campaign-state acceptance and
+ENG-018's PUB-01/PUB-02 plus no-hidden-export-data acceptance are satisfied;
+ENG-017 and ENG-018 are COMPLETE.
+
+This is technical acceptance, not a claim that the reviewer is a separate human
+or organizational authority. Real deployed OIDC/JWKS validation, two-independent-
+human official publication approval, hardened isolation/Harbor validation,
+deployment CI, and an actual public release remain later-ticket or operational
+gates. No deployment or public release occurred. Protocols requiring trace
+coverage remain deliberately fail-closed until a trusted completeness contract
+exists.

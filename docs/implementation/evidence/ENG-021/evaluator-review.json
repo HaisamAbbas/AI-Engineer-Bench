@@ -1,0 +1,383 @@
+{
+  "all_pass": true,
+  "failed": 0,
+  "passed": 12,
+  "results": [
+    {
+      "closure_digest": "bf9b0e3391f4b75b8b825f8882cef8ac14a82e87657bf12e32d513a3c0002aa1",
+      "evaluator_module": "tests.maintainer.rag01.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\rag01\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module knowledge_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request, ThreadingHTTPServer)",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (subprocess, Popen, CandidateService)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: bf9b0e3391f4b75b8b825f8882cef8ac14a82e87657bf12e32d513a3c0002aa1",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "rag.document-freshness",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "ca6f2e5cac63aa4c84b7d26fd673c3dffd22807c052b3ce611c03873c16d4c5d",
+      "evaluator_module": "tests.maintainer.rag02.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\rag02\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module search_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: ca6f2e5cac63aa4c84b7d26fd673c3dffd22807c052b3ce611c03873c16d4c5d",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "rag.metadata-filter-topk",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "93ea73d299d121a727540f5462212fed8aedb2e7b3a4a1aa8028cec5777d0098",
+      "evaluator_module": "tests.maintainer.rag03.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\rag03\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module citation_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 93ea73d299d121a727540f5462212fed8aedb2e7b3a4a1aa8028cec5777d0098",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "rag.citation-current-span",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "131290d07b2aa5fdc1ce80a7818fea1bd85520fac716401fb95e35e0240727ad",
+      "evaluator_module": "tests.maintainer.rag04.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\rag04\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module embedding_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 131290d07b2aa5fdc1ce80a7818fea1bd85520fac716401fb95e35e0240727ad",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "rag.embedding-version",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "2b24bb6b7549bc1d356630073443b1d69de88c39ff11de1b2a00018017124b99",
+      "evaluator_module": "tests.maintainer.ext01.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\ext01\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module missingness_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 2b24bb6b7549bc1d356630073443b1d69de88c39ff11de1b2a00018017124b99",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "ext.missingness",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "f3e4f23ba327020f8e188a7a0d623a0b7cefa8a1dc220f1ec5c80fc4222e672d",
+      "evaluator_module": "tests.maintainer.ext02.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\ext02\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module extraction_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: f3e4f23ba327020f8e188a7a0d623a0b7cefa8a1dc220f1ec5c80fc4222e672d",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "ext.batch-alignment",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "c26e03d632144d87f1b6c0197893859fd65e0602e3bf5ca4b840f6bc07d57f24",
+      "evaluator_module": "tests.maintainer.ext03.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\ext03\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module unit_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: c26e03d632144d87f1b6c0197893859fd65e0602e3bf5ca4b840f6bc07d57f24",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "ext.unit-normalization",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "030752129861e176af82de77ae106555d12591ce450ec20a58a2dad4620d37d6",
+      "evaluator_module": "tests.maintainer.ext04.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\ext04\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module batch_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 030752129861e176af82de77ae106555d12591ce450ec20a58a2dad4620d37d6",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "ext.partial-batch",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "3196b7302843a21c21ab6d6a06ae23bc8cc25a8f6e11ae670e2b6f6fc83ae53b",
+      "evaluator_module": "tests.maintainer.tool01.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\tool01\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module workflow_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (ThreadingHTTPServer)",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 3196b7302843a21c21ab6d6a06ae23bc8cc25a8f6e11ae670e2b6f6fc83ae53b",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "tool.false-completion",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "907863f440d756173cf9c72d49a667fa1ec9c2bdd2a9e1170a0605be8ea08f43",
+      "evaluator_module": "tests.maintainer.tool02.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\tool02\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module write_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (ThreadingHTTPServer)",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 907863f440d756173cf9c72d49a667fa1ec9c2bdd2a9e1170a0605be8ea08f43",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "tool.idempotent-write",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "72eefde53bc8ad5f0f28fdf4974206af151b1b38d4b46d10d8a0d907dec316b5",
+      "evaluator_module": "tests.maintainer.tool03.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\tool03\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module session_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 72eefde53bc8ad5f0f28fdf4974206af151b1b38d4b46d10d8a0d907dec316b5",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "tool.session-isolation",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    },
+    {
+      "closure_digest": "9284331756b9d417180a85c7e09db47d89354450678e2dc03e3a7ce87a9d9436",
+      "evaluator_module": "tests.maintainer.tool04.evaluator",
+      "evaluator_path": "D:\\AI-Engineer-Bench\\tests\\maintainer\\tool04\\evaluator.py",
+      "findings": [
+        {
+          "check": "leakage",
+          "detail": "evaluator does not import candidate module correction_service",
+          "status": "pass"
+        },
+        {
+          "check": "shortcut-resistance",
+          "detail": "uses HTTP-based evaluation (urllib.request (in common.py))",
+          "status": "pass"
+        },
+        {
+          "check": "liveness",
+          "detail": "candidate runs as separate process (CandidateProcess)",
+          "status": "pass"
+        },
+        {
+          "check": "closure-hashing",
+          "detail": "declared digest matches actual: 9284331756b9d417180a85c7e09db47d89354450678e2dc03e3a7ce87a9d9436",
+          "status": "pass"
+        }
+      ],
+      "review_type": "automated-evidence-review",
+      "status": "PASS",
+      "task_id": "tool.corrected-arguments",
+      "verdict_note": "This is an automated evidence report, not an independent human review. Independent admission review remains PENDING."
+    }
+  ],
+  "schema_version": "aieb.evaluator-review/v1",
+  "total_tasks": 12,
+  "verdict_note": "Automated evidence report. Independent human review remains PENDING for all tasks.",
+  "warnings": 0
+}

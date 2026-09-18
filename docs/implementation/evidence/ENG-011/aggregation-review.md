@@ -1,7 +1,7 @@
 # ENG-011 aggregation review corrections
 
 Date: 2026-09-17
-Status: implemented and locally verified; acceptance review pending. ENG-011 remains IN_PROGRESS; ENG-018 remains BLOCKED. ENG-015/016 remain COMPLETE.
+Status: COMPLETE after independent technical review on 2026-09-18. The review accepted the PostgreSQL-backed frozen-manifest membership, replacement retention, validity, deadline, and unknown-cost regressions. This acceptance does not authorize an official campaign or publication.
 
 ## Corrections (round 2 — frozen-manifest membership)
 
