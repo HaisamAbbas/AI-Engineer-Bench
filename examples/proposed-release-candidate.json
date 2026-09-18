@@ -1,0 +1,149 @@
+{
+  "schema_version": "aieb.release-candidate/v1",
+  "label": "official-public-origin",
+  "contamination_clause": "This release candidate contains the twelve public development tasks with private examples generated for testing. Private examples on public tasks do NOT constitute a contamination-free hidden benchmark per spec section 22. A genuine held-out family requires distinct application packages that do not exist yet. Labeled official-public-origin, not held-out.",
+  "release_status": "PENDING-INDEPENDENT-REVIEW - NOT OFFICIALLY RELEASED",
+  "created_by": "scripts/curate_holdout.py + ENG-021 preparation scripts",
+  "decision_basis": "DECISIONS.md ENG013-004: Do not create an admission ledger or release manifest ahead of independent review",
+  "per_task_status": {
+    "rag.document-freshness": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "rag.metadata-filter-topk": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "rag.citation-current-span": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "rag.embedding-version": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "ext.missingness": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "ext.batch-alignment": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "ext.unit-normalization": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "ext.partial-batch": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "tool.false-completion": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "tool.idempotent-write": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "tool.session-isolation": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    },
+    "tool.corrected-arguments": {
+      "local_status": "validated",
+      "admission_review": "pending-independent-review",
+      "review_status": "pending-independent-review",
+      "release_status": "pending-independent-review",
+      "private_examples_generated": true,
+      "private_examples_label": "official-public-origin",
+      "private_examples_path": "outside-repo-see-curated-holdout",
+      "contamination_note": "private examples on public task do not create held-out family"
+    }
+  },
+  "three_label_discipline": {
+    "labels_used": ["development", "official-public-origin", "official-held-out"],
+    "existing_12_tasks_label": "official-public-origin",
+    "held_out_family_label": "official-held-out",
+    "held_out_family_status": "out-of-scope - requires distinct application packages not yet created",
+    "note": "No task uses the 'development' label for official purposes; that label is for local scratch only"
+  },
+  "blocks": [
+    {"gate": "ENG-001", "reason": "Real installed agent smoke blocked on provider/model authorization", "status": "BLOCKED"},
+    {"gate": "ENG-012", "reason": "Real pilot execution blocked on provider/model authorization", "status": "BLOCKED"},
+    {"gate": "ENG-019", "reason": "Hardened isolation (VM provider) deferred; Harbor Docker is not VM-equivalent", "status": "BLOCKED"},
+    {"gate": "ENG-020", "reason": "Staging/production deployment blocked on cloud authorization", "status": "BLOCKED"},
+    {"gate": "independent-review", "reason": "All 12 tasks pending independent admission review; ENG-021 not COMPLETE", "status": "BLOCKED"},
+    {"gate": "python-lint-type-ci", "reason": "Python lint/type-checking CI gate not implemented (400+ pre-existing findings)", "status": "BLOCKED"}
+  ],
+  "final_statuses": {
+    "ENG-021": "IN_PROGRESS (independent admission review pending)",
+    "ENG-022": "BLOCKED (requires ENG-019+020 complete + independent review + held-out protocol + authorization)"
+  }
+}

@@ -19,6 +19,50 @@
   remain outside this change.
 
 
+## ENG021-001 — Three-label scoping and assumption-based sample sizing
+
+- Date: 2026-09-18
+- Status: accepted
+- Context: ENG-021 prepares the official release candidate (holdout curation +
+  protocol review + campaign proposal). The repo has 12 public development
+  tasks with no separate held-out family. A real pilot (ENG-012) is BLOCKED on
+  provider/model authorization, so no pilot-derived variance exists.
+- Decision: (1) Label all 12 public tasks and their private examples as
+  `official-public-origin` (NOT `official-held-out`), per spec section 22 -
+  private examples on public tasks do not constitute a contamination-free
+  hidden benchmark. A genuine held-out family requires distinct application
+  packages not yet created (out of scope). (2) Use an assumption-based
+  sensitivity table (Wilson intervals + MDD across assumed pass rates) for
+  sample sizing rather than deterministic fixture results, which have ~zero
+  variance and would constitute fabrication (ENG-011's audit pattern).
+  (3) Do NOT create `manifests/releases/v0.1.0.json` ahead of independent
+  review (ENG013-004); use `examples/proposed-release-candidate.json` instead.
+  (4) Freeze 5 repetitions knowing it is NOT statistically powered (MDD ≈ 0.62
+  vs MME 0.10) as a starting point to be revised after ENG-012 authorization.
+- Consequence: The campaign proposal and release candidate carry explicit
+  `pending-independent-review` status and disclose all BLOCKED gates (ENG-001,
+  ENG-012, ENG-019, ENG-020, independent-review, python-lint-type-ci).
+  Final status: ENG-021 → IN_PROGRESS, ENG-022 → BLOCKED. P0–P3 gates untouched.
+
+
+## ENG021-002 — Provenance redaction: fixture content not carried in provenance
+
+- Date: 2026-09-18
+- Status: accepted
+- Context: `curate_holdout.py` generates provenance.json files alongside
+  fixtures. Carrying the full cases array (including expected outputs) in
+  provenance.json creates a leakage vector - if provenance.json is accidentally
+  committed or leaked, the answer key is exposed in plaintext.
+- Decision: Provenance files reference the fixture by SHA-256 digest only.
+  They carry `case_ids`, `case_count`, `fixture_digest`, and
+  `requirement_coverage`, but NOT the `cases` array with expected outputs.
+  The actual case data lives exclusively in `fixture.json`.
+- Consequence: A leaked provenance file reveals coverage and case IDs but
+  not expected outputs. The `fixture.json` file is the single source of truth
+  for case content and is excluded from the public bundle by
+  `build_release_bundle.py`'s protected-path guard.
+
+
 This log records implementation choices made while executing the source specifications. It does not amend or replace the unchanged specifications in `docs/specs/`. Changes to scoring, isolation, artifact submission, or reproducibility require a dedicated ADR before implementation.
 
 ## BOOT-001 — Use the workspace root as the repository root

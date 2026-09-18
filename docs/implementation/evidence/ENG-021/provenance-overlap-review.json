@@ -1,0 +1,370 @@
+{
+  "failed": 0,
+  "passed": 12,
+  "results": [
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AI Engineer Bench fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 11 unique tokens from 1 files; token-set hash: 859abf1e4d9c9abc",
+          "status": "PASS",
+          "token_count": 11,
+          "token_hash": "859abf1e4d9c9abc"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "rag.document-freshness",
+      "task_path": "suites\\dev\\rag.document-freshness",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 5 unique tokens from 1 files; token-set hash: aae5e8990dc6315d",
+          "status": "PASS",
+          "token_count": 5,
+          "token_hash": "aae5e8990dc6315d"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "rag.metadata-filter-topk",
+      "task_path": "suites\\dev\\rag.metadata-filter-topk",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 5 unique tokens from 1 files; token-set hash: 8fe1e7bff985f838",
+          "status": "PASS",
+          "token_count": 5,
+          "token_hash": "8fe1e7bff985f838"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "rag.citation-current-span",
+      "task_path": "suites\\dev\\rag.citation-current-span",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 6 unique tokens from 1 files; token-set hash: c7f59b4ab30af259",
+          "status": "PASS",
+          "token_count": 6,
+          "token_hash": "c7f59b4ab30af259"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "rag.embedding-version",
+      "task_path": "suites\\dev\\rag.embedding-version",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 6 unique tokens from 1 files; token-set hash: 67aa0725b0b5f39d",
+          "status": "PASS",
+          "token_count": 6,
+          "token_hash": "67aa0725b0b5f39d"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "ext.missingness",
+      "task_path": "suites\\dev\\ext.missingness",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 7 unique tokens from 1 files; token-set hash: e7008de2502303b9",
+          "status": "PASS",
+          "token_count": 7,
+          "token_hash": "e7008de2502303b9"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "ext.batch-alignment",
+      "task_path": "suites\\dev\\ext.batch-alignment",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 8 unique tokens from 1 files; token-set hash: 531c224912352093",
+          "status": "PASS",
+          "token_count": 8,
+          "token_hash": "531c224912352093"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "ext.unit-normalization",
+      "task_path": "suites\\dev\\ext.unit-normalization",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 5 unique tokens from 1 files; token-set hash: 4d72a2266930bce3",
+          "status": "PASS",
+          "token_count": 5,
+          "token_hash": "4d72a2266930bce3"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "ext.partial-batch",
+      "task_path": "suites\\dev\\ext.partial-batch",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 7 unique tokens from 1 files; token-set hash: aa0be50553891640",
+          "status": "PASS",
+          "token_count": 7,
+          "token_hash": "aa0be50553891640"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "tool.false-completion",
+      "task_path": "suites\\dev\\tool.false-completion",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 3 unique tokens from 1 files; token-set hash: 1f70b4a9feaad94c",
+          "status": "PASS",
+          "token_count": 3,
+          "token_hash": "1f70b4a9feaad94c"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "tool.idempotent-write",
+      "task_path": "suites\\dev\\tool.idempotent-write",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 9 unique tokens from 1 files; token-set hash: 2d50a84d793c8662",
+          "status": "PASS",
+          "token_count": 9,
+          "token_hash": "2d50a84d793c8662"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "tool.session-isolation",
+      "task_path": "suites\\dev\\tool.session-isolation",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    },
+    {
+      "findings": [
+        {
+          "check": "provenance",
+          "detail": "source=synthetic AIEB fixture, license=Apache-2.0",
+          "status": "PASS"
+        },
+        {
+          "check": "dev-data-tokens",
+          "detail": "extracted 10 unique tokens from 1 files; token-set hash: 55c3e581af4c63dd",
+          "status": "PASS",
+          "token_count": 10,
+          "token_hash": "55c3e581af4c63dd"
+        },
+        {
+          "check": "holdout-overlap",
+          "detail": "no --holdout-dir provided; cannot check overlap",
+          "status": "SKIP"
+        },
+        {
+          "check": "label-compliance",
+          "detail": "task correctly labeled as development (suites/dev/) with official-public-origin holdout fixtures at most",
+          "status": "PASS"
+        }
+      ],
+      "status": "PASS",
+      "task_id": "tool.corrected-arguments",
+      "task_path": "suites\\dev\\tool.corrected-arguments",
+      "verdict_note": "This is an evidence review, not a contamination-freedom verdict. Overlap check was skipped (no --holdout-dir). Per spec section 22, private examples on public tasks do not constitute an uncontaminated hidden benchmark."
+    }
+  ],
+  "schema_version": "aieb.provenance-review/v1",
+  "total_tasks": 12,
+  "verdict_note": "Automated evidence report. Per spec section 22 and the prompt, private examples on public tasks are NOT labeled contamination-free regardless of overlap findings.",
+  "warnings": 0
+}

@@ -1,0 +1,184 @@
+{
+  "clustering": {
+    "actual_project_count": 3,
+    "arch_section_28_acknowledged_projects": 6,
+    "base_application_types": [
+      "assistant-service",
+      "extraction-service",
+      "knowledge-service"
+    ],
+    "base_type_count": 3,
+    "caveat": "Spec section 28 acknowledges six projects for cluster-interval validity. This repository's dev catalog maps 3 base application types across 12 family IDs (4 per type). With 3 < 6 base types, cluster intervals are exploratory, not population-wide. This is stated explicitly per the review guidance: do not validate against a number the repo doesn't have.",
+    "diversity_statement": "The twelve family IDs ARE distinct (rag.metadata-filter-topk != rag.citation-current-span, etc.), each encoding a genuinely different bug/domain per ENG-013's admission evidence. However, several backends are 'very thin (2-4 lines of logic) inside a shared, intentionally generic HTTP-server harness' (ENG-013 STATUS). The distinction is real but shallow - documented as-is rather than papered over.",
+    "families_per_base_type": {
+      "assistant-service": 4,
+      "extraction-service": 4,
+      "knowledge-service": 4
+    },
+    "family_to_task_count": {
+      "assistant-service-e": 1,
+      "assistant-service-f": 1,
+      "assistant-service-g": 1,
+      "assistant-service-h": 1,
+      "extraction-service-a": 1,
+      "extraction-service-b": 1,
+      "extraction-service-c": 1,
+      "extraction-service-d": 1,
+      "knowledge-service-a": 1,
+      "knowledge-service-b": 1,
+      "knowledge-service-c": 1,
+      "knowledge-service-d": 1
+    }
+  },
+  "family_groups": {
+    "assistant-service-e": [
+      "tool.false-completion"
+    ],
+    "assistant-service-f": [
+      "tool.idempotent-write"
+    ],
+    "assistant-service-g": [
+      "tool.session-isolation"
+    ],
+    "assistant-service-h": [
+      "tool.corrected-arguments"
+    ],
+    "extraction-service-a": [
+      "ext.missingness"
+    ],
+    "extraction-service-b": [
+      "ext.unit-normalization"
+    ],
+    "extraction-service-c": [
+      "ext.batch-alignment"
+    ],
+    "extraction-service-d": [
+      "ext.partial-batch"
+    ],
+    "knowledge-service-a": [
+      "rag.document-freshness"
+    ],
+    "knowledge-service-b": [
+      "rag.metadata-filter-topk"
+    ],
+    "knowledge-service-c": [
+      "rag.citation-current-span"
+    ],
+    "knowledge-service-d": [
+      "rag.embedding-version"
+    ]
+  },
+  "label": "official-public-origin",
+  "review_note": "This is a structural analysis of the catalog, not an independent diversity review. Independent admission review remains PENDING.",
+  "schema_version": "aieb.family-split/v1",
+  "task_details": [
+    {
+      "activity": "repair",
+      "category": "rag",
+      "family_id": "knowledge-service-a",
+      "id": "rag.document-freshness",
+      "path": "rag.document-freshness",
+      "requirements_count": 10,
+      "review_status": "maintainer-only:rag01-heldout-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "rag",
+      "family_id": "knowledge-service-b",
+      "id": "rag.metadata-filter-topk",
+      "path": "rag.metadata-filter-topk",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:rag02-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "rag",
+      "family_id": "knowledge-service-c",
+      "id": "rag.citation-current-span",
+      "path": "rag.citation-current-span",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:rag03-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "rag",
+      "family_id": "knowledge-service-d",
+      "id": "rag.embedding-version",
+      "path": "rag.embedding-version",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:rag04-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "extraction",
+      "family_id": "extraction-service-a",
+      "id": "ext.missingness",
+      "path": "ext.missingness",
+      "requirements_count": 3,
+      "review_status": "maintainer-only:ext01-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "extraction",
+      "family_id": "extraction-service-c",
+      "id": "ext.batch-alignment",
+      "path": "ext.batch-alignment",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:ext02-heldout-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "extraction",
+      "family_id": "extraction-service-b",
+      "id": "ext.unit-normalization",
+      "path": "ext.unit-normalization",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:ext03-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "extraction",
+      "family_id": "extraction-service-d",
+      "id": "ext.partial-batch",
+      "path": "ext.partial-batch",
+      "requirements_count": 3,
+      "review_status": "maintainer-only:ext04-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "tool_app",
+      "family_id": "assistant-service-e",
+      "id": "tool.false-completion",
+      "path": "tool.false-completion",
+      "requirements_count": 4,
+      "review_status": "maintainer-only:tool01-heldout-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "tool_app",
+      "family_id": "assistant-service-f",
+      "id": "tool.idempotent-write",
+      "path": "tool.idempotent-write",
+      "requirements_count": 3,
+      "review_status": "maintainer-only:tool02-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "tool_app",
+      "family_id": "assistant-service-g",
+      "id": "tool.session-isolation",
+      "path": "tool.session-isolation",
+      "requirements_count": 3,
+      "review_status": "maintainer-only:tool03-v1"
+    },
+    {
+      "activity": "repair",
+      "category": "tool_app",
+      "family_id": "assistant-service-h",
+      "id": "tool.corrected-arguments",
+      "path": "tool.corrected-arguments",
+      "requirements_count": 3,
+      "review_status": "maintainer-only:tool04-v1"
+    }
+  ]
+}
