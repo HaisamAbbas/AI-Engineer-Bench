@@ -52,22 +52,36 @@ class _RunningTrial:
     egress_guard: EgressGuardProxy | None
 
 
+_COMPOSE_FILE_GLOBS = (
+    "docker-compose*.y*ml",  # legacy convention (every existing fixture in this repository)
+    "compose*.y*ml",  # Docker's current canonical convention (compose.yaml/compose.yml)
+)
+
+
 def _find_docker_socket_mount(task_dir: Path) -> Path | None:
     """Real check, not tautological: Harbor's Docker environment builds the container from the
-    TASK's own environment definition (`task_dir/environment/docker-compose.yaml` in every
-    fixture this repository has), which is where a task could actually introduce a Docker
+    TASK's own environment definition, which is where a task could actually introduce a Docker
     socket mount - the `EnvironmentConfig` this adapter constructs itself never sets `mounts`
     or `extra_docker_compose`, so checking that object (as an earlier version of this function
     did) could never find anything regardless of what any real task defines. Scans every
-    docker-compose*.y*ml this task directory contains for a literal docker.sock reference.
+    docker-compose*.y*ml AND compose*.y*ml (Docker's current canonical filename, with no
+    `docker-` prefix) this task directory contains.
+
+    This is a literal-substring heuristic, not a YAML-aware mount parser: a commented-out mount
+    line or an unrelated comment mentioning `docker.sock` also flags a match. That fails safe
+    (a false positive blocks a launch that was actually fine; there is no false-negative
+    equivalent for a real mount written in the obvious way), so it is left as-is rather than
+    built out into a full compose parser for a narrow, defense-in-depth check.
+
     Returns the offending file, or None if none mounts it."""
-    for compose_file in task_dir.rglob("docker-compose*.y*ml"):
-        try:
-            contents = compose_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if "docker.sock" in contents:
-            return compose_file
+    for pattern in _COMPOSE_FILE_GLOBS:
+        for compose_file in task_dir.rglob(pattern):
+            try:
+                contents = compose_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if "docker.sock" in contents:
+                return compose_file
     return None
 
 

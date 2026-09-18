@@ -846,10 +846,13 @@ def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
     naturally; teardown_orphans() cleans up anything left behind by a killed worker.
 
     Includes 'paused' (fixed 2026-09-18): a paused campaign can still hold outstanding
-    leased work, and both `routes/campaigns.py::cancel_campaign_route` and
-    `activate_kill_switch`'s "every non-terminal campaign" teardown request need it
-    cancellable too - this helper previously silently no-opped (rowcount 0) for a paused
-    campaign, the exact gap a kill switch activated during a pause would have missed."""
+    leased work, and `activate_kill_switch`'s "every non-terminal campaign" teardown request
+    needs it cancellable too - THIS HELPER previously silently no-opped (rowcount 0) for a
+    paused campaign, the exact gap a kill switch activated during a pause would have missed.
+    `routes/campaigns.py::cancel_campaign_route` was never affected: it issues its own inline
+    UPDATE (not a call to this function) whose WHERE clause already included 'paused' - ENG-017's
+    accepted cancel-from-paused behavior was correct and unbroken throughout. This was a bug in
+    this standalone helper's narrower WHERE clause, not a regression in the HTTP route."""
     result = session.execute(
         update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused"))).values(state="cancelling")
     )

@@ -197,6 +197,21 @@ class DockerSocketMountDetectionTest(unittest.TestCase):
             self.assertIsNotNone(offender)
             self.assertEqual(offender.name, "docker-compose.yaml")
 
+    def test_docker_s_current_canonical_compose_filename_is_also_scanned(self) -> None:
+        """Docker's current canonical filename has no `docker-` prefix (`compose.yaml`) - a
+        task using it must not be missed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir()
+            (environment_dir / "compose.yaml").write_text(
+                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+                encoding="utf-8",
+            )
+            offender = _find_docker_socket_mount(task_dir)
+            self.assertIsNotNone(offender)
+            self.assertEqual(offender.name, "compose.yaml")
+
     async def _launch_with_task_dir(self, task_dir: Path) -> None:
         backend = HarborBackend()
         spec = ExecutionSpec(
