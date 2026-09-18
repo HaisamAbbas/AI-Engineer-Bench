@@ -553,3 +553,45 @@ This log records implementation choices made while executing the source specific
 - Status: accepted (implementation; acceptance gates remain open)
 - Decision: a gap review of the Prompt 14 branch found three staging-workflow gaps: invalidity review was read-only, reviewers could not retrieve prepared materials (no preparation GET), and draft editing could not load the saved draft. All three are closed on `prompt-14-gap-closure` (stacked PR #3 on top of PR #2), deliberately without changing approval semantics: (1) `GET /v1/publications/preparations/{preparation_id}` serves the exact prepared snapshot, evidence manifest, correction reason, and identity-aware `can_approve`/`approval_blocked_reason`, recomputing both digests before serving (503-class conflict on integrity failure) - the review POST remains the only decision path and its duplicate/self-approval rules are untouched; (2) campaign state responses include the saved, manifest-validated `draft` for draft campaigns only, so editors prefill instead of requiring an out-of-band manifest copy, while If-Match revision-controlled saves stay unchanged; (3) `POST .../invalid-attempts/{attempt_id}/reviews` records append-only, idempotency-keyed, rationale-required decisions (reviewer/administrator; 403 for operators; 409 on conflicting second decision per idempotency key) that never mutate recorded outcomes. Regenerated checked-in OpenAPI + typed clients (`openapi-typescript@7.13.0`); the previously stale `api-client.d.ts` staleness is resolved as a side effect.
 - Consequence: targeted PostgreSQL regressions pass (preparation-detail read with auth/eligibility/digest assertions; saved-draft retrieval; `tests/test_invalidity_review.py` end-to-end), 24 targeted frontend tests pass, production build and both artifact `--check`s pass, and the accessibility sweep was given an explicit 30s test budget (no rules relaxed). Status stays IN_PROGRESS: the interrupted full-suite run, ENG-011 round-2 human acceptance, and independent review remain open gates; no public release authorized. Recorded in `evidence/ENG-017/campaign-admin.md` and `evidence/ENG-018/prompt14-verification.md`.
+
+## ENG017-003 / ENG018-003 - Nine-point Prompt 14 review closure verified; ledgers reconciled to match it
+
+- Date: 2026-09-18
+- Status: accepted (implementation and documentation; acceptance gates remain open)
+- Decision: an independent review of `prompt-14-gap-closure` found a nine-point closure covering
+  mutation replay/identity (all 12 persisting API operations use principal-scoped replay records
+  sharing a transaction with the business write), publication eligibility (ranked
+  preparation/approval requires `complete_for_rank`; a protocol declaring `required_trace_coverage`
+  is checked for missing engineering/verification phase-start events but is unconditionally
+  rejected even when both are present, since `phase.started` markers alone do not establish
+  complete trace instrumentation and no trusted, versioned trace-completeness contract exists -
+  a deliberate fail-closed disclosed limitation, not a passing gate), campaign completion
+  concurrency, budget compatibility (v1/v2 schema round-trip), review trust (server-derived signed
+  review kind; creator/preparer self-approval blocked), provenance/reasons (separate correction and
+  append-only withdrawal reasons, frozen via migrations `b7e4a9c2d1f8`/`c9a1e7d4b260`), corrections
+  UI, browser authentication (real authorization-code + S256 PKCE, session-only token storage,
+  server-derived roles), and browser-to-HTTP acceptance (`scripts/check_admin_browser.py`). A
+  follow-up review found the Postgres test database unavailable (Docker daemon down, not only the
+  container) blocking the previously-uncompleted full backend `discover` run, `STATUS.md` still
+  contradicting itself on ENG-018's status (a stale "BLOCKED" line beside the backlog table's own
+  IN_PROGRESS row), and `review-closure.md`/`prompt14-verification.md` describing superseded or
+  fail-closed behavior inaccurately. All three were fixed: Docker Desktop restarted, the test
+  database recreated and migrated to `c9a1e7d4b260`, `STATUS.md` and `SESSION_HANDOFF.md`
+  reconciled to state ENG-017/ENG-018 IN_PROGRESS consistently (not BLOCKED) with STATUS.md's
+  backlog table as the authoritative status source, and both evidence docs corrected to describe
+  the actual code behavior (`services/api/src/aieb_api/routes/publications.py`,
+  `_publication_eligibility_error`'s `required_trace_coverage` branch) rather than an aspirational
+  or stale description. A further review found `SESSION_HANDOFF.md` line 7 still said "ENG-018 is
+  BLOCKED" after the first fix pass (a second stale copy of the same claim) and that a much older
+  flat "ENG-011 is COMPLETE" heading further down the same file was not marked historical; both
+  corrected, with STATUS.md's backlog table stated explicitly as authoritative over any narrative
+  claim in SESSION_HANDOFF.md.
+- Consequence: full uninterrupted `python -m unittest discover -s tests` against real PostgreSQL
+  passed - 223 run, OK, 1 skipped (Harbor opt-in), 0 failures, 0 errors, 792s - the run that had
+  never completed uninterrupted before. Frontend: production build passed; 92/92 Vitest tests
+  passed across 20 files. `generate_openapi.py --check` and pinned `openapi-typescript@7.13.0
+  --check` both pass; the generated client is byte-identical. `git diff --check` passed
+  (line-ending warnings only). Committed at `0a6247b` on `prompt-14-gap-closure`. ENG-017 and
+  ENG-018 remain IN_PROGRESS: ENG-011 round-2 human acceptance, current-tree remote CI, real
+  deployed OIDC/JWKS login, and independent review-console acceptance are gates only a human or CI
+  run can close, not something this review can resolve by editing code or documentation.
