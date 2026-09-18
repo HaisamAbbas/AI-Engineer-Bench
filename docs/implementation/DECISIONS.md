@@ -595,3 +595,24 @@ This log records implementation choices made while executing the source specific
   ENG-018 remain IN_PROGRESS: ENG-011 round-2 human acceptance, current-tree remote CI, real
   deployed OIDC/JWKS login, and independent review-console acceptance are gates only a human or CI
   run can close, not something this review can resolve by editing code or documentation.
+
+## ENG011-013 / ENG017-004 / ENG018-004 - Independent technical acceptance closes Prompt 14 engineering tickets
+
+- Date: 2026-09-18
+- Status: accepted (engineering tickets complete)
+- Decision: after reviewing the frozen specifications, the ticket-level acceptance criteria are
+  narrower than the official-release criteria that had been carried as blockers. ENG-017 requires
+  the start/freeze/pause/cancel state rules. ENG-018 requires PUB-01/PUB-02 and no hidden material
+  in exports. Those behaviors, plus the broader Prompt 14 implementation, are demonstrated by the
+  PostgreSQL, frontend, generated-client, and authenticated browser evidence. The independent
+  technical reviewer reran the committed `test_review_closure`, `test_review_followup`, and
+  `test_api_service` batch against migration head `c9a1e7d4b260`: 92 tests passed. ENG-011's
+  round-two aggregation corrections were also reviewed and accepted as the satisfied ENG-018
+  prerequisite. ENG-011, ENG-017, and ENG-018 are therefore COMPLETE.
+- Boundary: this review is independent at the technical/code-review level; it is not represented as
+  a second human identity or organizational approval. The implementation specification assigns two
+  independent human identities to an official release, whose dependency ticket is ENG-022. Real
+  deployed OIDC/JWKS validation and deployment CI remain operational/ENG-020 concerns; hardened
+  Harbor isolation remains ENG-019. Protocols declaring `required_trace_coverage` continue to fail
+  closed until a trusted, versioned completeness contract exists. No deployment, provider spend,
+  benchmark execution, or public publication is authorized or claimed by this acceptance.
