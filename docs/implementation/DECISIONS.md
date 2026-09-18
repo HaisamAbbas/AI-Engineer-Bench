@@ -719,3 +719,16 @@ This log records implementation choices made while executing the source specific
   weakened or silently closed by this pass. The P0-P3 release gates table in STATUS.md stays
   BLOCKED throughout: ENG-022 depends on ENG-019/020/021, and this closure must not read as
   movement toward an official release.
+
+## ENG020-002 - Migration rollback drill leg 2 confirmed against a real commit boundary
+
+- Date: 2026-09-18
+- Status: accepted
+- Decision: `scripts/migration_rollback_drill.py`'s leg 2 (parent-commit compatibility) could
+  not be exercised until ENG019-001/ENG020-001's own commit existed to provide a real git
+  boundary. Re-run immediately after that commit (`3b9debb`): its parent (`4a9c7c3`)'s
+  `CampaignRow` ORM class, imported directly from a throwaway git worktree, read a real
+  seeded row through the post-migration schema without error.
+- Consequence: both legs of the migration rollback drill now pass end to end
+  (`docs/implementation/evidence/ENG-020/operations-review.md`). No code change; this closes
+  the one item ENG019-001/ENG020-001 itself flagged as pending its own commit boundary.

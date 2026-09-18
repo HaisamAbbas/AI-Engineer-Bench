@@ -102,10 +102,12 @@ duration, which is reported only as a disclosed local-proxy measurement):
 - Resume acknowledgement: `tests/test_api_service.py::
   test_resume_of_an_auto_paused_campaign_requires_explicit_acknowledgement` - **1/1 passed**
   (refusal without acknowledgement, then success with it, then confirms fields reset).
-- Migration rollback drill leg 1 (representative-dataset round-trip): **PASS**, run against a
-  dedicated disposable database (`aieb_rollback_drill`), head revision `d3f6a8e21c94`.
-  Leg 2 (parent-commit compatibility) requires a real git commit boundary and could not be
-  exercised until this work itself is committed - see the follow-up note below.
+- Migration rollback drill, both legs, run after this work's own commit (`3b9debb`) provided a
+  real commit boundary: **BOTH PASS**. Leg 1 (representative-dataset round-trip) against a
+  dedicated disposable database, head revision `d3f6a8e21c94`. Leg 2 (parent-commit
+  compatibility): the parent commit (`4a9c7c3`)'s `CampaignRow` ORM class, imported directly
+  from a throwaway git worktree, read a real row through the post-migration schema without
+  error - the expand-phase compatibility property, reproduced, not merely asserted.
 - Backup/restore drill: **ALL THREE assertions PASS**, real `pg_dump`/`pg_restore` cycle between
   `aieb_restore_drill_source` and `aieb_restore_drill_restored`, restore completed in 0.95s
   (disclosed local-proxy measurement, not a production RPO/RTO figure - spec section 40's real
@@ -120,8 +122,6 @@ duration, which is reported only as a disclosed local-proxy measurement):
 - Real staging/production deployment, real deployed OIDC/JWKS, and a real live smoke test
   remain blocked on cloud authorization/budget - no infrastructure was provisioned or deployed
   by this work.
-- Migration rollback drill leg 2 (the parent-commit compatibility check) must be re-run once
-  this work is committed, against the real commit boundary it needs.
 - Current-tree remote CI and independent review of this closure remain open, matching every
   other ticket's acceptance policy in this repository.
 - Object storage/observability deployment (Prometheus, alerting) is documented in intent
