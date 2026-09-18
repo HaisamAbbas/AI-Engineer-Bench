@@ -175,6 +175,8 @@ function EntrantPanel({
   return (
     <article className="compare-panel">
       <h2>{entrantId}</h2>
+      <p>Publication class: {entry.publication_class === "non_ranked" ? "Non-ranking — descriptive evidence only" : "Ranked"}</p>
+      {entry.notice && <p role="status">{entry.notice}</p>}
       <button type="button" onClick={onRemove}>
         Remove
       </button>

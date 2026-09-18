@@ -183,12 +183,26 @@ No source or test files changed during either final suite run.
 
 ### Still open — Prompt 14 is NOT fully satisfied
 
-- Browser authentication wiring: the access-token provider setter has no application
-  caller; backend token verification alone is not a usable authenticated UI journey.
-- Mutation replay across the remaining write operations and network-loss retries.
+This list is historical (as of the date above). Two items below were superseded by
+the later nine-point review closure in `review-closure.md` (2026-09-18) — kept here
+for the record, not because they remain open:
+
+- ~~Browser authentication wiring: the access-token provider setter has no application
+  caller; backend token verification alone is not a usable authenticated UI journey.~~
+  Superseded: `review-closure.md` item 8 — real authorization-code + S256 PKCE flow,
+  server-derived roles, real-browser viewer/operator checks passing.
+- ~~Mutation replay across the remaining write operations and network-loss retries.~~
+  Superseded: `review-closure.md` item 1 — all 12 persisting API operations now use
+  principal-scoped replay records sharing a transaction with the business write.
 - Publication eligibility enforcement for protocol-required cost/trace coverage,
   and complete pinned analysis/provenance metadata. Disclosure alone does not close this.
+  Still open: `required_trace_coverage` protocols fail closed unconditionally (see
+  `review-closure.md` item 2) — no trace-completeness contract exists yet.
 - Public error/reason handling review and authenticated staging browser acceptance.
+  Addressed for browser acceptance: `review-closure.md` items 8-9. Public error/reason
+  handling for corrections is addressed by item 7; broader public error-handling review
+  remains open.
 - Separate human-review gates, Harbor opt-in compatibility, and current-tree remote CI.
+  Still open — see `review-closure.md`'s "Remaining external acceptance" section.
 
 No production deployment or real public release was performed.

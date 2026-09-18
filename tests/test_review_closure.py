@@ -87,7 +87,7 @@ class ReviewClosureTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409, response.text)
         self.assertIn("complete_for_rank", response.text)
 
-    def test_trace_gate_requires_both_phases_at_prepare_and_approval(self):
+    def test_trace_gate_fails_closed_at_prepare_and_approval(self):
         from aieb_api import db, models
         from sqlalchemy import select
         campaign = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True, campaign_state="draft")
@@ -109,13 +109,19 @@ class ReviewClosureTests(unittest.TestCase):
                 session.add(models.AttemptEventRow(attempt_id=attempt.id, sequence=2, event_type="phase.started", payload={"phase": "verification"}))
             session.commit()
         response = self.client.post(url, headers=headers, json={})
-        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("action", response.text)
         from aieb_api.routes import publications
-        with patch.object(publications, "_missing_trace_phases", return_value=[("attempt", "verification")]):
-            denied = self.client.post(f"/v1/publications/preparations/{response.json()['id']}/review",
-                headers=fixtures._auth_header(("reviewer",), subject="independent") | {"Idempotency-Key": "trace-review"},
-                json={"decision": "approve", "independence_attestation": True})
+        # Seed a legacy preparation as if the former phase-only gate accepted
+        # it, then prove the real approval gate rejects it without a bypass.
+        with patch.object(publications, "_publication_eligibility_error", return_value=None):
+            prepared = self.client.post(url, headers=headers, json={})
+        self.assertEqual(prepared.status_code, 200, prepared.text)
+        denied = self.client.post(f"/v1/publications/preparations/{prepared.json()['id']}/review",
+            headers=fixtures._auth_header(("reviewer",), subject="independent") | {"Idempotency-Key": "trace-review"},
+            json={"decision": "approve", "independence_attestation": True})
         self.assertEqual(denied.status_code, 409, denied.text)
+        self.assertIn("action", denied.text)
 
     def test_create_replay_is_scoped_to_server_principal(self):
         body = self._draft_body()

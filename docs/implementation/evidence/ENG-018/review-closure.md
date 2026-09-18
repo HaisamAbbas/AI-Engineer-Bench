@@ -13,9 +13,17 @@ This supplements, rather than replaces, the historical results in
    bytes; storage failure aborts before sending. Hook tests cover all 12 writes,
    principal changes, token renewal, identity failure, and storage failure.
 2. **Publication eligibility:** ranked preparation/approval requires
-   `complete_for_rank`; required trace coverage means engineering AND verification
-   events. Default release selection excludes non-ranked publications; explicit
-   historical reads remain available. Focused regressions cover these cases.
+   `complete_for_rank`. A protocol declaring `required_trace_coverage` is checked
+   for missing engineering/verification phase-start events, but even when both
+   are present, publication is unconditionally rejected: `phase.started` markers
+   only prove lifecycle presence, not complete model/application/action trace
+   instrumentation, and no trusted, versioned trace-completeness contract exists
+   yet (see `services/api/src/aieb_api/routes/publications.py`, the
+   `required_trace_coverage` branch of `_publication_eligibility_error`).
+   This is a deliberate fail-closed disclosed limitation, not a passing gate —
+   no such protocol can currently be published, ranked or not. Default release
+   selection excludes non-ranked publications; explicit historical reads remain
+   available. Focused regressions cover these cases.
 3. **Campaign completion:** bounded `SKIP LOCKED` sweep, locked fresh-state reads,
    paused completion, in-transaction frozen zero-work cancellation, and terminal
    reservation settlement. PostgreSQL tests cover rollback before replay commit,
