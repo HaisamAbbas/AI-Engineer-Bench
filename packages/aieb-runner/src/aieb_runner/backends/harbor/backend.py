@@ -30,10 +30,18 @@ from aieb_runner.backends.base import (
     ExecutionSpec,
     ExecutionState,
     ExecutionStatus,
+    UnhardenedBackendError,
 )
+from aieb_runner.backends.egress_proxy import EgressGuardProxy
 
 
 HARBOR_VERSION = "0.22.0"
+
+# ADR-12: this backend runs Harbor's Docker environment - a non-privileged container on the
+# host kernel, not a VM or equivalent hardened isolation. It must never be used for an
+# allocation that requires hardened isolation; `launch()` refuses that outright rather than
+# silently running it anyway.
+PROVIDES_HARDENED_ISOLATION = False
 
 
 @dataclass
@@ -41,6 +49,7 @@ class _RunningTrial:
     spec: ExecutionSpec
     trial: Trial
     task: asyncio.Task[object]
+    egress_guard: EgressGuardProxy | None
 
 
 class HarborBackend:
@@ -94,9 +103,24 @@ class HarborBackend:
         return CapabilityReport("harbor-docker", installed_version, tuple(checks))
 
     async def launch(self, spec: ExecutionSpec) -> ExecutionHandle:
+        if spec.isolation.hardened_isolation_required and not PROVIDES_HARDENED_ISOLATION:
+            raise UnhardenedBackendError(
+                "HarborBackend runs a non-privileged Docker container on the host kernel, "
+                "not a VM or equivalent hardened isolation (ADR-12); it refuses to launch an "
+                "allocation marked hardened_isolation_required=True rather than running it "
+                "anyway. No hardened backend is available - the 'Official VM provider' "
+                "decision remains deferred (see DECISIONS.md)."
+            )
         if any(run.spec.trial_name == spec.trial_name for run in self._runs.values()):
             raise ValueError(f"trial name already active: {spec.trial_name}")
         spec.runs_dir.mkdir(parents=True, exist_ok=True)
+
+        # Deny-by-default egress (ADR-12/spec section 37): every outbound request from inside
+        # the container is routed through a guard proxy that denies and logs anything not on
+        # the isolation policy's allowlist, including cloud-metadata hosts unconditionally.
+        egress_guard = EgressGuardProxy(spec.isolation, bind_host="0.0.0.0", advertised_host="host.docker.internal")
+        env = {**egress_guard.env_vars()}
+
         config = TrialConfig(
             task=TaskConfig(path=spec.task_dir.resolve()),
             trial_name=spec.trial_name,
@@ -112,13 +136,26 @@ class HarborBackend:
                 memory_enforcement_policy=ResourceMode.LIMIT,
                 override_cpus=spec.cpu_limit,
                 override_memory_mb=spec.memory_limit_mb,
+                env=env,
             ),
             verifier=VerifierConfig(),
         )
-        trial = await Trial.create(config)
+        if spec.isolation.deny_docker_socket:
+            mounts = config.environment.mounts or []
+            if any("docker.sock" in str(mount) for mount in mounts):
+                egress_guard.close()
+                raise UnhardenedBackendError(
+                    "isolation policy denies the Docker socket, but the environment config "
+                    "mounts it - refusing to launch (ADR-12 / spec section 37)"
+                )
+        try:
+            trial = await Trial.create(config)
+        except Exception:
+            egress_guard.close()
+            raise
         handle = ExecutionHandle(str(uuid4()))
         task = asyncio.create_task(trial.run(), name=f"harbor-{spec.trial_name}")
-        self._runs[handle.id] = _RunningTrial(spec=spec, trial=trial, task=task)
+        self._runs[handle.id] = _RunningTrial(spec=spec, trial=trial, task=task, egress_guard=egress_guard)
         return handle
 
     def _get(self, handle: ExecutionHandle) -> _RunningTrial:
@@ -177,6 +214,8 @@ class HarborBackend:
 
     async def cleanup(self, handle: ExecutionHandle) -> CleanupReport:
         run = self._get(handle)
+        if run.egress_guard is not None:
+            run.egress_guard.close()
         project_fragments = (
             f"{run.spec.trial_name}__env",
             f"{run.spec.trial_name}__verifier__trial",

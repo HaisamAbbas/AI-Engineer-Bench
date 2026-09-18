@@ -616,3 +616,106 @@ This log records implementation choices made while executing the source specific
   Harbor isolation remains ENG-019. Protocols declaring `required_trace_coverage` continue to fail
   closed until a trusted, versioned completeness contract exists. No deployment, provider spend,
   benchmark execution, or public publication is authorized or claimed by this acceptance.
+
+## ADR-12 — Official sandbox provider boundary: extend the existing ExecutionBackend seam, defer real VM/cloud selection
+
+- Date: 2026-09-18
+- Status: accepted (boundary decision; recorded before implementation per spec section 41)
+- Decision: Prompt 15 (ENG-019) requires provider selection to be supported by capability
+  evidence and recorded in an ADR before implementation touches the trust boundary. No cloud VM
+  provider is authorized or budgeted in this environment - the existing "Official VM provider |
+  ENG-019 | Deferred" row in the Open decisions table above stays exactly as deferred; this ADR
+  does not select one. What IS decided: `packages/aieb-runner/src/aieb_runner/backends/base.py`'s
+  `ExecutionBackend` Protocol (`preflight`/`launch`/`status`/`stop`/`collect`/`cleanup`) is the
+  correct seam for a future hardened-isolation backend - confirmed by inspection: it already has
+  exactly one implementation (`HarborBackend`, Docker-based, ENG-001) and exactly one caller
+  (`scripts/run_eng001_spike.py`), so it can be extended without a second parallel abstraction.
+  `ExecutionSpec` carries only `task_dir`/`runs_dir`/`trial_name`/`agent_import_path`/
+  `agent_timeout_sec`/`cpu_limit`/`memory_limit_mb` - no isolation, egress, or credential fields -
+  so this ADR adds an `IsolationPolicy` (egress allowlist, deny-by-default default, cloud-metadata
+  IP block, no-Docker-socket assertion, per-attempt scoped credentials, candidate/verifier
+  credential separation, `hardened_isolation_required: bool`) as a new field on `ExecutionSpec`,
+  and requires every `ExecutionBackend.launch()` implementation to REFUSE (raise, not merely log)
+  when `hardened_isolation_required=True` and the backend cannot satisfy the policy - enforced in
+  code, not disclosed only in documentation. `HarborBackend` (Docker-based) is such a backend: it
+  gains egress/metadata enforcement for whatever it CAN enforce at the Docker level, and refuses
+  to launch when asked for hardened isolation it cannot provide. This is deliberately narrower
+  than full VM/kernel isolation - it closes the SE-01/SE-02 threat-model tests and the "no host,
+  secret, hidden-label, or other-trial access" acceptance criteria at the container level, while
+  the "Official VM provider" and "Harbor public-egress/metadata adversarial validation" rows stay
+  open exactly as before. Capability-evidence bar a future real VM/cloud provider must clear before
+  selection (mirrors ENG-001's own capability-evidence pattern for Harbor): (1) non-privileged
+  isolation with no host kernel sharing demonstrated, not merely configured; (2) enforced
+  deny-by-default network policy at the platform level, not only inside the guest; (3)
+  cloud-metadata endpoint unreachable by construction (network topology, not an application-layer
+  block); (4) per-attempt credential issuance and revocation verified end-to-end; (5) bounded,
+  verified teardown under both normal and killed-worker conditions; (6) a documented incident/abuse
+  contact and observed uptime history. ADR-11's owed S3-compatible artifact storage migration
+  (superseding the interim PostgreSQL staging) is explicitly re-deferred here, not silently
+  absorbed into ENG-019's scope or dropped: it remains a distinct, ledgered follow-up.
+- Consequence: ENG-019 work in this pass is scoped to what the above seam and Docker backend can
+  actually enforce and test today (egress allowlist, metadata denial, credential separation, launch
+  refusal for hardened-only allocations, teardown verification, cross-trial/host isolation tests) -
+  not a claim of VM-equivalent hardened isolation. `docs/implementation/evidence/ENG-019/` will
+  record actual measured results against these narrower, honest acceptance criteria.
+
+## ENG019-001 / ENG020-001 - Prompt 15 closure: sandbox threat-model gates and operations mechanisms implemented and tested
+
+- Date: 2026-09-18
+- Status: accepted (implementation and tests; real cloud/production gates remain explicitly open)
+- Decision: implements ENG-019 and ENG-020 to the extent this environment's infrastructure
+  supports, per ADR-12's scope decision. ENG-019: `IsolationPolicy`/`EgressPolicy` added to
+  `ExecutionSpec` (deny-by-default egress, cloud-metadata denial, Docker-socket assertion,
+  hardened-isolation flag); a real, working `EgressGuardProxy` enforces it at the application
+  layer (proxy environment variables), disclosed as such - not a network-namespace guarantee;
+  `HarborBackend.launch()` now REFUSES (raises, before any Docker/Harbor call) an allocation
+  marked `hardened_isolation_required=True`, turning the disclosed "not hardened" limitation
+  into an enforced one, per direct instruction that a README warning is exactly what the threat
+  model guards against. SE-02 (candidate requests verifier/cloud-metadata endpoint - denied and
+  logged) is genuinely new; SE-01 (escaping symlink) is cited from its existing ENG-003
+  coverage, not duplicated. Retention reference safety (a blob with a remaining live reference
+  survives purge) is likewise cited from its existing `test_staging_blobs_expire_after_24h_...`
+  coverage - verified still passing, not rebuilt.
+  ENG-020: worker draining wires SIGTERM/SIGINT to `run_worker`'s existing (but previously
+  unreachable) `stop_event` check - `install_drain_handlers` in `loop.py`; auto-pause and the
+  global kill switch are implemented as the two DISTINCT mechanisms required (per direct
+  instruction) rather than folded together - auto-pause is per-campaign, scoped to
+  verification/regrade outcomes only (an engineering-only outcome's `execution_validity` is not
+  a real verdict and must never trigger it - reproduced directly while building this and fixed
+  by gating on `leased.work_type`), requires `acknowledge_auto_pause=true` to resume; the kill
+  switch is a single global row stopping all new dispatch and requesting bounded teardown via
+  the existing cancellation machinery. Migration rollback drill
+  (`scripts/migration_rollback_drill.py`) goes beyond a schema round-trip on an empty database:
+  it seeds a representative dataset AND verifies old application code (via a git-worktree
+  checkout of the parent commit) can still read real rows through the newly migrated schema -
+  the actual expand-migrate-contract compatibility property, not merely an assertion that
+  migrations are additive. Backup/restore drill (`scripts/backup_restore_drill.py`) runs a real
+  `pg_dump`/`pg_restore` cycle and asserts the three specific behaviors spec section 40 names
+  (not resumed blindly; stale generation fenced out; reconciliation quarantines the orphan) -
+  restore duration is reported only as a disclosed local-proxy measurement, not an RPO/RTO
+  claim. CI: `permissions: contents: read` added to all five workflows (three pre-existing plus
+  two new); `sandbox-integration.yml` and `release-candidate.yml` cache nothing (the simplest
+  way to guarantee no hidden fixture or candidate workspace is ever cached across runs);
+  `release-candidate.yml` adds SBOM generation, dependency-review, and a `capped-live-smoke` job
+  gated behind a protected GitHub Environment that deliberately fails with an explanatory
+  warning rather than running anything, since no cloud/spend authorization exists - a
+  structural placeholder for the required gate, not a working live smoke test. Two
+  action-pinning gaps are disclosed rather than silently guessed: `anchore/sbom-action` and
+  `actions/dependency-review-action` are referenced by version tag, not a verified commit SHA,
+  because this offline environment cannot confirm their exact current SHA and a wrong guess
+  would be worse than a disclosed gap - flagged inline for whoever has network access to pin
+  them before this workflow runs with real credentials.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` (11 tests), the ENG-020 additions to
+  `tests/test_worker_leasing.py` (drain x2, auto-pause x4, kill switch x1) and
+  `tests/test_api_service.py` (resume-acknowledgement x1) all pass against real PostgreSQL. The
+  migration rollback drill's representative-dataset leg passes against a dedicated disposable
+  database; its parent-commit compatibility leg requires this work's own commit boundary to
+  exist and is re-verified immediately after committing (see the immediately following
+  verification note, if present, for that result). The backup/restore drill's all three
+  required assertions pass against a real `pg_dump`/`pg_restore` cycle. ENG-019 and ENG-020 move
+  to IN_PROGRESS (not COMPLETE): official VM provider selection, real staging/production
+  deployment, real deployed OIDC/JWKS, a real live smoke test, ADR-11's S3-compatible storage
+  migration, and independent review of this closure all remain open, disclosed gates - none
+  weakened or silently closed by this pass. The P0-P3 release gates table in STATUS.md stays
+  BLOCKED throughout: ENG-022 depends on ENG-019/020/021, and this closure must not read as
+  movement toward an official release.

@@ -581,6 +581,40 @@ class ApiServiceTests(unittest.TestCase):
             leased = repository.claim_work_item(session, worker_id="w-resumed")
             self.assertIsNotNone(leased)
 
+    def test_resume_of_an_auto_paused_campaign_requires_explicit_acknowledgement(self) -> None:
+        """ENG-020 (spec sections 39/48): auto-pause requires operator review before resume,
+        distinct from a manual pause's plain resume - a same-click resume must be refused."""
+        campaign_id = self._create_and_freeze(repetitions=1)
+        operator = _auth_header(("operator",))
+        self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-ap"})
+        from aieb_api import models as api_models
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            campaign.state = "paused"
+            campaign.auto_paused = True
+            campaign.auto_pause_reason = "3 consecutive infrastructure failures - operator review required before resume"
+            campaign.consecutive_infrastructure_failures = 3
+            session.commit()
+
+        refused = self.client.post(f"/v1/campaigns/{campaign_id}/resume", headers=operator | {"Idempotency-Key": "resume-ap-1"})
+        self.assertEqual(refused.status_code, 403)
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.state, "paused")  # still paused - the refusal did not resume it
+
+        acknowledged = self.client.post(
+            f"/v1/campaigns/{campaign_id}/resume", json={"acknowledge_auto_pause": True},
+            headers=operator | {"Idempotency-Key": "resume-ap-2"},
+        )
+        self.assertEqual(acknowledged.status_code, 200)
+        self.assertEqual(acknowledged.json()["campaign"]["state"], "running")
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.state, "running")
+            self.assertFalse(campaign.auto_paused)
+            self.assertIsNone(campaign.auto_pause_reason)
+            self.assertEqual(campaign.consecutive_infrastructure_failures, 0)
+
     def test_cancel_releases_reservation_and_stops_dispatch(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
         operator = _auth_header(("operator",))

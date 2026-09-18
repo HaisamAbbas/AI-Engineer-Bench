@@ -1,0 +1,27 @@
+# ENG-020 deployment configuration (spec section 40). Written and buildable, NOT deployed -
+# no cloud budget/authorization exists in this environment. Immutable image digests are what
+# spec section 45's rollback procedure relies on ("Immutable image digests permit rollback").
+FROM python:3.12.10-slim AS base
+WORKDIR /app
+
+# uv is already this repository's pinned package manager (see toolchain.json/BOOT-004).
+COPY --from=ghcr.io/astral-sh/uv:0.11.27 /uv /uvx /usr/local/bin/
+
+COPY pyproject.toml uv.lock ./
+COPY packages ./packages
+COPY services/api ./services/api
+
+RUN uv sync --all-packages --locked --no-dev
+
+# Least-privilege: the API process never needs root once dependencies are installed.
+RUN useradd --create-home --uid 10001 aieb
+USER aieb
+
+ENV AIEB_API_HOST=0.0.0.0 \
+    AIEB_API_PORT=8000
+EXPOSE 8000
+
+# Secrets (AIEB_DATABASE_URL, AIEB_OIDC_*, AIEB_PUBLICATION_SIGNING_KEY, ...) are injected at
+# deployment time (spec section 40: "secrets injected at deployment"), never baked into the
+# image.
+CMD ["uv", "run", "--directory", "services/api", "uvicorn", "aieb_api.app:app", "--host", "0.0.0.0", "--port", "8000"]

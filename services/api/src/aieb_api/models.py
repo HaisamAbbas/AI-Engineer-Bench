@@ -204,6 +204,13 @@ class CampaignRow(Base):
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     submitter_note: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ENG-020 auto-pause (spec sections 39/48): distinct from a manual operator pause. Resets
+    # to 0 on any non-infrastructure-invalid outcome; at AUTO_PAUSE_THRESHOLD consecutive
+    # infrastructure failures the campaign is paused automatically and `auto_paused` records
+    # that this pause requires operator review, not just a resume like a manual one.
+    consecutive_infrastructure_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_paused: Mapped[bool] = mapped_column(nullable=False, default=False)
+    auto_pause_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -701,4 +708,24 @@ class WorkerArtifactReferenceRow(Base):
         CheckConstraint("visibility in ('public','restricted')", name="ck_worker_artifact_reference_visibility"),
         Index("ix_worker_artifact_reference_candidate", "candidate_id"),
         Index("ix_worker_artifact_reference_blob", "blob_sha256"),
+    )
+
+
+class KillSwitchRow(Base):
+    """ENG-020: a single global row (spec sections 39/48). When `active`, dispatch of any new
+    work platform-wide stops and bounded teardown of active work is requested - distinct from
+    per-campaign auto-pause (`CampaignRow.auto_paused`), which is scoped to one campaign and
+    its own cause. Always exactly one row (id=1), seeded by its migration."""
+
+    __tablename__ = "kill_switch"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    active: Mapped[bool] = mapped_column(nullable=False, default=False)
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    activated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_kill_switch_singleton"),
     )

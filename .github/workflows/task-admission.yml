@@ -4,6 +4,8 @@ on:
     paths: ["suites/dev/**", "tests/maintainer/**", "scripts/run_*_admission.py", "packages/aieb-cli/**"]
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   admission:
     runs-on: ubuntu-latest

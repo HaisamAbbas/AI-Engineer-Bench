@@ -3470,6 +3470,19 @@
         "title": "Requirement",
         "type": "object"
       },
+      "ResumeCampaignRequest": {
+        "additionalProperties": false,
+        "description": "ENG-020: resuming a campaign the auto-pause mechanism paused (spec sections 39/48)\nrequires an explicit, informed acknowledgement - a same-click resume as a manual pause\nwould defeat the point of pausing for operator review in the first place. Ignored (and\nunnecessary) when resuming a manually-paused campaign.",
+        "properties": {
+          "acknowledge_auto_pause": {
+            "default": false,
+            "title": "Acknowledge Auto Pause",
+            "type": "boolean"
+          }
+        },
+        "title": "ResumeCampaignRequest",
+        "type": "object"
+      },
       "RoleBudget": {
         "additionalProperties": false,
         "properties": {
@@ -4971,6 +4984,7 @@
     },
     "/v1/campaigns/{campaign_id}/resume": {
       "post": {
+        "description": "ENG-020 (spec sections 39/48): a campaign the auto-pause mechanism paused requires\n`acknowledge_auto_pause=True` to resume - a plain resume (as for a manual pause) is\nrefused, so the operator review the mechanism exists for cannot be skipped by habit.",
         "operationId": "resume_campaign_v1_campaigns__campaign_id__resume_post",
         "parameters": [
           {
@@ -5000,6 +5014,18 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeCampaignRequest",
+                "default": {
+                  "acknowledge_auto_pause": false
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

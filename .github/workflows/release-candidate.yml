@@ -1,0 +1,103 @@
+name: Release candidate
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  # spec section 42's "Release candidate | Signed release branch/tag | All required gates;
+  # staging deploy; restore/rollback relevant checks; docs/examples | Capped smoke only."
+  # This job re-runs the full local gate set this repository already has (lint/type/unit are
+  # covered by the existing per-area workflows' own unittest invocations; this adds the
+  # cross-cutting checks specific to a release candidate: full discovery, migration
+  # round-trip/rollback drill, and build artifacts/SBOM).
+  full-gate-chain:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aieb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d aieb_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      AIEB_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/aieb_test
+      AIEB_ENV: test
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0 # the migration rollback drill needs history to check out a prior commit
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - run: uv sync --all-packages --locked
+      - run: uv run --directory services/api alembic upgrade head
+      - name: Full uninterrupted backend discovery
+        run: uv run python -m unittest discover -s tests -p "test_*.py" -v
+      - name: OpenAPI and generated-client staleness checks
+        run: |
+          uv run python scripts/generate_openapi.py --check
+          uv run python scripts/generate_typescript_client.py --check
+      - name: Migration rollback drill (expand-migrate-contract compatibility)
+        run: uv run python scripts/migration_rollback_drill.py
+      - name: Website production build and test
+        run: |
+          npm ci --prefix apps/web
+          npm --prefix apps/web run build
+          npm --prefix apps/web test
+      - name: Generate SBOM
+        # NOTE (disclosed, not silently pinned): this repository's other workflows pin every
+        # action by full commit SHA. anchore/sbom-action's exact verified SHA is not available
+        # in this offline environment - pinning a guessed SHA would be worse than a version
+        # tag, since a wrong SHA either breaks silently or resolves to an unintended commit.
+        # Pin this to a verified commit SHA before this job ever runs with real credentials.
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate-sbom
+          path: sbom.spdx.json
+          retention-days: 90
+
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # Same disclosed SHA-pinning gap as the SBOM step above.
+      - uses: actions/dependency-review-action@v4
+
+  # spec section 42: "Capped smoke only" for a release candidate, and section 37/40's
+  # authorization requirement ("no production provider secrets... in pull-request CI";
+  # official execution needs cloud authorization this environment does not have). This job
+  # is real GitHub Actions configuration - a protected Environment requiring manual approval
+  # and zero ambient secrets - but it does not perform a live smoke test: no cloud
+  # provider/spend authorization exists to run one against (see ADR-12, DECISIONS.md's
+  # "Official VM provider | ENG-019 | Deferred"). It documents the required gate structure
+  # and stays deliberately unable to run anything until that authorization exists.
+  capped-live-smoke:
+    needs: full-gate-chain
+    runs-on: ubuntu-latest
+    environment: production-smoke # requires manual reviewer approval in repo settings; no secrets configured
+    permissions:
+      contents: read
+    steps:
+      - name: Explicitly blocked pending cloud authorization
+        run: |
+          echo "::warning::capped-live-smoke is a structural placeholder. No cloud provider or spend authorization exists in this environment (ADR-12; DECISIONS.md 'Official VM provider' remains Deferred). This job intentionally does not run a live smoke test and must not be made to do so without that authorization."
+          exit 1

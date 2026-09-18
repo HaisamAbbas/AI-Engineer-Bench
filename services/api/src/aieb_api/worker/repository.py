@@ -35,6 +35,7 @@ from ..models import (
     CandidateRow,
     EntrantRevisionRow,
     EvaluationRow,
+    KillSwitchRow,
     TaskRevisionRow,
     TrialRow,
     WorkItemRow,
@@ -44,6 +45,9 @@ from ..models import (
 from ..evidence_integrity import evidence_digest
 
 DEFAULT_LEASE_SECONDS = 60
+
+# ENG-020 auto-pause (spec sections 39/48): distinct from the global kill switch below.
+AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD = 3
 
 
 def append_attempt_event(session: Session, *, attempt_id: uuid.UUID, event_type: str, payload: dict[str, str | int | bool | None]) -> None:
@@ -168,6 +172,12 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
     both `engineering` and `verification` queues - a real worker pool
     services both phases, not a phase-dedicated one; pass an explicit
     `work_type` only to isolate one phase's queue (as some tests do)."""
+    if is_kill_switch_active(session):
+        # ENG-020 (spec sections 39/48): the global kill switch stops ALL new dispatch
+        # platform-wide, independent of any one campaign's own state. Cancellation/regrade
+        # queue eligibility below is irrelevant once this is active - nothing new claims.
+        session.commit()
+        return None
     # Only running campaigns dispatch ordinary work. Cancellation claims drain
     # through the worker's cancellation path; regrades run against terminal
     # campaigns. Draft/frozen/paused work must never become executable merely
@@ -756,6 +766,79 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         resumed=resumed, replaced=replaced, exhausted=exhausted, advanced=advanced, requeued=requeued,
         orphaned_attempt_ids=tuple(orphaned),
     )
+
+
+def is_kill_switch_active(session: Session) -> bool:
+    row = session.get(KillSwitchRow, 1)
+    return bool(row is not None and row.active)
+
+
+def activate_kill_switch(session: Session, *, activated_by_user_id: uuid.UUID | None, reason: str) -> int:
+    """ENG-020 (spec sections 39/48): stop ALL new dispatch immediately and request bounded
+    teardown of active work by cancelling every non-terminal campaign - reusing the existing,
+    already-tested cancellation/drain machinery (in-flight work finishes or is cooperatively
+    interrupted, then reconciled) rather than a second, novel teardown mechanism. Distinct
+    from per-campaign auto-pause: this is global and not tied to any one campaign's health.
+    Returns the number of campaigns whose teardown was requested by this call."""
+    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+    row.active = True
+    row.reason = reason
+    row.activated_by_user_id = activated_by_user_id
+    row.activated_at = datetime.now(timezone.utc)
+    session.flush()
+    campaign_ids = session.execute(
+        select(CampaignRow.id).where(CampaignRow.state.in_(("frozen", "running", "paused")))
+    ).scalars().all()
+    requested = sum(1 for campaign_id in campaign_ids if cancel_campaign(session, campaign_id))
+    session.commit()
+    return requested
+
+
+def deactivate_kill_switch(session: Session) -> None:
+    """Clears the flag only - it does NOT resume any campaign the kill switch drove to
+    'cancelling'/'cancelled', and it does NOT clear any campaign's own `auto_paused` flag.
+    Both are separate, deliberate operator decisions (spec sections 39/48)."""
+    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+    row.active = False
+    session.commit()
+
+
+def record_infrastructure_outcome(session: Session, campaign_id: uuid.UUID, execution_validity: str) -> bool:
+    """ENG-020 auto-pause (spec sections 39/48): AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD
+    consecutive infrastructure failures pause a running campaign automatically, distinct from
+    and independent of the global kill switch above. A scored candidate outcome (valid
+    execution, whatever verdict) is NOT an infrastructure failure and resets the counter to
+    zero - an ordinary task/candidate failure alone must never trigger this. `auto_paused`
+    distinguishes this from a manual operator pause so resume can require explicit review
+    (see `routes/campaigns.py::resume_campaign`), not a same click as a manual pause's resume.
+    Returns True iff this call transitioned the campaign to paused."""
+    campaign = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+    ).scalar_one_or_none()
+    if campaign is None:
+        return False
+    if execution_validity != "infrastructure_invalid":
+        if campaign.consecutive_infrastructure_failures != 0:
+            campaign.consecutive_infrastructure_failures = 0
+            session.commit()
+        else:
+            session.commit()
+        return False
+    campaign.consecutive_infrastructure_failures += 1
+    paused = False
+    if (
+        campaign.consecutive_infrastructure_failures >= AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD
+        and campaign.state == "running"
+    ):
+        campaign.state = "paused"
+        campaign.auto_paused = True
+        campaign.auto_pause_reason = (
+            f"{AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD} consecutive infrastructure failures - "
+            "operator review required before resume"
+        )
+        paused = True
+    session.commit()
+    return paused
 
 
 def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:

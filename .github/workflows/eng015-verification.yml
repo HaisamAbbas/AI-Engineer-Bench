@@ -13,6 +13,8 @@ on:
       - ".github/workflows/eng015-verification.yml"
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   unix-lifecycle-and-postgres-migrations:
     runs-on: ubuntu-latest

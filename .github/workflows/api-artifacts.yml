@@ -9,6 +9,8 @@ on:
       - "docs/implementation/evidence/ENG-014/api-client.d.ts"
   push:
     branches: [main]
+permissions:
+  contents: read
 jobs:
   check-generated-artifacts:
     runs-on: ubuntu-latest

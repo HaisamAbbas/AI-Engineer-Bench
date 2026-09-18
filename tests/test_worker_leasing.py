@@ -12,6 +12,7 @@ completion, and cancellation with orphan teardown.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -45,7 +46,7 @@ if DATABASE_URL:
     from aieb_api import models as api_models
     from aieb_api.worker import repository
     from aieb_api.worker.artifact_store import PostgresArtifactStore
-    from aieb_api.worker.loop import run_worker
+    from aieb_api.worker.loop import install_drain_handlers, run_worker
     from aieb_api.worker.reconciler import reconcile_once
     from aieb_api.worker.runner_bridge import execute_leased_work
 
@@ -63,6 +64,9 @@ class WorkerLeasingTests(unittest.TestCase):
         with engine.begin() as connection:
             for table in reversed(api_models.Base.metadata.sorted_tables):
                 connection.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
+            # The kill_switch singleton is seeded once by its migration, not re-created by
+            # this per-test TRUNCATE - reseed it so ENG-020 kill-switch tests find their row.
+            connection.execute(text("INSERT INTO kill_switch (id, active) VALUES (1, false)"))
         self.session_factory = db.session_factory()
         self.work_root = ROOT / ".cache" / "eng015-tests" / uuid.uuid4().hex
         self.work_root.mkdir(parents=True, exist_ok=True)
@@ -1395,6 +1399,194 @@ class WorkerLeasingTests(unittest.TestCase):
             self.assertEqual(attempt.terminal_status, "cancelled")
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never scored once cancelled mid-VERIFY
+
+    # ---- 9. ENG-020 worker draining (distinct from campaign cancellation) --
+
+    def test_drain_signal_sets_the_stop_event(self) -> None:
+        """install_drain_handlers wires SIGTERM/SIGINT to stop_event.set(). Uses
+        signal.raise_signal (in-process) rather than os.kill on a child, since real
+        cross-process SIGTERM delivery is not portable to Windows - this tests the actual
+        Python-level wiring, which is the part that was genuinely missing."""
+        stop_event = threading.Event()
+        previous = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            install_drain_handlers(stop_event)
+            signal.raise_signal(signal.SIGTERM)
+            self.assertTrue(stop_event.is_set())
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+    def test_drain_finishes_the_in_flight_item_and_never_claims_the_next_one(self) -> None:
+        """The assertion is lease integrity, not just 'the loop exited': the in-flight work
+        item that was already claimed and executed before drain was requested must be fully
+        finalized (no orphaned lease for the reconciler to have to recover), and once
+        stop_event is set, a second still-ready item must never be claimed at all - drain
+        stops claiming, it does not abandon in-flight work. Deterministic (no thread-timing
+        race): stop_event is set only AFTER the first item has already finished processing,
+        exactly mirroring what `run_worker`'s own pre-claim check (loop.py) guarantees."""
+        self._frozen_enqueued_campaign(repetitions=2)
+        stop_event = threading.Event()
+
+        processed_before_drain = run_worker(
+            self.session_factory, worker_id="drain-worker", work_root=self.work_root,
+            max_iterations=1, stop_event=stop_event,
+        )
+        self.assertEqual(processed_before_drain, 1)
+        with self.session_factory() as session:
+            states_before = sorted(item.state for item in session.execute(select(api_models.WorkItemRow)).scalars().all())
+        # One engineering item finalized ('done') and, since it produced a candidate, its
+        # follow-on verification work item was enqueued ('ready') - alongside the second
+        # trial's still-untouched engineering item ('ready'). No lease is outstanding.
+        self.assertEqual(states_before, ["done", "ready", "ready"])
+
+        stop_event.set()
+        processed_after_drain = run_worker(
+            self.session_factory, worker_id="drain-worker", work_root=self.work_root,
+            max_iterations=None, stop_event=stop_event,
+        )
+        self.assertEqual(processed_after_drain, 0)  # stop_event checked before claiming - nothing new claimed
+
+        with self.session_factory() as session:
+            states_after = sorted(item.state for item in session.execute(select(api_models.WorkItemRow)).scalars().all())
+        self.assertNotIn("leased", states_after)  # no lease left dangling by the drain itself
+        self.assertEqual(states_after, states_before)  # unchanged: nothing further was ever claimed
+
+        # A reconciler pass finds nothing to recover - proving there is no orphaned lease,
+        # not merely that the test didn't look for one.
+        summary = reconcile_once(self.session_factory, self.work_root)
+        self.assertEqual(summary.replaced, 0)
+        self.assertEqual(summary.resumed, 0)
+        self.assertEqual(summary.orphaned_attempt_ids, ())
+
+    # ---- 10. ENG-020 auto-pause and the global kill switch: two DISTINCT mechanisms ---
+
+    def test_auto_pause_fires_after_three_consecutive_infrastructure_failures(self) -> None:
+        """Per-campaign, scoped to this campaign's own outcomes - not the global kill
+        switch. Uses the same deterministic raising-verifier monkeypatch as
+        test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail: engineering
+        succeeds normally for each of three trials, but verification genuinely raises and
+        is finalized as 'infrastructure_invalid' every time - a real, reproducible
+        infrastructure failure, not a guess about which fixture path happens to fail.
+        Claims by explicit work_type (not run_worker's own queue-wide claim order, which is
+        driven by a random UUID sort and cannot be relied on to pair one trial's engineering
+        claim with its own verification claim deterministically) so this test drives exactly
+        engineering-then-verification per trial, matching what auto-pause is scoped to
+        (verification/regrade outcomes only - see loop.py)."""
+        from aieb_api.worker import runner_bridge
+
+        raising_module = "tests.fixtures.worker.raising_evaluator"
+        original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module)
+        try:
+            campaign_id = self._frozen_enqueued_campaign(repetitions=3)
+            for expected_streak in (1, 2):
+                with self.session_factory() as session:
+                    engineering = repository.claim_work_item(session, worker_id="w1", work_type="engineering")
+                engineering_result = execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+                self.assertTrue(engineering_result.finalized)  # engineering itself succeeds
+
+                with self.session_factory() as session:
+                    verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+                verification_result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+                self.assertEqual(verification_result.execution_validity, "infrastructure_invalid")
+
+                with self.session_factory() as session:
+                    paused = repository.record_infrastructure_outcome(session, campaign_id, verification_result.execution_validity)
+                self.assertFalse(paused)
+                with self.session_factory() as session:
+                    campaign = session.get(api_models.CampaignRow, campaign_id)
+                    self.assertEqual(campaign.consecutive_infrastructure_failures, expected_streak)
+                    self.assertEqual(campaign.state, "running")
+
+            # Third consecutive infrastructure failure: crosses the threshold.
+            with self.session_factory() as session:
+                engineering = repository.claim_work_item(session, worker_id="w1", work_type="engineering")
+            execute_leased_work(self.session_factory, engineering, worker_id="w1", work_root=self.work_root)
+            with self.session_factory() as session:
+                verification = repository.claim_work_item(session, worker_id="w1", work_type="verification")
+            verification_result = execute_leased_work(self.session_factory, verification, worker_id="w1", work_root=self.work_root)
+            with self.session_factory() as session:
+                paused = repository.record_infrastructure_outcome(session, campaign_id, verification_result.execution_validity)
+            self.assertTrue(paused)
+            with self.session_factory() as session:
+                campaign = session.get(api_models.CampaignRow, campaign_id)
+                self.assertEqual(campaign.state, "paused")
+                self.assertTrue(campaign.auto_paused)
+                self.assertIn("consecutive infrastructure failures", campaign.auto_pause_reason)
+        finally:
+            runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = original
+
+    def test_run_worker_only_scores_auto_pause_on_verification_or_regrade_outcomes(self) -> None:
+        """A completely healthy engineering phase (advances to verification) must never
+        count toward the infrastructure-failure streak, even though its own ExecutionResult
+        carries the same 'infrastructure_invalid' execution_validity value the underlying
+        runner reports for any phase that does not itself produce a scored verdict - loop.py
+        must gate on `leased.work_type`, not on `result.execution_validity` alone."""
+        campaign_id = self._frozen_enqueued_campaign(repetitions=1)
+        processed = run_worker(self.session_factory, worker_id="w1", work_root=self.work_root, max_iterations=1)
+        self.assertEqual(processed, 1)
+        with self.session_factory() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            # A lone successful engineering phase must leave the streak at zero.
+            self.assertEqual(campaign.consecutive_infrastructure_failures, 0)
+            self.assertEqual(campaign.state, "running")
+
+    def test_task_failures_alone_never_auto_pause_and_reset_the_counter(self) -> None:
+        """Negative test (explicitly required): a scored candidate outcome is NOT an
+        infrastructure failure, however many occur in a row, and must never trigger
+        auto-pause - exercised directly at the exact boundary `record_infrastructure_outcome`
+        enforces, independent of which real fixture happens to produce which outcome."""
+        campaign_id = self._frozen_enqueued_campaign(repetitions=1)
+        with self.session_factory() as session:
+            for verdict_validity in ("valid", "valid", "valid", "valid", "valid"):
+                paused = repository.record_infrastructure_outcome(session, campaign_id, verdict_validity)
+                self.assertFalse(paused)
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.consecutive_infrastructure_failures, 0)
+            self.assertEqual(campaign.state, "running")
+            self.assertFalse(campaign.auto_paused)
+
+    def test_an_infrastructure_streak_is_reset_by_one_non_infrastructure_outcome(self) -> None:
+        campaign_id = self._frozen_enqueued_campaign(repetitions=1)
+        with self.session_factory() as session:
+            repository.record_infrastructure_outcome(session, campaign_id, "infrastructure_invalid")
+            repository.record_infrastructure_outcome(session, campaign_id, "infrastructure_invalid")
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.consecutive_infrastructure_failures, 2)
+        with self.session_factory() as session:
+            repository.record_infrastructure_outcome(session, campaign_id, "valid")
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.consecutive_infrastructure_failures, 0)
+        with self.session_factory() as session:
+            # Two more infrastructure failures after the reset must NOT reach the
+            # threshold - proving the streak genuinely broke, not merely paused counting.
+            repository.record_infrastructure_outcome(session, campaign_id, "infrastructure_invalid")
+            paused = repository.record_infrastructure_outcome(session, campaign_id, "infrastructure_invalid")
+            self.assertFalse(paused)
+
+    def test_kill_switch_stops_all_new_dispatch_platform_wide(self) -> None:
+        """The kill switch is global and independent of any one campaign's health -
+        distinct from auto-pause above. Activating it must deny a claim outright even for a
+        perfectly healthy, freshly-frozen campaign with ready work."""
+        self._frozen_enqueued_campaign(repetitions=1)
+        with self.session_factory() as session:
+            self.assertFalse(repository.is_kill_switch_active(session))
+            claimed = repository.claim_work_item(session, worker_id="w1")
+            self.assertIsNotNone(claimed)  # sanity: dispatch works before the switch is thrown
+
+        with self.session_factory() as session:
+            requested = repository.activate_kill_switch(session, activated_by_user_id=None, reason="spend investigation")
+            self.assertGreaterEqual(requested, 1)  # the still-running campaign's teardown was requested
+
+        with self.session_factory() as session:
+            self.assertTrue(repository.is_kill_switch_active(session))
+            denied = repository.claim_work_item(session, worker_id="w2")
+            self.assertIsNone(denied)  # nothing new dispatches while active, regardless of ready work
+
+        with self.session_factory() as session:
+            repository.deactivate_kill_switch(session)
+            self.assertFalse(repository.is_kill_switch_active(session))
 
 
 if __name__ == "__main__":

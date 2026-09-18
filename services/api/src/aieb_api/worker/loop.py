@@ -8,6 +8,7 @@ never the same one twice.
 from __future__ import annotations
 
 import os
+import signal
 import threading
 import time
 import uuid
@@ -26,6 +27,25 @@ from .runner_bridge import execute_leased_work
 
 def _campaign_id_for_trial(session: Session, trial_id: uuid.UUID) -> uuid.UUID:
     return session.execute(select(TrialRow.campaign_id).where(TrialRow.id == trial_id)).scalar_one()
+
+
+def install_drain_handlers(stop_event: threading.Event) -> None:
+    """ENG-020 worker draining (spec section 40): SIGTERM/SIGINT set `stop_event`, which
+    `run_worker` already checks at the top of every iteration (before claiming) - so a signal
+    lets the currently in-flight work item finish and finalize normally, then stops claiming
+    new ones and returns cleanly. This is deliberately NOT `cancel_event` (campaign
+    cancellation, which interrupts in-flight work): draining never touches work already
+    claimed, so no lease is ever abandoned mid-attempt for the reconciler to have to recover.
+    A deployed worker with no handler installed has no way to reach `stop_event` at all - an
+    orchestrator's SIGTERM just kills it mid-attempt and orphans the lease, which is exactly
+    the failure this closes."""
+
+    def _handle(signum: int, _frame: object) -> None:
+        log_event("worker.drain_signal_received", signal=signal.Signals(signum).name)
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, _handle)
 
 
 def run_worker(
@@ -87,6 +107,16 @@ def run_worker(
             finalized=result.finalized, execution_validity=result.execution_validity, verdict=result.verdict,
         )
         with session_factory() as session:
+            # Auto-pause is scored on VERIFICATION (and regrade) outcomes only: an
+            # engineering-only ExecutionResult's `execution_validity` is not a real verdict on
+            # whether the trial is healthy (a plain successful engineering phase that advanced
+            # to verification reports the same "infrastructure_invalid" value the underlying
+            # runner outcome carries for a phase that never itself produces a scored verdict) -
+            # counting it would auto-pause on completely normal engineering activity.
+            if leased.work_type in ("verification", "regrade"):
+                auto_paused = repository.record_infrastructure_outcome(session, campaign_id, result.execution_validity)
+                if auto_paused:
+                    log_event("worker.campaign_auto_paused", worker_id=worker_id, campaign_id=str(campaign_id))
             repository.maybe_complete_cancellation(session, campaign_id)
             repository.maybe_complete_campaign(session, campaign_id)
             from ..regrading import complete_correction_runs
@@ -102,11 +132,14 @@ def main() -> None:
     poll_seconds = float(os.environ.get("AIEB_WORKER_POLL_SECONDS", "1.0"))
     lease_seconds = int(os.environ.get("AIEB_WORKER_LEASE_SECONDS", str(repository.DEFAULT_LEASE_SECONDS)))
     candidate_variant = os.environ.get("AIEB_WORKER_CANDIDATE_VARIANT", "reference")
+    stop_event = threading.Event()
+    install_drain_handlers(stop_event)
     log_event("worker.start", worker_id=worker_id, work_root=str(work_root))
     run_worker(
         session_factory, worker_id=worker_id, work_root=work_root, poll_seconds=poll_seconds,
-        lease_seconds=lease_seconds, candidate_variant=candidate_variant,
+        lease_seconds=lease_seconds, candidate_variant=candidate_variant, stop_event=stop_event,
     )
+    log_event("worker.drained", worker_id=worker_id)
 
 
 if __name__ == "__main__":

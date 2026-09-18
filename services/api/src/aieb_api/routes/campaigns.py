@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import budgets
 from ..auth import Identity, require_role
 from ..db import get_session
-from ..errors import conflict, invalid_request, not_found, stale_revision
+from ..errors import conflict, forbidden, invalid_request, not_found, stale_revision
 from ..idempotency import check_or_reserve, finalize, principal_scope
 from ..models import (
     AttemptRow,
@@ -47,6 +47,7 @@ from ..schemas import (
     MatrixPreview,
     MatrixPreviewCell,
     MatrixPreviewTrial,
+    ResumeCampaignRequest,
 )
 from ..worker import repository
 
@@ -447,16 +448,35 @@ def pause_campaign(
 @router.post("/{campaign_id}/resume", response_model=CampaignStateResponse)
 def resume_campaign(
     campaign_id: UUID,
+    body: ResumeCampaignRequest = ResumeCampaignRequest(),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
-    return _transition(
+    """ENG-020 (spec sections 39/48): a campaign the auto-pause mechanism paused requires
+    `acknowledge_auto_pause=True` to resume - a plain resume (as for a manual pause) is
+    refused, so the operator review the mechanism exists for cannot be skipped by habit."""
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None:
+        raise not_found()
+    if campaign.state == "paused" and campaign.auto_paused and not body.acknowledge_auto_pause:
+        raise forbidden(
+            "this campaign was paused automatically after repeated infrastructure failures "
+            f"({campaign.auto_pause_reason}); resuming requires acknowledge_auto_pause=true "
+            "after operator review"
+        )
+    response = _transition(
         session, campaign_id, frm=("paused",), to="running", notice="Resumed: trial dispatch continues.",
         idempotency_scope=principal_scope(
             f"POST /v1/campaigns/{campaign_id}/resume", str(_current_user_id(session, identity))),
         idempotency_key=idempotency_key,
     )
+    if campaign.auto_paused and response.campaign.state == "running":
+        campaign.auto_paused = False
+        campaign.auto_pause_reason = None
+        campaign.consecutive_infrastructure_failures = 0
+        session.commit()
+    return response
 
 
 @router.post("/{campaign_id}/cancel", response_model=CampaignStateResponse)
