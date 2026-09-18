@@ -5,6 +5,44 @@ constraint ENG-001/ENG-019 disclose). This closes what is genuinely implementabl
 without provisioning paid infrastructure or deploying anything public, and explicitly names
 what stays blocked.
 
+## Third independent review round (2026-09-18) - two silently-dropped clauses closed, one gap disclosed instead of introduced late
+
+A further review, re-reading Prompt 15's own text clause by clause against the tree, found two
+requirements this document previously never mentioned at all - not fixed, not disclosed,
+simply absent, which is worse than a disclosed gap:
+
+1. **"Keep active campaign toolchains pinned across software upgrades" had no test anywhere.**
+   It was in this project's own plan ("prove a frozen campaign's manifest doesn't shift under a
+   simulated software upgrade") but never built. Closed for real:
+   `tests/test_api_service.py::test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade`
+   freezes a real campaign, THEN registers a genuinely newer entrant revision (same slug,
+   `agent_version` "1.0.0" -> "2.0.0", simulating a real deploy of an updated agent), and
+   proves the already-frozen campaign's `resolved` manifest is completely unaffected - both at
+   the raw database row and through a fresh `GET /v1/campaigns/{id}`. This is the existing
+   ENG-002/ENG-014 frozen-manifest design (a snapshot taken at freeze time, not a live
+   reference); the gap was the missing test, not missing machinery.
+2. **"Exact staging validation steps" were never written**, even though Prompt 15 requires
+   them specifically because cloud is unavailable ("If unavailable, produce complete
+   infrastructure code, local tests, exact staging validation steps and explicitly blocked
+   official gates"). `deployment-topology.md` covered components/credentials/environments/
+   rollback/DR targets - all descriptive. Added `staging-validation-steps.md`: the ordered
+   procedure (deploy, migrate, verify, smoke, rollback) an operator executes against a real
+   staging environment the day cloud authorization exists - the deliverable that converts
+   "blocked" into "ready to run when unblocked," citing the exact commands/scripts already
+   built and locally verified in this repository rather than inventing new ones.
+
+Also: Python lint/type-checking CI was claimed covered by a workflow comment
+("lint/type/unit are covered by the existing per-area workflows' own unittest invocations")
+that conflated unit testing with linting/type-checking - neither exists for Python anywhere in
+this repository (no ruff/mypy/pyright config). `uv tool run ruff check .` was tried while
+fixing this and found 400+ pre-existing findings across the whole codebase, unrelated to
+Prompt 15's own scope. Introducing a new lint gate this late would either fail immediately on
+that pre-existing surface or require touching many unrelated files ("implement only the
+requested phase" - this project's own working rule) - so the misleading comment is corrected
+and the gap disclosed in `release-candidate.yml` directly, rather than either overclaiming or
+scope-creeping into an unrelated cleanup. TypeScript IS type-checked (the website's build/type
+checks already run in `eng015-verification.yml`) - the gap is Python-only.
+
 ## Independent review round (2026-09-18) - one confirmed bug fixed, one test restructured
 
 - **The kill switch silently skipped paused campaigns.** `activate_kill_switch` selects
@@ -115,6 +153,13 @@ duration, which is reported only as a disclosed local-proxy measurement):
 - `capped-live-smoke` is a structural placeholder only: it documents the required protected-
   environment gate and deliberately fails immediately with an explanatory warning, since no
   cloud provider or spend authorization exists to run a real live smoke test against (ADR-12).
+- **Python lint/type-checking is not covered by any CI gate** (no ruff/mypy/pyright config
+  exists anywhere in this repository). Not introduced this late, deliberately: `uv tool run
+  ruff check .` was tried and found 400+ pre-existing findings across unrelated code; adding a
+  new lint gate now would either fail immediately on that surface or scope-creep this phase's
+  work into fixing many unrelated files. TypeScript IS type-checked (website build/type checks
+  already run in `eng015-verification.yml`) - the gap is Python-only. See
+  `release-candidate.yml`'s `full-gate-chain` job comment for the full disclosure.
 
 ## Verified results (actual, measured)
 
@@ -146,6 +191,11 @@ duration, which is reported only as a disclosed local-proxy measurement):
   (disclosed local-proxy measurement, not a production RPO/RTO figure - spec section 40's real
   targets, RPO <=15 minutes / RTO <=4 hours, require real staging/production infrastructure this
   environment does not have).
+- Toolchain pinning across a simulated software upgrade:
+  `tests/test_api_service.py::test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade`
+  - **1/1 passed**. Freezes a real campaign, registers a genuinely newer entrant revision under
+  the same slug, and confirms the frozen campaign's manifest is completely unaffected, at both
+  the database row and the API response.
 - Full backend regression after all of the above: see the commit's own verification note for
   the exact discovery-run count (this document is written before that final run completes, to
   keep the two artifacts in sync rather than back-filling a number after the fact).

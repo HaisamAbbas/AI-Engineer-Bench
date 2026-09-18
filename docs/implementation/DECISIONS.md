@@ -782,3 +782,51 @@ This log records implementation choices made while executing the source specific
   ENG-019 and ENG-020 remain IN_PROGRESS with the same disclosed external-acceptance gates as
   ENG019-001/ENG020-001, plus the newly-disclosed per-attempt-credential gap and the per-backend
   auto-pause scoping deviation.
+
+## ENG019-003 / ENG020-004 - Third independent review: two of the prompt's own three named threats untested and invisible; two silently-dropped clauses closed
+
+- Date: 2026-09-18
+- Status: accepted (fixes and disclosures; scope remains IN_PROGRESS)
+- Decision: a review re-read Prompt 15's own text clause by clause against the tree, not just
+  against prior findings, and found problems worse than incomplete work: requirements that
+  were neither implemented NOR disclosed, so a reader had no way to know they were missing.
+  1. **The acceptance sentence quoted in the ENG-019 evidence document's own module docstring
+     - "no host, secret, hidden-label, or other-trial access" - was only one-third tested**
+     (metadata access only); host access and hidden-label access had no test, and neither was
+     listed as a gap. Separately, "no contestant Docker socket **or evaluator answer-key
+     mount**" was only half-enforced (socket only). Fixed for two of the three: replaced the
+     narrow `_find_docker_socket_mount` with a generalized, YAML-parsed
+     `_find_unauthorized_host_mount` treating Docker socket access, evaluator-answer-key
+     access (this repository's real `tests/maintainer/` hidden-fixture root, named explicitly),
+     and general host-path escape as one principle - a task never legitimately mounts anything
+     from outside its own directory. 9 new tests cover each case plus the negative cases
+     (a named Docker volume and an in-task-directory bind mount are correctly NOT flagged).
+     Cross-trial access remains genuinely untested (needs live multi-container Docker
+     orchestration this pass did not build) - moved from silently absent to explicitly
+     disclosed under "Remaining external acceptance," which is the honest outcome the review
+     asked for even where the underlying work wasn't done.
+  2. **"Keep active campaign toolchains pinned across software upgrades" had no test anywhere**,
+     despite being in this project's own plan. Closed:
+     `test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade` freezes
+     a real campaign, registers a genuinely newer entrant revision under the same slug, and
+     proves the frozen campaign's manifest is unaffected - the existing ENG-002/ENG-014
+     frozen-manifest design, the gap was the missing test, not missing machinery.
+  3. **"Exact staging validation steps" were never written**, though Prompt 15 requires them
+     specifically because cloud is unavailable. Added `staging-validation-steps.md`: the
+     ordered deploy/migrate/verify/smoke/rollback procedure an operator runs against real
+     staging infrastructure, citing exact commands/scripts already built and locally verified
+     here rather than inventing new ones.
+  4. **A workflow comment claimed Python lint/type CI was covered by "the existing per-area
+     workflows' own unittest invocations"** - unit testing is neither linting nor type
+     checking, and neither exists for Python anywhere in this repository. `uv tool run ruff
+     check .` found 400+ pre-existing findings unrelated to Prompt 15's scope; introducing a
+     new gate now would fail immediately on that surface or require touching many unrelated
+     files ("implement only the requested phase" - this project's own working rule). The
+     comment is corrected and the gap disclosed directly in `release-candidate.yml`, per the
+     review's own offered fallback, rather than either overclaiming or scope-creeping.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` grew from 16 to 23 tests, all
+  passing. `tests/test_api_service.py` gained the toolchain-pinning test, passing. Evidence
+  docs (`sandbox-review.md`, `operations-review.md`) and STATUS.md rewritten so every one of
+  these five clauses - the two built and the three disclosed - is now visible, matching this
+  project's standing rule that undisclosed gaps are worse than disclosed ones. ENG-019 and
+  ENG-020 remain IN_PROGRESS; no scope was silently widened or narrowed.

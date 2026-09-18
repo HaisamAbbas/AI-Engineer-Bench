@@ -8,10 +8,23 @@ permissions:
 jobs:
   # spec section 42's "Release candidate | Signed release branch/tag | All required gates;
   # staging deploy; restore/rollback relevant checks; docs/examples | Capped smoke only."
-  # This job re-runs the full local gate set this repository already has (lint/type/unit are
-  # covered by the existing per-area workflows' own unittest invocations; this adds the
-  # cross-cutting checks specific to a release candidate: full discovery, migration
-  # round-trip/rollback drill, and build artifacts/SBOM).
+  # This job re-runs the full local gate set this repository already has (unit tests are
+  # covered by the existing per-area workflows' own unittest invocations, and the website's
+  # type/build checks already run in eng015-verification.yml); this adds the cross-cutting
+  # checks specific to a release candidate: full discovery, migration round-trip/rollback
+  # drill, and build artifacts/SBOM.
+  #
+  # DISCLOSED GAP (not silently claimed as covered): there is no Python lint or type-checking
+  # gate anywhere in this repository - no ruff/mypy/pyright config in pyproject.toml, and no CI
+  # step runs one. `uv tool run ruff check .` was tried while building this workflow and found
+  # 400+ pre-existing findings across the whole codebase (many cosmetic - unsorted imports,
+  # FastAPI's own `Depends()` idiom tripping a mutable-default-argument rule - but real ones
+  # too, e.g. 18 unused imports). Introducing a new lint gate now would either fail
+  # immediately on pre-existing, unrelated code, or require touching many files outside this
+  # phase's actual scope ("implement only the requested phase" - SESSION_HANDOFF.md's own
+  # working rules) - so it is disclosed here rather than added un-triaged this late. Adding
+  # ruff (and choosing/fixing an initial rule set deliberately, not by default-enabling
+  # everything) remains real, comparatively cheap follow-up work.
   full-gate-chain:
     runs-on: ubuntu-latest
     services:

@@ -53,6 +53,56 @@ teardown request silently no-opped for a paused campaign - is fixed and tested; 
 `docs/implementation/evidence/ENG-020/operations-review.md` since it is a kill-switch/ENG-020
 concern, not this ticket's.
 
+## Second independent review round (2026-09-18) - two of the prompt's own three named threats were untested and invisible in this document
+
+A further review, re-reading Prompt 15's own test-list clause by clause against the tree (not
+just against prior findings), found the acceptance sentence quoted at the top of this document
+- *"no host, secret, hidden-label, or other-trial access"* - was only ONE-THIRD actually
+tested (metadata access only); host access and hidden-label access had no test at all, and
+neither gap was listed under "Remaining external acceptance" - meaning a reader could
+reasonably conclude the quoted sentence was fully covered by a green 16/16 test file. That is
+exactly the class of problem this project's disclosure discipline exists to prevent. Separately,
+"no contestant Docker socket **or evaluator answer-key mount**" was only half-enforced - the
+socket half had a real check, the answer-key half had none.
+
+Fixed: `_find_docker_socket_mount()` is replaced by a generalized, YAML-parsed
+`_find_unauthorized_host_mount()` that treats Docker socket access, evaluator-answer-key
+access, and general host-path access as ONE underlying principle - a task never legitimately
+needs to bind-mount anything from outside its own directory, so ANY bind-mount source
+resolving outside `task_dir` is refused, with the Docker socket and this repository's real
+hidden-fixture root (`tests/maintainer/`) called out by name for a clearer error when they are
+the specific offender. This closes host access and the evaluator-answer-key mount for real,
+with real tests (`tests/test_eng019_sandbox_threat_model.py::UnauthorizedHostMountDetectionTest`,
+9 tests): a clean real fixture is not flagged; the Docker socket is flagged (both compose-file
+naming conventions); an arbitrary host path (`/etc/shadow`) is flagged; this repository's real
+`tests/maintainer/` directory is flagged by name when mounted; a relative bind-mount source
+that resolves outside the task directory via the compose file's own directory is flagged; a
+named Docker volume (not a host path at all) is correctly NOT flagged; a bind mount within the
+task's own directory is correctly NOT flagged; and `launch()` genuinely refuses both the
+socket and a generic host-path case, not just the socket.
+
+**Cross-trial access remains untested and is now explicitly disclosed as such** (moved to
+"Remaining external acceptance" below), rather than left silently absent: a real adversarial
+test (two concurrently running containers, one attempting to read or reach the other's
+workspace/network) requires live multi-container Docker orchestration this pass did not build.
+Docker Compose's own default behavior (each trial gets its own project-scoped network,
+confirmed by this adapter's existing `cleanup()` naming convention - `f"{trial_name}__env"` is
+literally the compose project name Harbor derives per trial) is a real, load-bearing property
+that argues cross-trial network isolation likely already holds by construction - but "likely
+holds by construction" is exactly the standard this same review round already rejected once
+for the Docker-socket check, so it is disclosed as unverified, not asserted as tested.
+
+Also cited (was previously built but never referenced from this document): deadline and
+cleanup-failure coverage that Prompt 15's own test list names is not new - it already exists
+and was re-run to confirm it still passes:
+`tests/test_attempt_lifecycle.py::AttemptLifecycleTests::test_deadline_stops_process_tree_before_artifact_freeze`
+(a deadline stops the process tree, including a detached late-writing child, before the
+artifact freeze - the late write never appears in the frozen candidate),
+`::test_cancel_event_stops_engineering_before_deadline_with_no_verdict` (cancellation
+interrupts a still-running attempt before its deadline, never producing a verdict), and
+`::test_configuration_and_teardown_failures_do_not_become_verdicts` (a configuration or
+teardown failure is classified as infrastructure-invalid, never silently scored as a verdict).
+
 ## Implemented
 
 - `packages/aieb-runner/src/aieb_runner/backends/base.py`: `IsolationPolicy` (egress allowlist,
@@ -71,9 +121,10 @@ concern, not this ticket's.
 - `packages/aieb-runner/src/aieb_runner/backends/harbor/backend.py`: `HarborBackend.launch()`
   now (1) refuses outright (raises `UnhardenedBackendError`, before any Docker/Harbor call) when
   `hardened_isolation_required=True`; (2) wires a token-authenticated `EgressGuardProxy` into the
-  launched container's environment; (3) refuses launch if the task's own
-  `environment/docker-compose*.yaml` mounts the Docker socket (real check, see above); (4) closes
-  the guard proxy on cleanup.
+  launched container's environment; (3) refuses launch if the task's own environment definition
+  mounts the Docker socket, the hidden evaluator fixture directory, or any other host path
+  outside the task's own directory (`_find_unauthorized_host_mount`, YAML-parsed, real check -
+  see the second review round below); (4) closes the guard proxy on cleanup.
 - ADR-11's owed S3-compatible artifact storage migration is explicitly **re-deferred**, not
   silently absorbed into this pass or dropped - it remains its own ledgered follow-up.
 
@@ -95,21 +146,25 @@ added here.
 
 ## Verified results (actual, measured)
 
-- `tests/test_eng019_sandbox_threat_model.py`: **16/16 passed** (~7s, up from 11 after this
-  review round's fixes). Covers: deny-by-default denies an unlisted host and logs it; an empty
-  allowlist denies everything; SE-02 (cloud-metadata host denied and logged even if
-  allowlisted); an allowlisted host is genuinely forwarded (proven against a real local HTTP
-  server); an unauthenticated request is refused with 407 before any policy check; the embedded
-  per-instance token authenticates a real request; `env_vars()` advertises the
+- `tests/test_eng019_sandbox_threat_model.py`: **23/23 passed** (up from 11, then 16, then 23
+  across this and the second review round). Covers: deny-by-default denies an unlisted host and
+  logs it; an empty allowlist denies everything; SE-02 (cloud-metadata host denied and logged
+  even if allowlisted); an allowlisted host is genuinely forwarded (proven against a real local
+  HTTP server); an unauthenticated request is refused with 407 before any policy check; the
+  embedded per-instance token authenticates a real request; `env_vars()` advertises the
   container-reachable host, not the bind host; a hardened-isolation-required launch is refused
   before any Docker/Harbor call; a non-hardened-required launch is NOT refused (the guard is
-  conditional, not blanket); a task mounting the Docker socket in its own environment
-  definition is detected and its launch refused; a clean real fixture task is not flagged;
+  conditional, not blanket); a task mounting the Docker socket, an arbitrary host path, or this
+  repository's real hidden-fixture directory is detected (both compose-file naming
+  conventions) and its launch refused; a named Docker volume and an in-directory bind mount are
+  correctly NOT flagged; a clean real fixture task is not flagged;
   `IsolationPolicy`/`ExecutionSpec` defaults are deny-by-default.
 - SE-01 (escaping symlink -> artifact rejected): cited, not duplicated -
   `tests/test_candidate_artifacts.py::CandidateArtifactsTest::test_rejects_symlink_escape`
   (ENG-003), re-run and confirmed passing as part of the new `sandbox-integration.yml` workflow.
 - Retention reference safety: cited above, re-run and confirmed passing.
+- Deadline and cleanup-failure coverage (Prompt 15's own test list): cited above, all three
+  re-run and confirmed passing (`tests/test_attempt_lifecycle.py`, 3 tests).
 
 ## Remaining external acceptance (unchanged or newly disclosed)
 
@@ -119,6 +174,13 @@ added here.
   egress guard here is real, tested, and now authenticated, but it is still an application-layer
   convention (proxy environment variables), not a network-namespace-level guarantee against a
   hostile binary that opens raw sockets and ignores them entirely.
+- **Cross-trial access: not tested.** A real adversarial two-container test (one trial writes,
+  a concurrently running different trial attempts to read it, or reach it over the network)
+  was not built - it requires live multi-container Docker orchestration beyond what this pass
+  built. Docker Compose's default per-project network isolation (confirmed structurally via
+  this adapter's own project-naming convention) argues this likely already holds, but "likely
+  holds by construction" is not treated as equivalent to tested, matching the standard this
+  same review applied to the Docker-socket check.
 - **Per-attempt short-lived credentials and candidate/verifier identity separation (spec section
   37): not implemented.** `scoped_credential_id` was removed from `IsolationPolicy` rather than
   left as an inert field - no real cloud credential-issuance system exists in this environment

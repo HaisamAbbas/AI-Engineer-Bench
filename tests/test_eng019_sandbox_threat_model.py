@@ -26,7 +26,7 @@ from aieb_runner.backends.base import (
     UnhardenedBackendError,
 )
 from aieb_runner.backends.egress_proxy import EgressGuardProxy
-from aieb_runner.backends.harbor.backend import HarborBackend, _find_docker_socket_mount
+from aieb_runner.backends.harbor.backend import HarborBackend, _find_unauthorized_host_mount
 
 
 class EgressGuardProxyTest(unittest.TestCase):
@@ -174,28 +174,34 @@ class HarborBackendRefusalTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIsInstance(ctx.exception, UnhardenedBackendError)
 
 
-class DockerSocketMountDetectionTest(unittest.TestCase):
-    """A real check against a task's own environment definition, not the adapter's own
-    EnvironmentConfig (which the adapter itself constructs and never sets `mounts` on, so
-    checking IT could never find anything a real task actually defines - see
-    _find_docker_socket_mount's docstring)."""
+class UnauthorizedHostMountDetectionTest(unittest.TestCase):
+    """A real, YAML-parsed check against a task's own environment definition, not the
+    adapter's own EnvironmentConfig (which the adapter itself constructs and never sets
+    `mounts` on, so checking IT could never find anything a real task actually defines - see
+    _find_unauthorized_host_mount's docstring). Covers, as one principle: no contestant Docker
+    socket, no evaluator answer-key mount, and no host-path access outside the task directory
+    (spec sections 37/43)."""
+
+    def _write_compose(self, task_dir: Path, volumes_yaml: str) -> None:
+        environment_dir = task_dir / "environment"
+        environment_dir.mkdir(exist_ok=True)
+        (environment_dir / "docker-compose.yaml").write_text(
+            f"services:\n  main:\n    volumes:\n{volumes_yaml}\n", encoding="utf-8",
+        )
 
     def test_a_clean_real_fixture_task_is_not_flagged(self) -> None:
         real_fixture = Path(__file__).resolve().parent / "fixtures" / "eng001_harbor" / "task"
-        self.assertIsNone(_find_docker_socket_mount(real_fixture))
+        self.assertIsNone(_find_unauthorized_host_mount(real_fixture))
 
     def test_a_task_mounting_the_docker_socket_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp)
-            environment_dir = task_dir / "environment"
-            environment_dir.mkdir()
-            (environment_dir / "docker-compose.yaml").write_text(
-                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
-                encoding="utf-8",
-            )
-            offender = _find_docker_socket_mount(task_dir)
-            self.assertIsNotNone(offender)
-            self.assertEqual(offender.name, "docker-compose.yaml")
+            self._write_compose(task_dir, "      - /var/run/docker.sock:/var/run/docker.sock")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            offending_file, reason = offense
+            self.assertEqual(offending_file.name, "docker-compose.yaml")
+            self.assertIn("Docker socket", reason)
 
     def test_docker_s_current_canonical_compose_filename_is_also_scanned(self) -> None:
         """Docker's current canonical filename has no `docker-` prefix (`compose.yaml`) - a
@@ -208,9 +214,64 @@ class DockerSocketMountDetectionTest(unittest.TestCase):
                 "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
                 encoding="utf-8",
             )
-            offender = _find_docker_socket_mount(task_dir)
-            self.assertIsNotNone(offender)
-            self.assertEqual(offender.name, "compose.yaml")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertEqual(offense[0].name, "compose.yaml")
+
+    def test_a_task_mounting_an_arbitrary_host_path_is_flagged(self) -> None:
+        """Host access, not just the Docker socket specifically - spec section 43's SE-family
+        threat list names arbitrary host access, not one specific path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - /etc/shadow:/tmp/stolen")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("outside the task directory", offense[1])
+
+    def test_a_task_mounting_the_hidden_evaluator_fixture_directory_is_flagged(self) -> None:
+        """The evaluator answer-key mount case (spec section 43): a task pointing a bind mount
+        at this repository's real hidden-fixture root must be refused with a specific,
+        legible reason - not merely caught as generic host escape."""
+        repo_root = Path(__file__).resolve().parents[1]
+        hidden_fixture_root = repo_root / "tests" / "maintainer"
+        self.assertTrue(hidden_fixture_root.is_dir())  # sanity: this really is the real directory
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, f"      - {hidden_fixture_root.as_posix()}:/tmp/answer-key")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("hidden evaluator fixture", offense[1])
+
+    def test_a_relative_bind_mount_escaping_the_task_directory_is_flagged(self) -> None:
+        """A relative source (`../../elsewhere`) resolves against the COMPOSE FILE's own
+        directory, per real Docker Compose semantics - and can still escape the task dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp) / "task"
+            (task_dir / "environment").mkdir(parents=True)
+            outside_target = Path(tmp) / "outside"
+            outside_target.mkdir()
+            self._write_compose(task_dir, "      - ../../outside:/tmp/escaped")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("outside the task directory", offense[1])
+
+    def test_a_named_volume_is_not_a_host_path_and_is_not_flagged(self) -> None:
+        """`myvolume:/container/path` (no leading /, ./, ../, or drive letter) is a
+        Docker-managed named volume, not a host bind mount - it cannot escape anywhere and
+        must not be flagged as if it were a host path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - app-data:/var/lib/app-data")
+            self.assertIsNone(_find_unauthorized_host_mount(task_dir))
+
+    def test_a_bind_mount_within_the_task_directory_is_not_flagged(self) -> None:
+        """A task legitimately bind-mounting its OWN subdirectory (e.g. the build context) is
+        not host escape and must not be refused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            (task_dir / "data").mkdir()
+            self._write_compose(task_dir, f"      - {(task_dir / 'data').as_posix()}:/app/data")
+            self.assertIsNone(_find_unauthorized_host_mount(task_dir))
 
     async def _launch_with_task_dir(self, task_dir: Path) -> None:
         backend = HarborBackend()
@@ -223,12 +284,14 @@ class DockerSocketMountDetectionTest(unittest.TestCase):
     def test_launch_refuses_a_task_that_mounts_the_docker_socket(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_dir = Path(tmp)
-            environment_dir = task_dir / "environment"
-            environment_dir.mkdir()
-            (environment_dir / "docker-compose.yaml").write_text(
-                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
-                encoding="utf-8",
-            )
+            self._write_compose(task_dir, "      - /var/run/docker.sock:/var/run/docker.sock")
+            with self.assertRaises(UnhardenedBackendError):
+                asyncio.run(self._launch_with_task_dir(task_dir))
+
+    def test_launch_refuses_a_task_that_mounts_a_host_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - /home:/tmp/stolen-home")
             with self.assertRaises(UnhardenedBackendError):
                 asyncio.run(self._launch_with_task_dir(task_dir))
 

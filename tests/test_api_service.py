@@ -537,6 +537,48 @@ class ApiServiceTests(unittest.TestCase):
         with db.session_factory()() as session:
             self.assertEqual(session.execute(select(func.count()).select_from(api_models.TrialRow).where(api_models.TrialRow.campaign_id == uuid.UUID(campaign_id))).scalar_one(), 0)
 
+    def test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade(self) -> None:
+        """ENG-020 (Prompt 15: "keep active campaign toolchains pinned across software
+        upgrades"). Simulates the real deployment scenario: a campaign is already frozen and
+        in flight when a NEWER task/entrant revision is registered (a normal software
+        upgrade/redeploy, not a mistake) - the already-frozen campaign's own resolved
+        manifest must not shift underneath it. This is the existing ENG-002/ENG-014
+        frozen-manifest design (`campaign.resolved` is a snapshot taken at freeze time, not a
+        live foreign-key reference); this test proves it holds across a genuine registration
+        of a new revision, not merely that the column is immutable in isolation."""
+        campaign_id = self._create_and_freeze(repetitions=1)
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            original_entrant_version = campaign.resolved["entrants"][0]["agent_version"]
+        self.assertEqual(original_entrant_version, "1.0.0")
+
+        # Simulate a software upgrade: register a NEWER revision of the SAME entrant slug,
+        # exactly as a real deploy would when an agent's implementation is updated.
+        upgraded_manifest = {
+            "schema_version": "aieb.entrant/v1", "id": "agent-a", "track": "agents", "agent_implementation": "demo",
+            "agent_version": "2.0.0", "engineer_model": {"provider_class": "demo", "requested_model": "new-model", "settings_digest": "f" * 64},
+            "prompt_digest": "b" * 64, "tools_digest": "c" * 64, "capabilities": ["cpu-fixture-standard-v1"],
+            "credential_ref_type": "broker",
+        }
+        with db.session_factory()() as session:
+            session.add(api_models.EntrantRevisionRow(
+                slug="agent-a", version="2.0.0", track="agents", config_digest="agent-a-upgraded-digest",
+                capabilities=["cpu-fixture-standard-v1"], manifest=upgraded_manifest,
+            ))
+            session.commit()
+
+        # The already-frozen campaign's toolchain must be completely unaffected: still the
+        # ORIGINAL version, not the one just registered.
+        with db.session_factory()() as session:
+            campaign = session.get(api_models.CampaignRow, uuid.UUID(campaign_id))
+            self.assertEqual(campaign.resolved["entrants"][0]["agent_version"], "1.0.0")
+            self.assertNotEqual(campaign.resolved["entrants"][0]["agent_version"], "2.0.0")
+
+        # And a fresh GET of the campaign confirms the API surface agrees, not only the raw row.
+        response = self.client.get(f"/v1/campaigns/{campaign_id}", headers=_auth_header(("operator",)))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["campaign"]["state"], "frozen")
+
     def test_start_reserves_budget_enqueues_trials_and_runs(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=2, budget_limits="1.500000")
         response = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-1"})
