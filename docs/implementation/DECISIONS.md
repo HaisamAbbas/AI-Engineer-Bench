@@ -874,3 +874,83 @@ This log records implementation choices made while executing the source specific
   these five clauses - the two built and the three disclosed - is now visible, matching this
   project's standing rule that undisclosed gaps are worse than disclosed ones. ENG-019 and
   ENG-020 remain IN_PROGRESS; no scope was silently widened or narrowed.
+
+## ENG023 - Fixed reference model-track loop (plan corrected after codebase verification)
+
+- Date: 2026-09-17
+- Status: accepted
+- Decision: Prompt 17 — a fixed reference model-track loop for ENG-023. This is a separate model track per architecture section 2 ("Evaluation subject and tracks"): same tasks, same isolation, same evaluators, but with a fixed reference coding-agent loop where only the engineer model varies. Do NOT merge with agent-track scores.
+
+### P0 precondition (explicitly acknowledged, not bypassed)
+
+Architecture section 18 ("Reference execution setup for the model track") states: "Implement only after agent-track P0 works." P0 requires ENG-001's real installed-agent smoke, which is `BLOCKED` (no provider/model authorization, no approved cap — see STATUS.md). This matches how ENG-012 (`development-pilot-18.json` carries `state: "prepared-not-authorized"`) and ENG-019/020 (Deferred) are handled: acknowledge the blocker explicitly rather than proceeding silently. If execution is blocked by the lack of explicit spend authorization, the campaign manifest leaves `state: "prepared-not-authorized"`, mirroring `development-pilot-18.json`'s pattern, with an explicit `execution_blocker` field.
+
+### Phase 1: Re-scoped to reuse existing fields (no redundant schema additions)
+
+A codebase verification pass confirmed that most fields the original plan proposed adding already exist. The plan is re-scoped to wire existing generic infrastructure rather than rebuild it.
+
+**Verified-existing contracts (section 2):**
+- `Track` enum already exists in `packages/aieb-core/src/aieb_core/models.py` with `AGENTS = "agents"` and `MODELS = "models"`
+- `EntrantRevision` already carries `engineer_model: ModelProfile` (with `provider_class`, `requested_model`, `reported_model`, `settings_digest`)
+- `EntrantRevision.credential_ref_type` already a `Literal["broker", "direct", "subscription"]`
+- API routes `authorized.py` already expose `requested_model`, `reported_model`, `capabilities`, `settings_digest` via `_configuration_projection()`
+
+**Verified-existing accounting (sections 14, 19):**
+- `aieb_runner/accounting.py` `BudgetEnforcement` enum already has `ESTIMATED_TIME_LIMITED` and `HARD`
+- `services/api/models.py` `UsageRequestRow.actor_role` already has CHECK constraint `actor_role in ('engineer','dev_application','verifier_application','verifier_judge')` — the four-role accounting ledger already exists, covering all model identities (engineer_model, application_model, verifier_judge_model)
+- `services/api/budgets.py` `BudgetReservationRow.enforcement` already has CHECK constraint `enforcement in ('hard','estimated_time_limited')`
+- `budgets.py` `reserve_campaign_budget()` already sets `enforcement="estimated_time_limited"` with the honest docstring: "no provider reservation integration yet"
+
+**Action:** No new schema fields. The model-track entrant configuration is fully served by the existing `Track`/`ModelProfile`/`credential_ref_type` contracts. The only genuine gap is the reference coding loop itself (ENG-023's actual deliverable), which requires a model provider adapter — gated behind P0/ENG-001.
+
+### Phase 2: Harbor backend integration (reuse, not rebuild)
+
+**Verified-existing integration:**
+- `HarborBackend.launch()` already builds `AgentConfig(import_path=spec.agent_import_path, override_timeout_sec=spec.agent_timeout_sec)` — the model-track reference loop is dispatched as a different `agent_import_path`, no new isolation boundaries
+- Harbor pinned to 0.22.0 via `HARBOR_VERSION` constant; `PROVIDES_HARDENED_ISOLATION = False` and `launch()` already refuses `hardened_isolation_required=True`
+- `_find_unauthorized_host_mount()` already enforces: no Docker socket mount, no hidden fixture mount, no host-path escape outside the task directory
+- EgressGuardProxy denies cloud-metadata hosts (`169.254.169.254`, `fd00:ec2::254`) by default
+
+**Corrected citations:**
+- Harbor boundary = section 13 ("Harbor integration boundary"), not §13 as a "boundary" subsection
+- Application models and external dependencies = section 14, not §14
+- Tracks = section 2, not §2.2
+- Budget and campaign planning = section 19, not §37
+
+### Phase 3: Acceptance tests
+
+1. **Verifier-isolation boundary test** — the existing test suite already
+   covers `_find_unauthorized_host_mount` thoroughly in
+   `tests/test_eng019_sandbox_threat_model.py::UnauthorizedHostMountDetectionTest`
+   (10 tests covering Docker socket mount, arbitrary host path, hidden fixture
+   directory, relative `../../` escape, Docker's canonical `compose.yaml`
+   filename, named volumes, and in-task bind mounts). The model track inherits
+   this protection since it uses the same Harbor backend and
+   `ExecutionSpec.agent_import_path`. No new test needed.
+
+2. **No-silent-fallback-identity test** — a model-track entrant whose
+   `ModelProfile.requested_model` maps to a provider that does not expose a
+   setting the entrant's profile claims produces a disclosed profile (not a
+   false match). This is enforced at the `agent_import_path` adapter level:
+   if the provider cannot honor `settings_digest` or returns a different
+   `reported_model`, the entrant's coverage is labeled
+   `estimated_time_limited` (via `BudgetEnforcement.ESTIMATED_TIME_LIMITED`)
+   and the discrepancy is surfaced in the `usage_request` ledger via
+   `actor_role='engineer'`, not silently approximated. Test: assert that an
+   entrant with `no_silent_model_fallback: true` and a mismatched
+   `settings_digest` produces `reported_model != requested_model` in the
+   usage ledger with `coverage_label: "estimated_time_limited"`, never a
+   silently-substituted stronger model.
+
+### Non-goals (corrected from the redundant plan)
+
+- No new `Track` enum — exists
+- No new `engineer_model` field — exists as `ModelProfile`
+- No new `coverage_label` field — reuse `BudgetEnforcement.ESTIMATED_TIME_LIMITED`
+- No new isolation boundaries — model loop is a different `agent_import_path` in the same Harbor `AgentConfig`
+- No new `actor_role` DB constraint — exists with all four roles
+- No new credential storage in task images — §14 requires environment injection at worker level; credentials never in `task.yaml` or candidate artifacts
+
+### Separate accounting for model track
+
+Per section 14, engineer model calls use an authenticated budget broker; application models use a separate identity and budget; verifier/judge calls use a third. The existing `actor_role` ledger (`engineer`, `dev_application`, `verifier_application`, `verifier_judge`) already records all model identities. Model-track entrants record their `engineer_model` identity (requested + reported) and their `credential_ref_type` on the entrant revision, never in a task image.
