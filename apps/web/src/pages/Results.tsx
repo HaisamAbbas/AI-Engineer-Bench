@@ -133,7 +133,7 @@ export function Results() {
   if (releases.isPending) return <Loading label="releases" />;
   if (releases.isError) return <ErrorState error={releases.error} onRetry={() => releases.refetch()} />;
 
-  if (releases.data.items.length === 0) {
+  if (releases.data.items.length === 0 && !publicationId) {
     return (
       <section>
         <h1>Results</h1>
@@ -154,6 +154,9 @@ export function Results() {
         value={effectivePublicationId}
         onChange={(event) => setParams({ publication: event.target.value })}
       >
+        {publicationId && !releases.data.items.some(p => p.id === publicationId) && (
+          <option value={publicationId}>{publicationId} (explicit selection)</option>
+        )}
         {releases.data.items.map((publication) => (
           <option key={publication.id} value={publication.id}>
             {publication.id} ({formatUtc(publication.created_at).display})
@@ -166,7 +169,7 @@ export function Results() {
       {results.isSuccess && (
         <ResultsTable
           data={results.data}
-          publicationCreatedAt={releases.data.items.find((p) => p.id === effectivePublicationId)?.created_at}
+          publicationCreatedAt={results.data.created_at}
           selected={selected}
           setSelected={setSelected}
           sortBy={sortBy}
@@ -204,6 +207,7 @@ function ResultsTable({
   if (rows.length === 0) {
     return (
       <EmptyState title="This publication's cohort has no entrant results yet.">
+        {notice && <p role="alert">{notice}</p>}
         <p>The snapshot exists but contains no per-entrant data - an empty cohort, not a fetch failure.</p>
       </EmptyState>
     );
@@ -239,6 +243,8 @@ function ResultsTable({
       campaign_id: data.campaign_id,
       snapshot_digest: data.snapshot_digest,
       status: data.status,
+      publication_class: data.publication_class,
+      notice: data.notice,
       supersedes_id: data.supersedes_id,
       published_at: data.created_at,
       cohort_digest: data.cohort_digest,
@@ -264,6 +270,7 @@ function ResultsTable({
       )}
       {notice && <p role="alert">{notice}</p>}
       <dl className="suite-summary">
+        <dt>Publication class</dt><dd>{data.publication_class === "non_ranked" ? "Non-ranking — descriptive evidence only" : "Ranked"}</dd>
         <dt>Coverage</dt>
         <dd>
           <span className={snapshot.complete_for_rank ? "badge badge-complete" : "badge badge-incomplete"}>

@@ -1312,6 +1312,25 @@
             "title": "Entrant Id",
             "type": "string"
           },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "publication_class": {
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
+          },
           "publication_id": {
             "format": "uuid",
             "title": "Publication Id",
@@ -1322,6 +1341,7 @@
           "entrant_id",
           "publication_id",
           "eligible",
+          "publication_class",
           "aggregate"
         ],
         "title": "EligibleEntrantPanel",
@@ -1362,6 +1382,25 @@
             ],
             "title": "Entrant Version"
           },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "publication_class": {
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
+          },
           "publication_id": {
             "format": "uuid",
             "title": "Publication Id",
@@ -1377,7 +1416,8 @@
           "campaign_id",
           "status",
           "created_at",
-          "aggregate_rate"
+          "aggregate_rate",
+          "publication_class"
         ],
         "title": "EntrantResultEntry",
         "type": "object"
@@ -1748,6 +1788,25 @@
             "title": "Entrant Id",
             "type": "string"
           },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
+          },
+          "publication_class": {
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
+          },
           "publication_id": {
             "format": "uuid",
             "title": "Publication Id",
@@ -1762,6 +1821,7 @@
           "entrant_id",
           "publication_id",
           "eligible",
+          "publication_class",
           "reason"
         ],
         "title": "IneligibleEntrantPanel",
@@ -3135,6 +3195,14 @@
             ],
             "title": "Protocol Scoring Digest"
           },
+          "publication_class": {
+            "enum": [
+              "ranked",
+              "non_ranked"
+            ],
+            "title": "Publication Class",
+            "type": "string"
+          },
           "snapshot": {
             "$ref": "#/components/schemas/AnalysisSnapshot"
           },
@@ -3160,6 +3228,7 @@
           }
         },
         "required": [
+          "publication_class",
           "id",
           "campaign_id",
           "snapshot_digest",

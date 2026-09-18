@@ -145,6 +145,12 @@ def patch_campaign(
         .returning(CampaignRow)
     ).scalar_one_or_none()
     if updated is None:
+        # The conditional UPDATE may have waited for an identical request to
+        # commit. Recheck its atomically stored response before reporting stale
+        # state/revision; a true competing edit still gets the usual conflict.
+        cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+        if cached is not None:
+            return CampaignSummary.model_validate(cached)
         row = session.get(CampaignRow, campaign_id)
         if row is None:
             raise not_found()

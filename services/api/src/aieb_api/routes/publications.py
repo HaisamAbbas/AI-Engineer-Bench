@@ -30,12 +30,9 @@ from .campaigns import _current_user_id
 
 router = APIRouter(prefix="/v1", tags=["publications"])
 
-# The `required_trace_coverage` contract: when the frozen protocol demands
-# trace coverage, EVERY selected (published) attempt must have a recorded
-# phase-lifecycle trace covering BOTH executed phases - a fenced
-# `phase.started` event with payload phase `engineering` and one with payload
-# phase `verification`. "Some event exists" is NOT coverage: an engineering
-# trace alone proves nothing about verification instrumentation.
+# Phase starts are lifecycle diagnostics ONLY, not proof of complete model,
+# application, or action instrumentation. Required trace coverage fails closed
+# until a versioned, trusted completeness contract and verifier are implemented.
 _TRACE_REQUIRED_PHASES = ("engineering", "verification")
 
 
@@ -130,7 +127,7 @@ def _selected_attempt_ids(session: Session, campaign_id: UUID) -> tuple[int, lis
 
 def _missing_trace_phases(session: Session, attempt_ids: list[UUID]) -> list[tuple[str, str]]:
     """Per selected attempt, which required phases lack a recorded
-    `phase.started` trace event. Empty means the contract holds."""
+    `phase.started` trace event. Empty proves only lifecycle-marker presence."""
     if not attempt_ids:
         return []
     events = session.execute(
@@ -161,8 +158,8 @@ def _publication_eligibility_error(session: Session, campaign: CampaignRow, snap
        must honestly reflect that. `non_ranked` publications are the only way
        to publish an incomplete snapshot, and they are labelled so they can
        never become the canonical ranked release.
-    2. `protocol.required_trace_coverage`: every selected attempt must carry
-       the phase trace contract (see `_TRACE_REQUIRED_PHASES`).
+    2. `protocol.required_trace_coverage`: fail closed; lifecycle phase starts
+       cannot establish complete model/application/action trace instrumentation.
     3. `protocol.hard_cost_ranking`: the coverage disclosure must establish
        hard-cost eligibility; an estimated-accounting snapshot is not a
        hard-cost-ranked publication.
@@ -197,6 +194,11 @@ def _publication_eligibility_error(session: Session, campaign: CampaignRow, snap
                 f"(first: attempt {attempt} lacks a recorded '{phase}' phase start); "
                 "missing evidence cannot be published as covered"
             )
+        return (
+            "protocol requires trace coverage, but complete model/application/action trace instrumentation "
+            "is not established: phase.started markers prove lifecycle presence only; "
+            "a trusted, versioned trace-completeness contract is not yet implemented"
+        )
 
     if protocol.get("hard_cost_ranking"):
         disclosure = snapshot.get("coverage_disclosure") if isinstance(snapshot, dict) else None
@@ -227,6 +229,8 @@ def prepare_publication(
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
     if cached is not None:
         return PublicationPreparationSummary.model_validate(cached)
+    if body.supersedes_publication_id and not (body.correction_reason or "").strip():
+        raise invalid_request("superseding requires a nonblank correction reason")
     if body.correction_run_id is not None:
         run = session.get(CorrectionRunRow, body.correction_run_id)
         if run is None or run.campaign_id != campaign_id:
@@ -316,6 +320,11 @@ def review_publication(
     row = session.execute(select(PublicationPreparationRow).where(
         PublicationPreparationRow.id == preparation_id,
     ).with_for_update()).scalar_one()
+    # An identical review may have committed while this request waited for
+    # the locks. Its response takes precedence over the changed status.
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+    if cached is not None:
+        return PublicationPreparationSummary.model_validate(cached)
     if row.status != "prepared":
         raise conflict("preparation has already been reviewed")
     if body.decision == "approve" and reviewer_id in {row.prepared_by_user_id, campaign.created_by_user_id}:
@@ -333,6 +342,8 @@ def review_publication(
     #     organizational independence, so the honest label is kept.
     review_kind = "independent" if body.independence_attestation else "single_maintainer"
     if body.decision == "approve":
+        if row.supersedes_publication_id and not (row.correction_reason or "").strip():
+            raise conflict("superseding requires a nonblank correction reason; prepare again")
         # Prompt 14 eligibility gates are re-verified at approval time against
         # the prepared snapshot: a gate that passed at prepare can no longer
         # be bypassed by approving a stale or mutated preparation.
@@ -422,6 +433,10 @@ def withdraw_publication(
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
     if cached is not None:
         return PublicationExport.model_validate(cached)
+    if row.status == "withdrawn" and row.withdrawal_reason != body.reason:
+        raise conflict("withdrawal reason differs from the immutable recorded reason")
+    if row.status not in {"published", "withdrawn"}:
+        raise conflict("only a published snapshot may be withdrawn")
     if row.status != "withdrawn":
         # The withdrawal rationale is recorded SEPARATELY from the correction
         # reason (`reason`): a withdrawal must never overwrite the frozen

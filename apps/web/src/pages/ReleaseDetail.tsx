@@ -28,7 +28,9 @@ export function ReleaseDetail() {
   return (
     <section>
       <h1>Release {data.id}</h1>
+      {data.notice && <p role="alert">{data.notice}</p>}
       <dl>
+        <dt>Publication class</dt><dd>{data.publication_class === "non_ranked" ? "Non-ranking — descriptive evidence only" : "Ranked"}</dd>
         <dt>Status</dt>
         <dd>{data.status}</dd>
         <dt>Campaign</dt>

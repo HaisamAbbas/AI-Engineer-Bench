@@ -42,6 +42,15 @@ from ..schemas import (
 router = APIRouter(prefix="/v1", tags=["results"])
 
 
+def _publication_notice(row: PublicationRow) -> str | None:
+    notices = []
+    if row.publication_class == "non_ranked":
+        notices.append("This publication is non-ranking; descriptive evidence only, not a ranked result or calculated comparison.")
+    if row.status != "published":
+        notices.append(f"This snapshot is {row.status}; it remains addressable but is not canonical.")
+    return " ".join(notices) or None
+
+
 def _verified_snapshot(row: PublicationRow) -> AnalysisSnapshot:
     """A publication trigger blocks a direct UPDATE to snapshot/snapshot_digest
     (see the publication-snapshot-immutability migration), but that is a
@@ -97,7 +106,7 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
     if row is None:
         raise not_found()
     campaign = session.get(CampaignRow, row.campaign_id)
-    notice = "this snapshot has been withdrawn; it remains addressable but is not canonical" if row.status == "withdrawn" else None
+    notice = _publication_notice(row)
     cohort, frozen_tasks, frozen_entrants = _frozen_manifest_data(campaign)
     response = PublicationResultsResponse(
         id=row.id, campaign_id=row.campaign_id, snapshot_digest=row.snapshot_digest, status=row.status,
@@ -109,7 +118,7 @@ def get_publication_results(publication_id: UUID, session: Session = Depends(get
         # the stored JSONB (raising 503 on either mismatch); its return value
         # is discarded below in favor of the raw `row.snapshot` dict, never
         # serialized through this.
-        snapshot=_verified_snapshot(row), notice=notice,
+        snapshot=_verified_snapshot(row), notice=notice, publication_class=row.publication_class,
     )
     # The snapshot is served as the EXACT bytes/values recorded, never
     # Pydantic-reserialized (review finding #1, seventh pass): even with
@@ -265,6 +274,7 @@ def get_entrant_results(slug: str, session: Session = Depends(get_session)) -> l
                 EntrantResultEntry(
                     publication_id=row.id, campaign_id=row.campaign_id, status=row.status,
                     created_at=row.created_at.isoformat(), aggregate_rate=snapshot.per_entrant[slug],
+                    publication_class=row.publication_class, notice=_publication_notice(row),
                     entrant_version=_entrant_version_in_campaign(session, row.campaign_id, slug),
                 )
             )
@@ -359,7 +369,10 @@ def get_comparison(
         publication_cache[pub_id] = (row, _verified_snapshot(row))
 
     unique_publication_ids = set(resolved_publication_ids)
-    if len(unique_publication_ids) == 1:
+    if any(row.publication_class == "non_ranked" for row, _ in publication_cache.values()):
+        cohort_comparable = False
+        non_comparable_reason = "A selected publication is non-ranking; descriptive panels only, no calculated winners or rate deltas."
+    elif len(unique_publication_ids) == 1:
         # Every entrant comes from the same publication - the common case -
         # so they share the same frozen cohort, task list, entrant revisions,
         # and repetition plan by construction; this is the ONLY case paired
@@ -384,15 +397,17 @@ def get_comparison(
     entrants: list[ComparisonEntrantPanel] = []
     entrant_task_rates: dict[str, dict[str, float | None]] = {}
     for entrant_id, pub_id in zip(entrant_ids, resolved_publication_ids):
-        _, snapshot = publication_cache[pub_id]
+        row, snapshot = publication_cache[pub_id]
         if entrant_id in snapshot.per_entrant:
             entrants.append(EligibleEntrantPanel(
                 entrant_id=entrant_id, publication_id=pub_id, eligible=True, aggregate=snapshot.per_entrant[entrant_id],
+                publication_class=row.publication_class, notice=_publication_notice(row),
             ))
             entrant_task_rates[entrant_id] = _task_ids_for_entrant(snapshot, entrant_id)
         else:
             entrants.append(IneligibleEntrantPanel(
                 entrant_id=entrant_id, publication_id=pub_id, eligible=False,
+                publication_class=row.publication_class, notice=_publication_notice(row),
                 reason="not present in its publication's snapshot",
             ))
 

@@ -1229,6 +1229,13 @@ export interface components {
             eligible: true;
             /** Entrant Id */
             entrant_id: string;
+            /** Notice */
+            notice?: string | null;
+            /**
+             * Publication Class
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /**
              * Publication Id
              * Format: uuid
@@ -1259,6 +1266,13 @@ export interface components {
             created_at: string;
             /** Entrant Version */
             entrant_version?: string | null;
+            /** Notice */
+            notice?: string | null;
+            /**
+             * Publication Class
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /**
              * Publication Id
              * Format: uuid
@@ -1472,6 +1486,13 @@ export interface components {
             eligible: false;
             /** Entrant Id */
             entrant_id: string;
+            /** Notice */
+            notice?: string | null;
+            /**
+             * Publication Class
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             /**
              * Publication Id
              * Format: uuid
@@ -2030,6 +2051,11 @@ export interface components {
             notice?: string | null;
             /** Protocol Scoring Digest */
             protocol_scoring_digest?: string | null;
+            /**
+             * Publication Class
+             * @enum {string}
+             */
+            publication_class: "ranked" | "non_ranked";
             snapshot: components["schemas"]["AnalysisSnapshot"];
             /** Snapshot Digest */
             snapshot_digest: string;

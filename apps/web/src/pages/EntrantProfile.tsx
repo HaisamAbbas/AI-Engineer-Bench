@@ -63,6 +63,7 @@ export function EntrantProfile() {
               <th scope="col">Release</th>
               <th scope="col">Entrant version</th>
               <th scope="col">Status</th>
+              <th scope="col">Publication class</th>
               <th scope="col">Rate</th>
               <th scope="col">Published</th>
             </tr>
@@ -77,6 +78,8 @@ export function EntrantProfile() {
                   </th>
                   <td>{entry.entrant_version ?? "Unknown"}</td>
                   <td>{entry.status}</td>
+                  <td>{entry.publication_class === "non_ranked" ? "Non-ranking — descriptive evidence only" : "Ranked"}
+                    {entry.notice && <p>{entry.notice}</p>}</td>
                   <td className="tabular-nums">{formatRate(entry.aggregate_rate)}</td>
                   <td title={created.localTitle}>{created.display}</td>
                 </tr>

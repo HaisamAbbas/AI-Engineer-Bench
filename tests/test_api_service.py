@@ -2110,6 +2110,14 @@ class ApiServiceTests(unittest.TestCase):
             headers=operator | {"Idempotency-Key": "rg-prep-2"},
             json={"supersedes_publication_id": original_publication, "correction_run_id": run_id, "correction_reason": "scoring corrected"})
         self.assertEqual(superseding.status_code, 200, superseding.text)
+        # A completed, valid correction run does not excuse a missing rationale.
+        for reason in (None, "", " \n\t"):
+            reasonless = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
+                headers=operator | {"Idempotency-Key": str(uuid.uuid4())},
+                json={"supersedes_publication_id": original_publication, "correction_run_id": run_id,
+                      "correction_reason": reason})
+            self.assertEqual(reasonless.status_code, 400, reasonless.text)
+            self.assertIn("correction reason", reasonless.text)
         approved = self.client.post(f"/v1/publications/preparations/{superseding.json()['id']}/review",
             headers=reviewer | {"Idempotency-Key": "rg-rev-2"},
             json={"decision": "approve", "independence_attestation": True})
@@ -2483,17 +2491,19 @@ class ApiServiceTests(unittest.TestCase):
 
         adapter = TypeAdapter(ComparisonEntrantPanel)
         pub_id = str(uuid_module.uuid4())
+        base = {"entrant_id": "a", "publication_id": pub_id, "publication_class": "ranked"}
 
         # eligible=True is only valid without a `reason` field.
-        adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": True, "aggregate": 0.5})
+        adapter.validate_python({**base, "eligible": True, "aggregate": 0.5})
         with self.assertRaises(Exception):
-            adapter.validate_python(
-                {"entrant_id": "a", "publication_id": pub_id, "eligible": True, "aggregate": 0.5, "reason": "not eligible"}
-            )
+            adapter.validate_python({**base, "eligible": True, "aggregate": 0.5, "reason": "not eligible"})
         # eligible=False requires a `reason` and rejects a fabricated aggregate.
-        adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": False, "reason": "missing"})
+        adapter.validate_python({**base, "eligible": False, "reason": "missing"})
         with self.assertRaises(Exception):
-            adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": False, "aggregate": 0.5})
+            adapter.validate_python({**base, "eligible": False, "aggregate": 0.5})
+        # Omitting the publication class must not silently imply ranked.
+        with self.assertRaises(Exception):
+            adapter.validate_python({"entrant_id": "a", "publication_id": pub_id, "eligible": True, "aggregate": 0.5})
 
     def test_publication_snapshot_row_rejects_direct_update_at_the_database_level(self) -> None:
         """Mirrors test_task_revision_row_rejects_direct_update_at_the_database_level

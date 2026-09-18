@@ -443,6 +443,8 @@ class CohortIdentity(BaseModel):
 class PublicationResultsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    publication_class: Literal["ranked", "non_ranked"]
+
     id: UUID
     campaign_id: UUID
     snapshot_digest: str
@@ -477,6 +479,8 @@ class EligibleEntrantPanel(BaseModel):
     entrant_id: str
     publication_id: UUID
     eligible: Literal[True]
+    publication_class: Literal["ranked", "non_ranked"]
+    notice: str | None = None
     # No default (review finding #2, seventh pass): required-but-nullable, not
     # optional-and-absent. A default of `None` let the field be omitted from
     # the payload entirely, which is a different, weaker contract than "always
@@ -495,6 +499,8 @@ class IneligibleEntrantPanel(BaseModel):
     entrant_id: str
     publication_id: UUID
     eligible: Literal[False]
+    publication_class: Literal["ranked", "non_ranked"]
+    notice: str | None = None
     reason: str
 
 
@@ -614,6 +620,8 @@ class EntrantResultEntry(BaseModel):
     status: str
     created_at: str
     aggregate_rate: float | None
+    publication_class: Literal["ranked", "non_ranked"]
+    notice: str | None = None
     entrant_version: str | None = None
 
 
