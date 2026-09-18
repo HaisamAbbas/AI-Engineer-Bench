@@ -7,13 +7,17 @@ simulation):
 
 1. A lease abandoned before the backup is NOT silently treated as resumable after restore -
    it is still 'leased', at its pre-restore generation, until reconciliation acts on it.
-2. A worker holding that pre-restore generation number cannot commit results after restore
-   (the existing lease-fencing mechanism is the concrete form "revoke stale credentials"
-   takes here - there is no separate server-side credential store to revoke).
-3. Reconciliation, run against the RESTORED database, correctly recognizes and quarantines
+2. Reconciliation, run against the RESTORED database, correctly recognizes and quarantines
    (reconciles/replaces) the orphaned lease - the same mechanism already covered by
    tests/test_worker_leasing.py's orphan-teardown tests, now proven to survive an actual
    restore, not merely a live connection.
+3. The pre-restore worker's identity (its lease generation) is fenced out the first and only
+   time a finalize is attempted with it - never accepted even transiently before
+   reconciliation runs (the existing lease-fencing mechanism is the concrete form "revoke
+   stale credentials" takes here - there is no separate server-side credential store to
+   revoke). This script deliberately does NOT attempt a stale finalize before reconciliation:
+   a real restore procedure must keep a pre-restore worker fenced throughout, not merely
+   happen to reject it once something else later changes the generation.
 
 Restore duration is reported as a LOCAL PROXY measurement only, disclosed as such - it is not
 a production RPO/RTO measurement (spec section 40's targets: metadata RPO <=15 minutes, RTO
@@ -189,29 +193,15 @@ def main() -> None:
         assert row.generation == stale_generation, "generation must be unchanged immediately after restore"
     print("[assertion 1] PASS: the abandoned lease is still 'leased', not silently resumed as fresh")
 
-    # Assertion 2: stale generation cannot commit results (the "revoke stale credentials"
-    # equivalent - there is no separate server-side credential store in this system).
-    with db.session_factory()() as session:
-        finalized = repository.finalize(
-            session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
-            attempt_id=leased.attempt_id, terminal_status="pass", done=True,
-        )
-    # This should NOT be rejected yet, since nothing has bumped the generation post-restore -
-    # the meaningful fencing proof is that reconciliation (assertion 3) is what changes the
-    # generation, and a worker retrying with the OLD post-reconciliation generation is then
-    # rejected. Re-seed for a clean assertion 3 by rolling back this finalize.
-    if finalized:
-        with db.session_factory()() as session:
-            update_stmt = update(api_models.WorkItemRow).where(api_models.WorkItemRow.id == work_item_id).values(
-                state="leased", generation=stale_generation,
-                lease_expiry=datetime.now(timezone.utc) - timedelta(hours=1),
-            )
-            session.execute(update_stmt)
-            session.execute(update(api_models.AttemptRow).where(api_models.AttemptRow.id == leased.attempt_id).values(
-                phase="engineering", terminal_status=None))
-            session.commit()
+    # Deliberately does NOT attempt a stale finalize before reconciliation runs: a real
+    # restore procedure must keep a pre-restore worker fenced until reconciliation completes,
+    # not merely happen to reject it once something else later changes the generation. Fixing
+    # test state after a speculative "would this have been accepted?" attempt would prove
+    # nothing about that requirement - so this drill goes straight to reconciliation, then
+    # proves fencing against its OWN output.
 
-    # Assertion 3: reconciliation against the RESTORED database recognizes and quarantines
+    # Assertion 2 (spec section 40's "reconcile leases ... quarantine orphan allocations"):
+    # reconciliation against the RESTORED database recognizes and quarantines
     # the orphaned lease - bumping its generation - proving the SAME mechanism that already
     # protects a live database also protects state that came through backup/restore.
     from aieb_api.worker.reconciler import reconcile_once
@@ -220,17 +210,19 @@ def main() -> None:
     work_root.mkdir(parents=True, exist_ok=True)
     summary = reconcile_once(db.session_factory(), work_root)
     assert summary.replaced == 1, f"expected reconciliation to replace the one orphaned lease, got {summary}"
-    print(f"[assertion 3] PASS: reconciliation against the restored database quarantined the orphaned lease ({summary})")
+    print(f"[assertion 2] PASS: reconciliation against the restored database quarantined the orphaned lease ({summary})")
 
-    # Now a worker retrying with the STALE (pre-reconciliation) generation is fenced out -
-    # this is the concrete "revoke stale credentials" proof: its identity no longer works.
+    # Assertion 3 (the "revoke stale credentials" equivalent - there is no separate
+    # server-side credential store in this system): the pre-restore worker's identity
+    # (its lease generation) was NEVER valid against the post-reconciliation state - it is
+    # fenced out the first and only time it is tried, not merely eventually.
     with db.session_factory()() as session:
         stale_retry_finalized = repository.finalize(
             session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
             attempt_id=leased.attempt_id, terminal_status="pass", done=True,
         )
     assert stale_retry_finalized is False, "a stale pre-restore generation must be fenced out after reconciliation, not accepted"
-    print("[assertion 2] PASS: the stale pre-restore worker/generation is fenced out and cannot commit results")
+    print("[assertion 3] PASS: the stale pre-restore worker/generation is fenced out and cannot commit results")
 
     print("Backup/restore drill: ALL THREE assertions passed.")
 

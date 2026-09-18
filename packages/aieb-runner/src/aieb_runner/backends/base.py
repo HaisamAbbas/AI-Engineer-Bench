@@ -47,12 +47,18 @@ class IsolationPolicy:
     all, not unrestricted access. A backend that cannot enforce a field it is asked to enforce
     must raise from `launch()`, never launch and merely log a warning - "not hardened" must be
     unusable as if it were hardened, not just disclosed as such.
+
+    Deliberately does NOT declare a `scoped_credential_id`/per-attempt-credential field: no real
+    cloud credential-issuance system exists to issue, scope, or revoke one against in this
+    environment, and an inert field here would read as a capability that isn't implemented.
+    Per-attempt short-lived credentials revoked on termination and real candidate/verifier
+    identity separation (spec section 37) are explicitly deferred - see DECISIONS.md ADR-12 and
+    `docs/implementation/evidence/ENG-019/sandbox-review.md`'s "Remaining external acceptance".
     """
 
     egress_allowlist: tuple[str, ...] = ()
     denied_metadata_hosts: tuple[str, ...] = DEFAULT_DENIED_METADATA_HOSTS
     deny_docker_socket: bool = True
-    scoped_credential_id: str | None = None
     hardened_isolation_required: bool = False
 
 

@@ -16,7 +16,10 @@ and logged when it targets an unauthorized host or a cloud-metadata endpoint.
 
 from __future__ import annotations
 
+import base64
+import hmac
 import logging
+import secrets
 import selectors
 import socket
 import threading
@@ -47,8 +50,16 @@ class EgressGuardProxy:
     def __init__(self, policy: IsolationPolicy, *, bind_host: str = "127.0.0.1", advertised_host: str | None = None) -> None:
         """`bind_host` is the interface this process listens on. `advertised_host` is what a
         launched process/container is told to reach it as - these differ for a container (which
-        must dial the host via `host.docker.internal` or the bridge gateway, not `127.0.0.1`)."""
+        must dial the host via `host.docker.internal` or the bridge gateway, not `127.0.0.1`).
+
+        Binding `0.0.0.0` (needed so a container can reach the host at all) means this listens
+        on every host interface for the lifetime of the trial - without authentication, any
+        other machine on the same network could relay through it to an allowlisted destination
+        (including the model broker). A random per-instance `Proxy-Authorization` token is
+        therefore required on every request; there is no way to reach an allowlisted host
+        through this proxy without it."""
         self._policy = policy
+        self._token = secrets.token_urlsafe(24)
         self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind((bind_host, 0))
@@ -62,8 +73,21 @@ class EgressGuardProxy:
         self._thread = threading.Thread(target=self._serve, name="egress-guard-proxy", daemon=True)
         self._thread.start()
 
+    def _expected_proxy_authorization(self) -> str:
+        # Standard HTTP proxy basic-auth convention (RFC 7617's Basic scheme, applied to
+        # Proxy-Authorization rather than Authorization): most HTTP client libraries that honor
+        # HTTP_PROXY/HTTPS_PROXY also parse `user:pass@host` in the URL and send this header
+        # automatically - no candidate-side code change is needed to benefit from it.
+        credentials = base64.b64encode(f"{self._token}:".encode()).decode()
+        return f"Basic {credentials}"
+
+    def proxy_authorization_header(self) -> str:
+        """For a caller (e.g. a test) that needs to talk to this proxy directly rather than
+        through a client that parses the `user:pass@host` convention in `env_vars()`'s URLs."""
+        return self._expected_proxy_authorization()
+
     def env_vars(self) -> dict[str, str]:
-        proxy_url = f"http://{self.host}:{self.port}"
+        proxy_url = f"http://{self._token}:@{self.host}:{self.port}"
         return {
             "HTTP_PROXY": proxy_url,
             "HTTPS_PROXY": proxy_url,
@@ -111,12 +135,27 @@ class EgressGuardProxy:
                 if not chunk:
                     return
                 request += chunk
-            head_line = request.split(b"\r\n", 1)[0].decode("latin-1", errors="replace")
+            header_block = request.split(b"\r\n\r\n", 1)[0].decode("latin-1", errors="replace")
+            lines = header_block.split("\r\n")
+            head_line = lines[0]
             parts = head_line.split(" ")
             if len(parts) < 2:
                 conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 return
             method, target = parts[0], parts[1]
+
+            proxy_auth = next(
+                (line.split(":", 1)[1].strip() for line in lines[1:]
+                 if line.lower().startswith("proxy-authorization:")),
+                None,
+            )
+            if proxy_auth is None or not hmac.compare_digest(proxy_auth, self._expected_proxy_authorization()):
+                # Unauthenticated - refused before even parsing a target host, and NOT counted
+                # as an EgressDenial (that log is for policy decisions on an authenticated
+                # request, not for rejecting a stranger who found the open port).
+                conn.sendall(b'HTTP/1.1 407 Proxy Authentication Required\r\n'
+                             b'Proxy-Authenticate: Basic realm="aieb-egress-guard"\r\n\r\n')
+                return
 
             if method.upper() == "CONNECT":
                 host, _, port_str = target.partition(":")

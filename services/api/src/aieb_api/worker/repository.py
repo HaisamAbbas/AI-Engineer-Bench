@@ -843,9 +843,15 @@ def record_infrastructure_outcome(session: Session, campaign_id: uuid.UUID, exec
 
 def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
     """Stop new dispatch. Already-leased work items are left to finish or expire
-    naturally; teardown_orphans() cleans up anything left behind by a killed worker."""
+    naturally; teardown_orphans() cleans up anything left behind by a killed worker.
+
+    Includes 'paused' (fixed 2026-09-18): a paused campaign can still hold outstanding
+    leased work, and both `routes/campaigns.py::cancel_campaign_route` and
+    `activate_kill_switch`'s "every non-terminal campaign" teardown request need it
+    cancellable too - this helper previously silently no-opped (rowcount 0) for a paused
+    campaign, the exact gap a kill switch activated during a pause would have missed."""
     result = session.execute(
-        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running"))).values(state="cancelling")
+        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused"))).values(state="cancelling")
     )
     session.commit()
     return result.rowcount == 1

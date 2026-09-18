@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import http.client
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -25,18 +26,32 @@ from aieb_runner.backends.base import (
     UnhardenedBackendError,
 )
 from aieb_runner.backends.egress_proxy import EgressGuardProxy
-from aieb_runner.backends.harbor.backend import HarborBackend
+from aieb_runner.backends.harbor.backend import HarborBackend, _find_docker_socket_mount
 
 
 class EgressGuardProxyTest(unittest.TestCase):
     """Direct, real-network tests of the deny-by-default guard (no mocking of the proxy
     itself): a real client makes a real HTTP request through a real listening socket."""
 
-    def _request_through(self, proxy: EgressGuardProxy, host: str, port: int = 80) -> http.client.HTTPResponse:
+    def _request_through(self, proxy: EgressGuardProxy, host: str, port: int = 80, *, authenticated: bool = True) -> http.client.HTTPResponse:
         conn = http.client.HTTPConnection(proxy.host if proxy.host != "host.docker.internal" else "127.0.0.1", proxy.port, timeout=5)
         self.addCleanup(conn.close)
-        conn.request("GET", f"http://{host}:{port}/", headers={"Host": f"{host}:{port}"})
+        headers = {"Host": f"{host}:{port}"}
+        if authenticated:
+            headers["Proxy-Authorization"] = proxy.proxy_authorization_header()
+        conn.request("GET", f"http://{host}:{port}/", headers=headers)
         return conn.getresponse()
+
+    def test_an_unauthenticated_request_is_refused_before_any_policy_check(self) -> None:
+        """The proxy binds 0.0.0.0 (needed for a container to reach it at all), so without
+        authentication anything on the same network could relay allowlisted traffic through
+        it. A request with no (or the wrong) Proxy-Authorization must be refused outright -
+        not merely denied by the allowlist, refused BEFORE the target host is even parsed."""
+        policy = IsolationPolicy(egress_allowlist=("api.allowed-example.test",))
+        with EgressGuardProxy(policy) as proxy:
+            response = self._request_through(proxy, "api.allowed-example.test", authenticated=False)
+            self.assertEqual(response.status, 407)
+            self.assertEqual(proxy.denials, [])  # not logged as a policy denial - it's a stranger, not a policy decision
 
     def test_deny_by_default_denies_a_host_not_on_the_allowlist_and_logs_it(self) -> None:
         policy = IsolationPolicy(egress_allowlist=("api.allowed-example.test",))
@@ -99,8 +114,26 @@ class EgressGuardProxyTest(unittest.TestCase):
         policy = IsolationPolicy()
         with EgressGuardProxy(policy, bind_host="0.0.0.0", advertised_host="host.docker.internal") as proxy:
             env = proxy.env_vars()
-            self.assertEqual(env["HTTP_PROXY"], f"http://host.docker.internal:{proxy.port}")
+            self.assertTrue(env["HTTP_PROXY"].startswith("http://"))
+            self.assertTrue(env["HTTP_PROXY"].endswith(f"@host.docker.internal:{proxy.port}"))
             self.assertEqual(env["NO_PROXY"], "")
+
+    def test_env_vars_embed_a_per_instance_token_that_authenticates_the_request(self) -> None:
+        """The embedded `user:pass@host` token is not decorative - a real HTTP client that
+        parses it sends the exact Proxy-Authorization this proxy requires."""
+        policy = IsolationPolicy(egress_allowlist=("127.0.0.1",))
+        with EgressGuardProxy(policy) as proxy:
+            env = proxy.env_vars()
+            embedded_token = env["HTTP_PROXY"].split("://", 1)[1].split(":@", 1)[0]
+            self.assertTrue(embedded_token)  # a real, non-empty per-instance secret
+            conn = http.client.HTTPConnection(proxy.host, proxy.port, timeout=5)
+            self.addCleanup(conn.close)
+            conn.request("GET", "http://127.0.0.1:1/", headers={
+                "Host": "127.0.0.1:1",
+                "Proxy-Authorization": proxy.proxy_authorization_header(),
+            })
+            response = conn.getresponse()
+            self.assertNotEqual(response.status, 407)  # authenticated - got past the auth gate
 
 
 class HarborBackendRefusalTest(unittest.IsolatedAsyncioTestCase):
@@ -139,6 +172,50 @@ class HarborBackendRefusalTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Exception) as ctx:
             await backend.launch(spec)
         self.assertNotIsInstance(ctx.exception, UnhardenedBackendError)
+
+
+class DockerSocketMountDetectionTest(unittest.TestCase):
+    """A real check against a task's own environment definition, not the adapter's own
+    EnvironmentConfig (which the adapter itself constructs and never sets `mounts` on, so
+    checking IT could never find anything a real task actually defines - see
+    _find_docker_socket_mount's docstring)."""
+
+    def test_a_clean_real_fixture_task_is_not_flagged(self) -> None:
+        real_fixture = Path(__file__).resolve().parent / "fixtures" / "eng001_harbor" / "task"
+        self.assertIsNone(_find_docker_socket_mount(real_fixture))
+
+    def test_a_task_mounting_the_docker_socket_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir()
+            (environment_dir / "docker-compose.yaml").write_text(
+                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+                encoding="utf-8",
+            )
+            offender = _find_docker_socket_mount(task_dir)
+            self.assertIsNotNone(offender)
+            self.assertEqual(offender.name, "docker-compose.yaml")
+
+    async def _launch_with_task_dir(self, task_dir: Path) -> None:
+        backend = HarborBackend()
+        spec = ExecutionSpec(
+            task_dir=task_dir, runs_dir=Path(".cache/eng019-tests/socket-check"),
+            trial_name="socket-check-trial", agent_import_path="unused.agent", agent_timeout_sec=1.0,
+        )
+        await backend.launch(spec)
+
+    def test_launch_refuses_a_task_that_mounts_the_docker_socket(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir()
+            (environment_dir / "docker-compose.yaml").write_text(
+                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(UnhardenedBackendError):
+                asyncio.run(self._launch_with_task_dir(task_dir))
 
 
 class IsolationPolicyDefaultsTest(unittest.TestCase):

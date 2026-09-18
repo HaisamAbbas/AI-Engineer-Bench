@@ -52,6 +52,25 @@ class _RunningTrial:
     egress_guard: EgressGuardProxy | None
 
 
+def _find_docker_socket_mount(task_dir: Path) -> Path | None:
+    """Real check, not tautological: Harbor's Docker environment builds the container from the
+    TASK's own environment definition (`task_dir/environment/docker-compose.yaml` in every
+    fixture this repository has), which is where a task could actually introduce a Docker
+    socket mount - the `EnvironmentConfig` this adapter constructs itself never sets `mounts`
+    or `extra_docker_compose`, so checking that object (as an earlier version of this function
+    did) could never find anything regardless of what any real task defines. Scans every
+    docker-compose*.y*ml this task directory contains for a literal docker.sock reference.
+    Returns the offending file, or None if none mounts it."""
+    for compose_file in task_dir.rglob("docker-compose*.y*ml"):
+        try:
+            contents = compose_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "docker.sock" in contents:
+            return compose_file
+    return None
+
+
 class HarborBackend:
     """Translate AIEB-owned execution calls to Harbor without leaking its models."""
 
@@ -141,12 +160,13 @@ class HarborBackend:
             verifier=VerifierConfig(),
         )
         if spec.isolation.deny_docker_socket:
-            mounts = config.environment.mounts or []
-            if any("docker.sock" in str(mount) for mount in mounts):
+            offending_file = _find_docker_socket_mount(spec.task_dir)
+            if offending_file is not None:
                 egress_guard.close()
                 raise UnhardenedBackendError(
-                    "isolation policy denies the Docker socket, but the environment config "
-                    "mounts it - refusing to launch (ADR-12 / spec section 37)"
+                    f"isolation policy denies the Docker socket, but {offending_file} appears "
+                    "to mount it - refusing to launch (ADR-12 / spec section 37 - no contestant "
+                    "Docker socket)"
                 )
         try:
             trial = await Trial.create(config)

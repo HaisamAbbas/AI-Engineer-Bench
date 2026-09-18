@@ -732,3 +732,53 @@ This log records implementation choices made while executing the source specific
 - Consequence: both legs of the migration rollback drill now pass end to end
   (`docs/implementation/evidence/ENG-020/operations-review.md`). No code change; this closes
   the one item ENG019-001/ENG020-001 itself flagged as pending its own commit boundary.
+
+## ENG019-002 / ENG020-003 - Independent review round: vacuous check, unauthenticated proxy, dead field, and a real kill-switch gap fixed
+
+- Date: 2026-09-18
+- Status: accepted (fixes; scope remains as ENG019-001/ENG020-001 - IN_PROGRESS, not COMPLETE)
+- Decision: two independent reviews of the ENG019-001/ENG020-001 closure found five real
+  issues, four fixed here and one downgraded to a disclosed deviation:
+  1. **Docker-socket check was vacuous** - it inspected the adapter's own freshly-constructed
+     `EnvironmentConfig`, which never sets `mounts`, so it could never fire regardless of what
+     any real task defined; the prior evidence document incorrectly described it as an active
+     assertion. Fixed: `_find_docker_socket_mount()` scans the TASK's own
+     `environment/docker-compose*.yaml` (the real file Harbor's Docker environment builds
+     from), and refuses launch if it mounts the socket. Tested directly against both a clean
+     real fixture and a synthetic offending task.
+  2. **The guard proxy had no authentication** while bound to `0.0.0.0` (required for container
+     reachability) - any machine on the network could have relayed allowlisted traffic through
+     it. Fixed: a random per-instance token is required as `Proxy-Authorization` on every
+     request, embedded in the `HTTP_PROXY` URL's `user:pass@host` convention so ordinary
+     clients send it automatically.
+  3. **`scoped_credential_id` was declared on `IsolationPolicy` and never wired** - no
+     issuance, scoping, or revocation existed anywhere, and unlike every other limitation this
+     ledger discloses, it wasn't listed as deferred either. Removed rather than left inert;
+     per-attempt credentials and candidate/verifier identity separation are now explicit
+     disclosed gaps in `evidence/ENG-019/sandbox-review.md`.
+  4. **`cancel_campaign`'s WHERE clause excluded `paused`**, so `activate_kill_switch`'s "every
+     non-terminal campaign" teardown request silently no-opped for a paused campaign -
+     confirmed by direct inspection (rowcount 0), not merely alleged. Fixed: `paused` is
+     included; `test_kill_switch_tears_down_a_paused_campaign_too` proves a paused campaign
+     with claimed work is actually moved to `cancelling`.
+  5. **Downgraded to a disclosed deviation, not a bug**: spec section 39 literally scopes
+     auto-pause to "three consecutive failures... from the same backend"; this implementation
+     scopes it per-campaign. Defensible today (exactly one backend, `HarborBackend`, exists),
+     but recorded explicitly rather than left silent.
+  Separately, `scripts/backup_restore_drill.py` was restructured: it previously attempted a
+  stale finalize BEFORE running reconciliation, let it succeed (nothing had fenced it yet), then
+  manually rewound the database to keep the later assertions clean - which proved less than it
+  looked like, since a real restore procedure must keep a pre-restore worker fenced throughout,
+  not merely reject it once something else later changes the generation. The speculative
+  pre-reconciliation attempt was removed entirely; the drill now goes straight from "still
+  leased after restore" to reconciliation, then proves fencing against reconciliation's own
+  output. And the `dependency-review` job, previously on `release-candidate.yml` gated on
+  `pull_request` (a workflow that only triggers on tag push/manual dispatch, so the job could
+  never run), moved to its own `dependency-review.yml` triggered on `pull_request`.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` grew from 11 to 16 tests, all
+  passing; `tests/test_worker_leasing.py` gained one more passing test (kill-switch paused-
+  campaign teardown); the backup/restore drill's three assertions still all pass, now without
+  the confusing attempt-then-rewind pattern. No scope was widened or narrowed by these fixes -
+  ENG-019 and ENG-020 remain IN_PROGRESS with the same disclosed external-acceptance gates as
+  ENG019-001/ENG020-001, plus the newly-disclosed per-attempt-credential gap and the per-backend
+  auto-pause scoping deviation.

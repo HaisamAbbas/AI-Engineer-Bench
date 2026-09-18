@@ -5,6 +5,37 @@ constraint ENG-001/ENG-019 disclose). This closes what is genuinely implementabl
 without provisioning paid infrastructure or deploying anything public, and explicitly names
 what stays blocked.
 
+## Independent review round (2026-09-18) - one confirmed bug fixed, one test restructured
+
+- **The kill switch silently skipped paused campaigns.** `activate_kill_switch` selects
+  campaigns in `('frozen', 'running', 'paused')` and calls `repository.cancel_campaign` on
+  each - but `cancel_campaign`'s own WHERE clause only matched `('frozen', 'running')`, so a
+  call against a paused campaign returned rowcount 0 and silently did nothing, contradicting
+  the function's own "every non-terminal campaign" docstring. A paused campaign is exactly the
+  case that matters most here: it already has outstanding leased work and nothing else is
+  stopping it. Fixed: `cancel_campaign` now includes `'paused'`. New regression:
+  `tests/test_worker_leasing.py::test_kill_switch_tears_down_a_paused_campaign_too` claims work
+  on a campaign, pauses it, activates the kill switch, and asserts the campaign actually
+  transitions to `cancelling` (previously it silently stayed `paused`).
+- **The backup/restore drill accepted a stale finalize before reconciliation, then rewound the
+  database to keep the later assertions clean.** That proved less than it looked like: a real
+  restore procedure must keep a pre-restore worker fenced throughout, not merely happen to
+  reject it once something else later changes the generation. Restructured to drop the
+  speculative pre-reconciliation attempt entirely - the drill now goes straight from "lease
+  survived restore as still-leased" to reconciliation, then proves fencing against
+  reconciliation's own output. All three assertions still pass, now without the confusing
+  attempt-then-rewind pattern.
+- The dependency-review job was on `release-candidate.yml`, gated on `if: github.event_name ==
+  'pull_request'` - but that workflow only triggers on tag push and manual dispatch, so the job
+  could never run. Moved to a new, dedicated `dependency-review.yml` triggered on `pull_request`
+  for dependency-file changes, which is the only event type `dependency-review-action` can
+  meaningfully run against (it compares base and head refs).
+- `scoped_credential_id` was removed from `IsolationPolicy` (ENG-019) as dead/unwired; the
+  auto-pause threshold here is scoped per-campaign, not per-backend as spec section 39 literally
+  states ("three consecutive failures... from the same backend") - defensible today since
+  exactly one backend (`HarborBackend`) exists, but recorded here as a disclosed deviation
+  rather than left silent, per review.
+
 ## Implemented
 
 ### Worker draining (spec section 40)
@@ -68,9 +99,10 @@ duration, which is reported only as a disclosed local-proxy measurement):
   fixture or workspace could hide in.
 - New `release-candidate.yml`: full uninterrupted backend discovery, OpenAPI/client staleness
   checks, the migration rollback drill, website build/test, and an SBOM generation step, on tag
-  push or manual dispatch. Includes a `dependency-review` job (PR-triggered) and a
-  `capped-live-smoke` job gated behind a protected GitHub Environment requiring manual
-  approval and carrying no secrets.
+  push or manual dispatch, plus a `capped-live-smoke` job gated behind a protected GitHub
+  Environment requiring manual approval and carrying no secrets.
+- New `dependency-review.yml` (separate from `release-candidate.yml` - see the review-round
+  note above for why): runs on `pull_request` for dependency-file changes.
 
 ## Disclosed gaps in the CI work (not silently pinned)
 
@@ -98,7 +130,8 @@ duration, which is reported only as a disclosed local-proxy measurement):
   required),  `::test_an_infrastructure_streak_is_reset_by_one_non_infrastructure_outcome`, and
   `::test_run_worker_only_scores_auto_pause_on_verification_or_regrade_outcomes` (the
   work-type-gating regression) - **4/4 passed**.
-- Kill switch: `::test_kill_switch_stops_all_new_dispatch_platform_wide` - **1/1 passed**.
+- Kill switch: `::test_kill_switch_stops_all_new_dispatch_platform_wide` and (from the review
+  round) `::test_kill_switch_tears_down_a_paused_campaign_too` - **2/2 passed**.
 - Resume acknowledgement: `tests/test_api_service.py::
   test_resume_of_an_auto_paused_campaign_requires_explicit_acknowledgement` - **1/1 passed**
   (refusal without acknowledgement, then success with it, then confirms fields reset).

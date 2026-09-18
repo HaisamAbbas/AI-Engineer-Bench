@@ -1588,6 +1588,30 @@ class WorkerLeasingTests(unittest.TestCase):
             repository.deactivate_kill_switch(session)
             self.assertFalse(repository.is_kill_switch_active(session))
 
+    def test_kill_switch_tears_down_a_paused_campaign_too(self) -> None:
+        """Regression: `cancel_campaign`'s WHERE clause previously excluded 'paused', so a
+        paused campaign with in-flight leased work was silently skipped by
+        activate_kill_switch's "every non-terminal campaign" teardown request (confirmed
+        directly: rowcount 0, no-op) - contradicting its own docstring. A paused campaign is
+        exactly the case that matters most here: it already has outstanding leased work and no
+        new dispatch is stopping it, so the kill switch's bounded-teardown promise must reach
+        it too."""
+        campaign_id = self._frozen_enqueued_campaign(repetitions=1)
+        with self.session_factory() as session:
+            claimed = repository.claim_work_item(session, worker_id="w1")
+            self.assertIsNotNone(claimed)
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            campaign.state = "paused"
+            session.commit()
+
+        with self.session_factory() as session:
+            requested = repository.activate_kill_switch(session, activated_by_user_id=None, reason="paused-campaign teardown")
+        self.assertEqual(requested, 1)  # the paused campaign's teardown WAS requested, not skipped
+
+        with self.session_factory() as session:
+            campaign = session.get(api_models.CampaignRow, campaign_id)
+            self.assertEqual(campaign.state, "cancelling")
+
 
 if __name__ == "__main__":
     unittest.main()

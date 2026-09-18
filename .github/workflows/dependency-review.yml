@@ -1,0 +1,27 @@
+name: Dependency review
+on:
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "**/pyproject.toml"
+      - "apps/web/package.json"
+      - "apps/web/package-lock.json"
+permissions:
+  contents: read
+jobs:
+  review:
+    # dependency-review-action compares the PR's base and head refs, so it can only run on a
+    # `pull_request` event - it was previously misplaced as a job on release-candidate.yml,
+    # which never triggers on pull_request (tags/workflow_dispatch only) and so could never run.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # Disclosed, not silently guessed: this repository's convention is to pin every action by
+      # full commit SHA. actions/dependency-review-action's exact current SHA is not verifiable
+      # in this offline environment - pin it before this workflow ever runs with real
+      # credentials (it currently only reads pull-request metadata, no secrets are exposed).
+      - uses: actions/dependency-review-action@v4

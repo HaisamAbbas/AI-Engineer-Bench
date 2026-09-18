@@ -71,17 +71,6 @@ jobs:
           path: sbom.spdx.json
           retention-days: 90
 
-  dependency-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      # Same disclosed SHA-pinning gap as the SBOM step above.
-      - uses: actions/dependency-review-action@v4
-
   # spec section 42: "Capped smoke only" for a release candidate, and section 37/40's
   # authorization requirement ("no production provider secrets... in pull-request CI";
   # official execution needs cloud authorization this environment does not have). This job
