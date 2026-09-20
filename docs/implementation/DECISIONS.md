@@ -1234,6 +1234,95 @@ and `execution_blocker` (only gained an informational, non-authorizing
 `dispatch_config_hint` per entrant). ENG-024's authorization gate. ENG-001's P0
 precondition (`STATUS.md` still `BLOCKED`). No live paid-provider execution occurred.
 
+### Review follow-up 3 (2026-09-21): usage-accounting closure — real schema, real DB writers, real end-to-end proof
+
+A third review held firm specifically on usage accounting: "Usage accounting is still
+not implemented. The loop's `UsageLedger` remains in-process and serializes receipts
+into `model_track_summary.json`; it does not create authoritative API
+`UsageRequestRow`/`UsageReceiptRow` records or reconcile provider costs/budget
+coverage. Requested/reported identity likewise is not persisted into the authoritative
+usage ledger." Independently re-verified before writing any code: `UsageRequestRow(`
+was still constructed only in `services/api/src/aieb_api/models.py`'s own class
+definition and test fixtures (no production write path for either track);
+`services/api/src/aieb_api/worker/loop.py` still does not import `aieb_runner` at all
+(no worker-to-Harbor production dispatcher exists for any track); and
+`UsageRequestRow`/`UsageReceiptRow` had no field for per-attempt requested/reported
+model identity — a genuine additional schema gap.
+
+- **Decision**: close the closable part of this gap for real (schema + real DB writers
+  + the loop's generic hook into them + a real Harbor-Docker-to-Postgres end-to-end
+  proof), while explicitly NOT building the missing worker-to-Harbor production
+  dispatcher — that is real, separate, substantial work properly belonging to ENG-001's
+  still-`BLOCKED` P0 scope (gated on provider/model authorization), not something to
+  half-build inside this pass just to make the finding look fully closed.
+- **Decision**: new table `attempt_model_identity` (migration `b3f1c2a9d4e7`,
+  `down_revision = c7d8e9f0a1b2` — the verified head at write time), not a schema change
+  to the pre-existing `usage_request`/`usage_receipt` tables, since model identity
+  (requested vs. reported, settings_digest, coverage_label) is a genuinely different
+  shape of fact than cost/token accounting and mixing them would overload
+  `usage_request`'s existing, already-tested identity (`actor_role`, `request_id`).
+  Nullable `attempt_id` mirrors `usage_request.attempt_id`'s existing nullability
+  exactly (a spike/smoke run may have no real Attempt row to attach to); unique
+  `(attempt_id, actor_role)` mirrors `usage_request`'s
+  `uq_usage_request_scoped_identity` "record once per identity" idiom.
+- **Decision**: the new `record_usage_receipts`/`record_model_identity` repository
+  functions (`services/api/src/aieb_api/worker/repository.py`) reuse the SAME
+  idempotent-replay-vs-conflict idiom `record_candidate`/`record_evaluation` already
+  establish in that same file (catch the unique-constraint `IntegrityError`, re-select,
+  accept a byte-identical replay silently, raise a dedicated `*ConflictError` on any
+  real mismatch) — deliberately not inventing a new idempotency pattern for this one
+  case.
+- **Decision**: the loop's hook is a plain `usage_sink: Callable[[dict], None] | None`
+  constructor parameter, generic at the `aieb_runner` layer, with a registry-by-id
+  fallback (`AIEB_MODEL_TRACK_USAGE_SINK_ID`/`register_usage_sink`) that mirrors
+  `FakeProviderAdapter.register`/`get_registered` exactly — the same category of seam
+  for the same reason (a live Python object/callable cannot round-trip through Harbor's
+  serializable `AgentConfig.kwargs`). `aieb_runner` gains ZERO new dependency on
+  `aieb_api`/`services/api`: the real callback that touches `aieb_api.models`/
+  `aieb_api.worker.repository` lives only in `scripts/run_eng023_model_loop_spike.py`,
+  preserving this monorepo's existing layering exactly as the two prior ENG-023 review
+  follow-ups already established for `provider`/`provider_kind`.
+- **Decision**: prove this end-to-end against real Docker AND real Postgres, not a
+  mock and not merely a unit test — `scripts/run_eng023_model_loop_spike.py` registers
+  a real usage-sink callback that writes through the real repository functions into the
+  real test database, runs the full existing Harbor Docker smoke exactly as every prior
+  ENG-023 run in this ticket, and — only AFTER Harbor's Docker teardown has completed —
+  opens a fresh session and independently re-queries the database, asserting the
+  expected rows exist with the right values. This is the literal shape of proof the
+  review asked for ("does not create authoritative API ... records" — so create them,
+  for real, and show it).
+- **Decision**: `attempt_id=None` for the spike script specifically (not a
+  full campaign/trial/attempt fixture chain) — documented in-script as a deliberate
+  scope choice: building that fixture chain is orthogonal to what the spike proves (the
+  loop → sink → repository → real Postgres pipeline itself), and `NULL` is schema-legal
+  for exactly this "no real attempt yet" case on both tables. The new
+  `tests/test_eng023_usage_accounting_repository.py` suite independently exercises the
+  full real-`Attempt`-row path (the same minimal campaign/trial/attempt fixture pattern
+  `tests/test_metrics.py::_seed_minimal_engineering_lease` already established), so that
+  path is proven too — the spike's `NULL` choice is not a limitation of the writers
+  themselves.
+
+**Verification**: migration round-trip (`upgrade head` → `downgrade -1` → `upgrade
+head` → `current`) against real test Postgres, clean. `tests/test_eng023_model_loop.py`
+28 → **34 passed** (6 new `UsageSinkHookTest` cases, no DB/Docker). New
+`tests/test_eng023_usage_accounting_repository.py`: **10 passed** against real Postgres.
+Regression: `tests/test_eng019_sandbox_threat_model.py tests/test_accounting_and_cli.py
+tests/test_worker_leasing.py` → **92 passed**, no regressions. Real Harbor Docker smoke
+re-run with the real usage-sink wired in: `usage_accounting.identity_row_found: true`,
+`identity_requested_model: "spike-requested-model"`,
+`identity_reported_model: "fake-reference-model-v1"`,
+`identity_coverage_label: "estimated_time_limited"`, `usage_request_rows_found: 4`,
+`usage_receipt_rows_found: 4` — full JSON in
+`docs/implementation/evidence/ENG-023/README.md` "Review follow-up 3".
+
+**Unchanged / explicitly NOT claimed**: no live campaign has run; this pipeline is not
+wired into a production dispatcher (`services/api/src/aieb_api/worker/loop.py` still
+does not import `aieb_runner`) — that remains ENG-001's P0 scope, re-verified still
+`BLOCKED` in `STATUS.md` (untouched by this pass). ENG-024's authorization gate is
+unchanged. No live, paid-provider execution occurred (the scripted
+`FakeProviderAdapter` is the only provider exercised). No new third-party dependency
+was added.
+
 ### Phase 3: Acceptance tests
 
 1. **Verifier-isolation boundary test** — the existing test suite already

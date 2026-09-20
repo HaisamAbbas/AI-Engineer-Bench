@@ -1166,3 +1166,69 @@ Status: **ENG-023 IN_PROGRESS** (config wiring now per-trial-safe and fail-close
 settings-digest verification real, 28/28 tests green, real Docker re-run proven; usage
 accounting remains a disclosed, pre-existing, cross-track gap; P0-gated live readiness
 unchanged), **ENG-024 BLOCKED** (unchanged), **ENG-001 BLOCKED** (untouched).
+
+## ENG-023 review follow-up 3: usage accounting closed for real (2026-09-21)
+
+A third review held firm specifically on usage accounting (the "Finding 2" gap above):
+authoritative `UsageRequestRow`/`UsageReceiptRow` records did not exist, and
+requested/reported model identity was not persisted anywhere durable. Re-verified
+independently before writing code (grep for `UsageRequestRow(` still hit only the ORM
+class definition and test fixtures; `services/api/src/aieb_api/worker/loop.py` still
+does not import `aieb_runner` — no production worker-to-Harbor dispatcher exists for
+any track).
+
+**What was built**:
+- Migration `b3f1c2a9d4e7` (`down_revision = c7d8e9f0a1b2`) adds table
+  `attempt_model_identity` (`AttemptModelIdentityRow` in
+  `services/api/src/aieb_api/models.py`) — requested/reported model, settings_digest,
+  coverage_label, unique per `(attempt_id, actor_role)`. Round-trip verified
+  (`upgrade head` / `downgrade -1` / `upgrade head` / `current`) against real test
+  Postgres.
+- `services/api/src/aieb_api/worker/repository.py` gained
+  `record_usage_receipts`/`record_model_identity` — the ONLY production code path in
+  this repo that now inserts a real `UsageRequestRow`/`UsageReceiptRow`/
+  `AttemptModelIdentityRow`. Idempotent on unique-constraint conflict via the SAME
+  replay-vs-conflict idiom `record_candidate`/`record_evaluation` already use in that
+  file.
+- `packages/aieb-runner/src/aieb_runner/model_loop.py` gained a generic
+  `usage_sink: Callable[[dict], None] | None` constructor parameter (no new `aieb_api`
+  dependency — layering preserved) plus a registry-by-id fallback for real Harbor
+  dispatch (`AIEB_MODEL_TRACK_USAGE_SINK_ID`/`register_usage_sink`), mirroring
+  `FakeProviderAdapter.register`/`get_registered` exactly. Fires once, in the same
+  `try/finally` that already guarantees `_finalize_submission` runs on every stopping
+  path. No sink configured = unchanged prior behavior (`model_track_summary.json`
+  only).
+- `scripts/run_eng023_model_loop_spike.py` now registers a real usage-sink callback
+  that writes through those repository functions into the real test Postgres, runs the
+  full existing real-Harbor-Docker smoke, and — AFTER Harbor's Docker teardown — opens
+  a fresh session and independently re-queries the database.
+
+**Verification**: `tests/test_eng023_model_loop.py` 28 → **34 passed** (6 new
+`UsageSinkHookTest` cases, no DB/Docker). New
+`tests/test_eng023_usage_accounting_repository.py`: **10 passed** against real Postgres
+(normal insert via a full real campaign/trial/attempt fixture chain, idempotent replay,
+genuine-conflict rejection, CHECK-constraint rejection). Regression:
+`tests/test_eng019_sandbox_threat_model.py tests/test_accounting_and_cli.py
+tests/test_worker_leasing.py` → **92 passed**, no regressions. Real Harbor Docker smoke
+with the real usage-sink wired in, real captured output:
+`usage_accounting.identity_row_found: true`,
+`identity_requested_model: "spike-requested-model"`,
+`identity_reported_model: "fake-reference-model-v1"`,
+`identity_coverage_label: "estimated_time_limited"`, `usage_request_rows_found: 4`,
+`usage_receipt_rows_found: 4` — full JSON in
+`docs/implementation/evidence/ENG-023/README.md` "Review follow-up 3".
+
+**Not changed / explicitly not claimed**: no live campaign has run and this pipeline is
+NOT wired into a production dispatcher — `services/api/src/aieb_api/worker/loop.py`
+still does not import `aieb_runner`; that remains ENG-001's remaining P0 scope, gated
+on the same provider/model authorization ENG-001 has always required. ENG-001's
+`BLOCKED` status was re-verified (not assumed) and left untouched. ENG-024's
+authorization gate is unchanged. No live, paid-provider execution occurred anywhere in
+this pass — the scripted `FakeProviderAdapter` is the only provider exercised. No new
+third-party dependency was added.
+
+Status: **ENG-023 IN_PROGRESS** (usage accounting now closed for real: new schema, real
+DB writers, real end-to-end Harbor-Docker-to-Postgres proof; the writer functions and
+the loop's hook into them are proven, but a production dispatcher invoking this
+pipeline for a live campaign remains ENG-001's P0-gated remaining scope, unchanged),
+**ENG-024 BLOCKED** (unchanged), **ENG-001 BLOCKED** (re-verified, untouched).

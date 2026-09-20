@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from ..models import (
     AttemptCredentialRow,
     AttemptEventRow,
+    AttemptModelIdentityRow,
     AttemptRow,
     CampaignRow,
     CandidateRow,
@@ -45,6 +46,8 @@ from ..models import (
     SystemFenceRow,
     TaskRevisionRow,
     TrialRow,
+    UsageReceiptRow,
+    UsageRequestRow,
     User,
     WorkItemRow,
     WorkerArtifactBlobRow,
@@ -1092,6 +1095,205 @@ def deactivate_kill_switch(session: Session, commit: bool = True) -> bool:
     else:
         session.flush()
     return True
+
+
+# ---------------------------------------------------------------------------
+# ENG-023 usage-accounting closure: real, authoritative UsageRequestRow /
+# UsageReceiptRow / AttemptModelIdentityRow writers. These are the ONLY
+# production code path (as of this change) that ever inserts a real usage
+# row - previously `UsageRequestRow(` was constructed only in this module's
+# own class definition and in test fixtures (a genuine, pre-existing,
+# cross-track gap; see docs/implementation/evidence/ENG-023/README.md).
+#
+# `aieb_runner` (and specifically model_loop.py) intentionally has no
+# dependency on `aieb_api` - these functions are the `aieb_api`-side half of
+# that seam. A caller (a worker, or a smoke script standing in for one)
+# collects plain-dict usage-receipt/identity payloads from the loop's
+# `usage_sink` callback and passes them here to actually persist them.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UsageReceiptInput:
+    """One physical provider call's usage, keyed to its logical `request_id`
+    (several physical retries of the same logical request share a
+    `request_id` and are distinguished by `physical_retry`)."""
+
+    request_id: str
+    physical_retry: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    reported_cost_usd: str | None = None
+    estimated_cost_usd: str | None = None
+
+
+class UsageRequestConflictError(RuntimeError):
+    """A retried record_usage_receipts() call reported a DIFFERENT attempt_id
+    for a request_id already recorded under the same (actor_role, request_id)
+    identity (`uq_usage_request_scoped_identity`) - the same idiom
+    record_candidate() uses for `CandidateConflictError`: a genuine identity
+    conflict, never silently laundered through the idempotent-replay path."""
+
+
+class UsageReceiptConflictError(RuntimeError):
+    """A retried record_usage_receipts() call reported DIFFERENT token/cost
+    figures for a (usage_request_id, physical_retry) pair already recorded
+    (`uq_usage_receipt_scoped_identity`) - mirrors UsageRequestConflictError
+    above and CandidateConflictError's established idiom."""
+
+
+def record_usage_receipts(
+    session: Session,
+    *,
+    attempt_id: uuid.UUID | None,
+    actor_role: str,
+    receipts: Sequence[UsageReceiptInput],
+    commit: bool = True,
+) -> list[uuid.UUID]:
+    """Persist real `UsageRequestRow`/`UsageReceiptRow` rows for one
+    attempt/role: one `UsageRequestRow` per distinct `request_id` among
+    `receipts`, and one `UsageReceiptRow` per physical retry under it.
+
+    Idempotent the same way `record_candidate`/`record_evaluation` already
+    are in this module: an insert that collides with an existing unique
+    identity is not immediately treated as an error. Instead, the existing
+    row is re-read and compared field-for-field against what this call would
+    have written - a byte-for-byte match is a safe replay of an already-
+    committed call (e.g. a retried worker after a dropped connection) and is
+    accepted silently; any real mismatch raises a conflict error rather than
+    misrepresenting what is actually persisted.
+
+    Returns the list of `UsageRequestRow.id`s touched (newly inserted or
+    confirmed-identical existing), in the order their `request_id`s first
+    appear in `receipts`.
+    """
+    by_request: dict[str, list[UsageReceiptInput]] = {}
+    for receipt in receipts:
+        by_request.setdefault(receipt.request_id, []).append(receipt)
+
+    request_ids: list[uuid.UUID] = []
+    for request_id, group in by_request.items():
+        usage_request = UsageRequestRow(actor_role=actor_role, request_id=request_id, attempt_id=attempt_id)
+        session.add(usage_request)
+        try:
+            session.flush()
+        except IntegrityError:
+            session.rollback()
+            existing = session.execute(
+                select(UsageRequestRow).where(
+                    UsageRequestRow.actor_role == actor_role, UsageRequestRow.request_id == request_id
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise
+            if existing.attempt_id != attempt_id:
+                raise UsageRequestConflictError(
+                    f"usage_request (actor_role={actor_role!r}, request_id={request_id!r}) is already "
+                    f"recorded with attempt_id={existing.attempt_id!r}, not {attempt_id!r}"
+                )
+            usage_request = existing
+        request_ids.append(usage_request.id)
+
+        for receipt in group:
+            receipt_row = UsageReceiptRow(
+                usage_request_id=usage_request.id,
+                physical_retry=receipt.physical_retry,
+                reported_cost_usd=receipt.reported_cost_usd,
+                estimated_cost_usd=receipt.estimated_cost_usd,
+                input_tokens=receipt.input_tokens,
+                output_tokens=receipt.output_tokens,
+            )
+            session.add(receipt_row)
+            try:
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                existing_receipt = session.execute(
+                    select(UsageReceiptRow).where(
+                        UsageReceiptRow.usage_request_id == usage_request.id,
+                        UsageReceiptRow.physical_retry == receipt.physical_retry,
+                    )
+                ).scalar_one_or_none()
+                if existing_receipt is None:
+                    raise
+                if (
+                    existing_receipt.reported_cost_usd != receipt.reported_cost_usd
+                    or existing_receipt.estimated_cost_usd != receipt.estimated_cost_usd
+                    or existing_receipt.input_tokens != receipt.input_tokens
+                    or existing_receipt.output_tokens != receipt.output_tokens
+                ):
+                    raise UsageReceiptConflictError(
+                        f"usage_receipt (usage_request_id={usage_request.id!r}, "
+                        f"physical_retry={receipt.physical_retry!r}) is already recorded with different content"
+                    )
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return request_ids
+
+
+class ModelIdentityConflictError(RuntimeError):
+    """A retried record_model_identity() call reported DIFFERENT model
+    identity/coverage fields for an (attempt_id, actor_role) pair already
+    recorded (`uq_attempt_model_identity_attempt_role`) - same idiom as
+    UsageRequestConflictError above."""
+
+
+def record_model_identity(
+    session: Session,
+    *,
+    attempt_id: uuid.UUID | None,
+    actor_role: str,
+    requested_model: str,
+    reported_model: str | None,
+    settings_digest: str | None,
+    coverage_label: str,
+    commit: bool = True,
+) -> uuid.UUID:
+    """Persist the real, authoritative `AttemptModelIdentityRow` for one
+    attempt/role - which model was requested vs actually reported, the
+    settings_digest it was verified against, and the disclosed
+    coverage_label. Idempotent on (attempt_id, actor_role), exactly like
+    record_usage_receipts above: a byte-identical replay returns the
+    existing row's id; a genuine mismatch raises ModelIdentityConflictError.
+    """
+    row = AttemptModelIdentityRow(
+        attempt_id=attempt_id,
+        actor_role=actor_role,
+        requested_model=requested_model,
+        reported_model=reported_model,
+        settings_digest=settings_digest,
+        coverage_label=coverage_label,
+    )
+    session.add(row)
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        existing = session.execute(
+            select(AttemptModelIdentityRow).where(
+                AttemptModelIdentityRow.attempt_id == attempt_id, AttemptModelIdentityRow.actor_role == actor_role
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        if (
+            existing.requested_model != requested_model
+            or existing.reported_model != reported_model
+            or existing.settings_digest != settings_digest
+            or existing.coverage_label != coverage_label
+        ):
+            raise ModelIdentityConflictError(
+                f"attempt_model_identity (attempt_id={attempt_id!r}, actor_role={actor_role!r}) is already "
+                "recorded with different content"
+            )
+        row = existing
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return row.id
 
 
 def _hash_token(token: str) -> str:

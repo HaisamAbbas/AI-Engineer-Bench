@@ -676,5 +676,100 @@ class SettingsDigestVerificationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["coverage_label"], "estimated_time_limited")
 
 
+# ---------------------------------------------------------------------------
+# ENG-023 usage-accounting closure: the usage_sink hook fires exactly once,
+# on every stopping path, with a plain-dict payload - no DB, no Docker. This
+# is the fast, dependency-free proof the hook fires correctly; the real
+# end-to-end proof against real Postgres/Harbor is
+# scripts/run_eng023_model_loop_spike.py.
+# ---------------------------------------------------------------------------
+
+
+class UsageSinkHookTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._tmp = _make_test_tmp_dir()
+        supported, reason = _tmp_dir_supports_nested_ops(self._tmp)
+        if not supported:
+            try:
+                _rmtree_windows_safe(self._tmp)
+            except OSError:
+                pass
+            self.skipTest(reason)
+        self.addCleanup(_rmtree_windows_safe, self._tmp)
+        self.tmp_path = Path(self._tmp)
+        self.env = _FakeEnvironment(self.tmp_path / "workspace")
+        self.calls: list[dict] = []
+
+    def _sink(self, payload: dict) -> None:
+        self.calls.append(payload)
+
+    def _make_loop(self, provider, **kwargs) -> ModelTrackReferenceLoop:
+        return ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            provider=provider,
+            usage_sink=self._sink,
+            **kwargs,
+        )
+
+    async def test_sink_called_once_on_submit(self) -> None:
+        provider = FakeProviderAdapter(
+            script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),), reported_model="reported-x")]
+        )
+        loop = self._make_loop(provider, requested_model="requested-x")
+        await loop.run("do the task", self.env, context=None)
+        self.assertEqual(len(self.calls), 1)
+        payload = self.calls[0]
+        self.assertEqual(payload["actor_role"], "engineer")
+        self.assertEqual(payload["requested_model"], "requested-x")
+        self.assertEqual(payload["reported_model"], "reported-x")
+        self.assertEqual(payload["coverage_label"], "estimated_time_limited")
+        self.assertIsInstance(payload["usage_receipts"], list)
+        self.assertTrue(len(payload["usage_receipts"]) >= 1)
+
+    async def test_sink_called_once_on_deadline(self) -> None:
+        os.environ[model_loop.ENV_DEADLINE_OVERRIDE] = "0"
+        self.addCleanup(os.environ.pop, model_loop.ENV_DEADLINE_OVERRIDE, None)
+        provider = FakeProviderAdapter(script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))])
+        loop = self._make_loop(provider, requested_model="requested-x")
+        await loop.run("do the task", self.env, context=None)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["usage_receipts"], [])
+
+    async def test_sink_called_once_on_provider_error(self) -> None:
+        provider = FakeProviderAdapter(script=[AuthenticationError("bad key")])
+        loop = self._make_loop(provider, requested_model="requested-x")
+        await loop.run("do the task", self.env, context=None)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_sink_called_once_on_malformed_call_exhaustion(self) -> None:
+        original = model_loop.MAX_RETRIES_PER_STEP
+        model_loop.MAX_RETRIES_PER_STEP = 2
+        self.addCleanup(setattr, model_loop, "MAX_RETRIES_PER_STEP", original)
+        provider = FakeProviderAdapter(script=[_response(tool_calls=(ToolCall(id="1", name="nope", arguments={}),))])
+        loop = self._make_loop(provider, requested_model="requested-x")
+        await loop.run("do the task", self.env, context=None)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_no_sink_configured_is_unchanged_behavior(self) -> None:
+        provider = FakeProviderAdapter(script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))])
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs", provider=provider, requested_model="requested-x"
+        )
+        await loop.run("do the task", self.env, context=None)
+        summary = _summary(self.env)
+        self.assertTrue(summary["submitted"])
+
+    async def test_registry_by_id_resolution_mirrors_fake_provider_seam(self) -> None:
+        provider = FakeProviderAdapter(script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))])
+        model_loop.register_usage_sink("test-sink-id", self._sink)
+        os.environ[model_loop.ENV_USAGE_SINK_ID] = "test-sink-id"
+        self.addCleanup(os.environ.pop, model_loop.ENV_USAGE_SINK_ID, None)
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs", provider=provider, requested_model="requested-x"
+        )
+        await loop.run("do the task", self.env, context=None)
+        self.assertEqual(len(self.calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -449,6 +449,42 @@ class UsageReceiptRow(Base):
     )
 
 
+class AttemptModelIdentityRow(Base):
+    """ENG-023 usage-accounting closure: per-attempt/role requested vs
+    reported model identity, the settings_digest it was verified against, and
+    the disclosed coverage_label (the `BudgetEnforcement`-style
+    estimated_time_limited/full_match vocabulary already used elsewhere in
+    this codebase - see `_LoopOutcome.coverage_label` in
+    `aieb_runner.model_loop`). Distinct from `UsageRequestRow`/`UsageReceiptRow`
+    (which record cost/token accounting): this table is the authoritative,
+    queryable record of WHICH model identity an attempt/role actually ran
+    under, which previously existed only inside a trial's serialized
+    `model_track_summary.json` artifact and was never persisted into the
+    database. `attempt_id` is nullable to match `usage_request.attempt_id`'s
+    existing nullability (a spike/smoke run may have no real Attempt row to
+    attach to); recorded once per (attempt_id, actor_role)."""
+
+    __tablename__ = "attempt_model_identity"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=True)
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_model: Mapped[str] = mapped_column(String(256), nullable=False)
+    reported_model: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    settings_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    coverage_label: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "actor_role", name="uq_attempt_model_identity_attempt_role"),
+        CheckConstraint(
+            "actor_role in ('engineer','dev_application','verifier_application','verifier_judge')",
+            name="ck_attempt_model_identity_actor_role",
+        ),
+        Index("ix_attempt_model_identity_attempt", "attempt_id"),
+    )
+
+
 class PublicationRow(Base):
     __tablename__ = "publication"
 

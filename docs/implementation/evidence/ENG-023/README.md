@@ -444,9 +444,229 @@ constructor's `provider_kind` parameter (no env var either). `coverage_label` is
 (`"fake-reference-model-v1"`) legitimately differs from the requested one — exactly the
 disclosed-profile behavior this loop is supposed to produce, not a defect.
 
-### Still explicitly NOT claimed (unchanged, plus one new item)
+### Still explicitly NOT claimed (unchanged, plus one new item, up to this point)
 
 Everything in "What is explicitly NOT claimed" above still holds. In addition: **usage
 accounting is not connected to `services/api`'s authoritative ledger for either track**
 (Finding 2 above) — this was true before ENG-023 and remains true after it; it is not
 presented as something this pass fixed.
+
+**This is superseded below** — a third review follow-up closes Finding 2 for real
+(the writer functions and the loop's hook into them), while explicitly NOT closing the
+separate, larger "a production dispatcher actually invokes this pipeline for a live
+campaign" gap. Read the next section for the precise boundary.
+
+## Review follow-up 3 (2026-09-21): usage accounting closed for real — new schema, real DB writers, real Harbor-Docker-to-Postgres proof
+
+A third review held firm on Finding 2 above: "Usage accounting is still not implemented.
+The loop's `UsageLedger` remains in-process and serializes receipts into
+`model_track_summary.json`; it does not create authoritative API
+`UsageRequestRow`/`UsageReceiptRow` records or reconcile provider costs/budget coverage.
+Requested/reported identity likewise is not persisted into the authoritative usage
+ledger." This section records what was actually closed, precisely, and draws the same
+honest line the two prior follow-ups drew around what remains genuinely blocked.
+
+### What this pass verified before writing any code
+
+- `UsageRequestRow(` was, before this pass, constructed ONLY in
+  `services/api/src/aieb_api/models.py`'s own class definition and in
+  `tests/test_api_service.py` fixtures — confirmed again by grep across the whole repo.
+  No production code path, for either track, ever wrote a real usage row.
+- `services/api/src/aieb_api/worker/loop.py` does not import `aieb_runner` at all — there
+  is no production glue anywhere that has a worker process call
+  `aieb_runner.backends.harbor.HarborBackend.launch()` for a real trial. Only manual spike
+  scripts (`scripts/run_eng001_spike.py`, `scripts/run_eng023_model_loop_spike.py`) ever
+  call `HarborBackend.launch()`. Building that full worker-to-Harbor production dispatcher
+  is real, separate, substantial work — it is properly ENG-001's remaining P0 scope (a
+  real installed-agent smoke, gated on provider/model authorization), not something this
+  pass builds or should build.
+- `UsageRequestRow`/`UsageReceiptRow` (`services/api/src/aieb_api/models.py`, pre-existing)
+  had no field anywhere for per-attempt requested/reported model identity — a real,
+  additional schema gap beyond "just call an existing writer."
+
+### What is now real
+
+**New table, migration `b3f1c2a9d4e7`** (`down_revision = "c7d8e9f0a1b2"`, the verified
+head at the time this migration was written):
+`services/api/src/aieb_api/migrations/versions/b3f1c2a9d4e7_attempt_model_identity.py`
+adds `attempt_model_identity` — `id` (uuid pk), `attempt_id` (FK to `attempt.id`, nullable
+to match `usage_request.attempt_id`'s existing nullability), `actor_role` (same CHECK
+vocabulary as `usage_request.actor_role`), `requested_model` (not null), `reported_model`
+(nullable), `settings_digest` (nullable), `coverage_label` (not null — the same
+`estimated_time_limited`/`full_match` vocabulary `_LoopOutcome.coverage_label` already
+produces), `created_at`. Unique constraint `uq_attempt_model_identity_attempt_role` on
+`(attempt_id, actor_role)`, mirroring `usage_request`'s
+`uq_usage_request_scoped_identity` "record once per identity" idiom. The corresponding
+ORM class is `AttemptModelIdentityRow` in `services/api/src/aieb_api/models.py`.
+Verified round-trip against the real test Postgres:
+```
+alembic upgrade head    # c7d8e9f0a1b2 -> b3f1c2a9d4e7
+alembic downgrade -1    # b3f1c2a9d4e7 -> c7d8e9f0a1b2
+alembic upgrade head    # c7d8e9f0a1b2 -> b3f1c2a9d4e7
+alembic current          # b3f1c2a9d4e7 (head)
+```
+all four commands executed for real against `AIEB_DATABASE_URL` for this pass, clean.
+
+**New real DB-writing repository functions**, `services/api/src/aieb_api/worker/repository.py`
+(same module ENG-015's leasing/fencing logic already lives in — no ad hoc queries
+elsewhere in this codebase, and this follows that same rule):
+- `record_usage_receipts(session, *, attempt_id, actor_role, receipts, commit=True)` —
+  inserts one real `UsageRequestRow` per distinct `request_id` and one real
+  `UsageReceiptRow` per physical retry under it. Idempotent on a unique-constraint
+  conflict using the SAME established idiom `record_candidate`/`record_evaluation`
+  already use elsewhere in this file: catch `IntegrityError`, re-select the existing row,
+  accept a byte-for-byte-identical replay silently, and raise a dedicated conflict error
+  (`UsageRequestConflictError` / `UsageReceiptConflictError`) on any genuine mismatch —
+  never silently misrepresenting what is actually persisted.
+- `record_model_identity(session, *, attempt_id, actor_role, requested_model,
+  reported_model, settings_digest, coverage_label, commit=True)` — inserts the real
+  `AttemptModelIdentityRow`, idempotent on `(attempt_id, actor_role)` the same way
+  (`ModelIdentityConflictError` on mismatch).
+
+These two functions are now the ONLY production code path in this repository that ever
+inserts a real `UsageRequestRow`/`UsageReceiptRow`/`AttemptModelIdentityRow`.
+
+**The loop's hook into them**, `packages/aieb-runner/src/aieb_runner/model_loop.py` —
+`aieb_runner` still has ZERO dependency on `aieb_api`/`services/api` (monorepo layering
+preserved exactly as before). `ModelTrackReferenceLoop.__init__` gained
+`usage_sink: Callable[[dict], None] | None = None`, the same category of parameter as the
+pre-existing `provider=` direct-injection kwarg. For real Harbor dispatch, where a live
+callable cannot round-trip through Harbor's serializable `AgentConfig.kwargs` any more
+than a live provider object can, the SAME registry-by-id seam
+`FakeProviderAdapter.register`/`get_registered` already established is mirrored exactly:
+`register_usage_sink`/`get_registered_usage_sink` plus `AIEB_MODEL_TRACK_USAGE_SINK_ID`
+(`ENV_USAGE_SINK_ID`), resolved by `_select_usage_sink()` in the same
+direct-injection-first, then-registry order as `_select_provider()`. In `run()`'s
+existing `try/finally` (the same one that already guarantees `_finalize_submission` runs
+on every stopping path — submit, `MAX_STEPS` exhaustion, deadline, malformed-call
+exhaustion, or an unrecoverable provider error), if a sink is configured it is called
+exactly once with a plain dict: `actor_role` (always `"engineer"` for this loop),
+`requested_model`, `reported_model`, `settings_digest` (the real
+`expected_settings_digest` the loop was constructed with), `coverage_label`, and
+`usage_receipts` (reusing `outcome.usage_receipts`, already built — no new accounting
+mechanism). **No sink configured is today's exact prior behavior, unchanged**: only
+`model_track_summary.json` is written, fully backward compatible.
+
+New dependency-free unit test class `UsageSinkHookTest` in `tests/test_eng023_model_loop.py`
+proves the hook fires exactly once on every stopping path (submit, deadline,
+malformed-call exhaustion, unrecoverable provider error) with a simple list-appending fake
+sink, plus that no-sink-configured behavior is unchanged and that the registry-by-id
+resolution path works — no DB, no Docker.
+
+### The real end-to-end proof (not a mock)
+
+`scripts/run_eng023_model_loop_spike.py` now additionally: registers a real usage-sink
+callback via the registry-by-id mechanism (`_register_usage_sink`); that callback opens a
+real session against the real test Postgres (`AIEB_DATABASE_URL`) and calls
+`record_usage_receipts`/`record_model_identity` — the exact same production writer
+functions above, not a mock or a duplicate code path; runs the model-track loop through
+REAL Harbor Docker dispatch exactly as every prior run in this document (scripted
+`FakeProviderAdapter`, zero network, zero real spend); and, AFTER Harbor's Docker
+teardown (`backend.cleanup()`) has already completed, opens a FRESH session and
+independently re-queries the real database, asserting the expected rows exist with the
+right values. `attempt_id=None` was chosen deliberately for this spike (documented in the
+script itself): building a full campaign/trial/attempt fixture chain just to attach the
+spike's usage rows to is orthogonal to what this spike proves (the
+loop → sink → repository → real Postgres pipeline itself), and `attempt_id` is
+schema-legal as `NULL` for exactly this case on both `usage_request` (pre-existing) and
+the new `attempt_model_identity` table. (The new repository-function test suite below
+*does* exercise the full real-`Attempt`-row path, so that path is independently proven
+too — the spike script's choice of `NULL` is a scope decision for the spike, not a
+limitation of the writers.)
+
+Real captured output (`D:\AI-Engineer-Bench\.venv\Scripts\python.exe scripts\run_eng023_model_loop_spike.py`,
+`AIEB_DATABASE_URL` pointed at the real disposable test Postgres, exit code `0`):
+
+```json
+{
+  "agent_version": "aieb-model-track-reference-loop 0.1.0",
+  "candidate_files": [
+    "README.txt",
+    "hello-from-model-track.txt",
+    "model_track_summary.json"
+  ],
+  "cleanup_clean": true,
+  "exception_info": null,
+  "harbor_version": "0.22.0",
+  "model_track_summary": {
+    "coverage_label": "estimated_time_limited",
+    "reported_model": "fake-reference-model-v1",
+    "requested_model": "spike-requested-model",
+    "stop_reason": "submitted",
+    "submitted": true,
+    "usage_receipts": [ /* 4 UsageReceipt entries, one per scripted provider call */ ]
+  },
+  "reward": 1.0,
+  "state": "completed",
+  "usage_accounting": {
+    "identity_coverage_label": "estimated_time_limited",
+    "identity_reported_model": "fake-reference-model-v1",
+    "identity_requested_model": "spike-requested-model",
+    "identity_row_found": true,
+    "identity_settings_digest": null,
+    "usage_receipt_rows_found": 4,
+    "usage_request_rows_found": 4
+  }
+}
+```
+
+`usage_accounting` is populated by a query issued AFTER `backend.cleanup()` — a fresh
+session, independent of anything held open during the run — against the real
+`AIEB_DATABASE_URL` test database. `identity_row_found: true` with the expected
+`requested_model`/`reported_model`/`coverage_label` and `usage_request_rows_found: 4` /
+`usage_receipt_rows_found: 4` (one request/receipt pair per scripted provider call —
+list_files, patch, run_command, submit) is the concrete proof that a real Harbor Docker
+run's usage flowed into real Postgres rows, independently queried back out — not
+serialized only into `model_track_summary.json` inside the container.
+
+### Repository-function tests (real Postgres, full real-Attempt-row path)
+
+`tests/test_eng023_usage_accounting_repository.py` — 10 tests, all passing against the
+real test Postgres:
+`.venv/Scripts/python.exe -m pytest tests/test_eng023_usage_accounting_repository.py -q`
+→ `10 passed`. Covers, for both `record_usage_receipts` and `record_model_identity`: a
+normal insert (using the full real campaign→trial→attempt fixture chain, the same minimal
+pattern `tests/test_metrics.py::_seed_minimal_engineering_lease` established, not the full
+cohort-freezing pipeline), multiple physical retries under one logical request, idempotent
+replay with identical content, a genuine conflict on replay with different content
+(`UsageRequestConflictError`/`UsageReceiptConflictError`/`ModelIdentityConflictError`),
+and the CHECK constraint on `actor_role` rejecting an invalid value.
+
+### Full test run for this pass
+
+- `tests/test_eng023_model_loop.py` — 34 passed (the pre-existing 28, plus 6 new
+  `UsageSinkHookTest` cases).
+- `tests/test_eng023_usage_accounting_repository.py` — 10 passed (new).
+- `tests/test_eng019_sandbox_threat_model.py tests/test_accounting_and_cli.py
+  tests/test_worker_leasing.py` — 92 passed, no regressions from the new migration/model.
+
+### Precisely what is closed, and what is NOT (read this carefully)
+
+**Closed for real**: real `UsageRequestRow`/`UsageReceiptRow` records now exist and are
+provably populated by a real end-to-end run — loop → `usage_sink` → real repository
+functions → real Postgres rows, verified via real Harbor Docker execution independently
+querying the database back afterward. A new `attempt_model_identity` table (migration
+`b3f1c2a9d4e7`) now persists requested/reported model identity into the authoritative
+database, closing the specific finding that "requested/reported identity likewise is not
+persisted into the authoritative usage ledger."
+
+**NOT claimed, and should not be inferred**:
+- **No live campaign has run**, and this pipeline is **not wired into a production
+  dispatcher**. `services/api/src/aieb_api/worker/loop.py` still does not import
+  `aieb_runner` and still never calls `HarborBackend.launch()` for any track — that
+  dispatcher does not exist yet for ANY track, agent or model. Building it is out of this
+  pass's scope; it is properly ENG-001's remaining P0 work, gated on the same
+  provider/model authorization ENG-001 has always required. **The writer functions and
+  the loop's hook into them are real and proven end-to-end; what remains is a production
+  dispatcher invoking this pipeline for a live campaign, which needs the same
+  provider/model authorization ENG-001's P0 has always required — this pass does not
+  change that gate.**
+- ENG-024's live-campaign authorization gate is unchanged: provider credentials and an
+  approved spend cap still do not exist in this environment.
+- ENG-001's P0 status is unchanged. `STATUS.md` was re-checked (not assumed) and its
+  ENG-001 row still reads `BLOCKED` — this pass did not touch it.
+- No live, paid-provider execution occurred anywhere in this pass. The scripted
+  `FakeProviderAdapter` (zero network, zero credentials, zero spend) is the only provider
+  exercised, exactly as in every prior ENG-023 smoke run in this document.
+- No new third-party dependency was added; the migration/repository/loop changes use only
+  SQLAlchemy/Alembic/stdlib already present in this codebase.

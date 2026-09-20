@@ -126,7 +126,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from harbor.agents.installed.base import BaseInstalledAgent
 from harbor.environments.base import BaseEnvironment
@@ -251,6 +251,25 @@ DEFAULT_WALL_CLOCK_BUDGET_SEC = 240.0
 ENV_DEADLINE_OVERRIDE = "AIEB_MODEL_TRACK_DEADLINE_SEC"
 ENV_MAX_STEPS_OVERRIDE = "AIEB_MODEL_TRACK_MAX_STEPS"
 ENV_FAKE_SCRIPT_ID = "AIEB_MODEL_TRACK_FAKE_SCRIPT_ID"
+ENV_USAGE_SINK_ID = "AIEB_MODEL_TRACK_USAGE_SINK_ID"
+
+# ENG-023 usage-accounting closure: a same-process registry-by-id, mirroring
+# FakeProviderAdapter.register/get_registered exactly (see
+# model_providers/fake.py) - a live Python callable cannot round-trip
+# through Harbor's serializable `AgentConfig.kwargs` any more than a live
+# provider object can, so a same-process caller (a smoke script standing in
+# for a future real dispatcher) registers its callback here, keyed by an
+# opaque id set via AIEB_MODEL_TRACK_USAGE_SINK_ID just before dispatch, and
+# the Harbor-constructed loop instance looks it up by that id at run() time.
+_USAGE_SINK_REGISTRY: dict[str, "Callable[[dict[str, Any]], None]"] = {}
+
+
+def register_usage_sink(key: str, sink: "Callable[[dict[str, Any]], None]") -> None:
+    _USAGE_SINK_REGISTRY[key] = sink
+
+
+def get_registered_usage_sink(key: str) -> "Callable[[dict[str, Any]], None] | None":
+    return _USAGE_SINK_REGISTRY.get(key)
 
 _JSON_SCHEMA_TYPES: dict[str, tuple[type, ...]] = {
     "string": (str,),
@@ -357,6 +376,7 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
         api_key_env_var: str = "AIEB_MODEL_TRACK_API_KEY",
         settings: dict[str, object] | None = None,
         expected_settings_digest: str | None = None,
+        usage_sink: "Callable[[dict[str, Any]], None] | None" = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -367,6 +387,11 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
         self._api_key_env_var = api_key_env_var
         self._settings: dict[str, object] = dict(settings) if settings is not None else {}
         self._expected_settings_digest = expected_settings_digest
+        # ENG-023 usage-accounting closure: direct injection (tests/smoke), same category
+        # as `provider=` above. Real Harbor dispatch resolves the registry-by-id seam
+        # instead (see ENV_USAGE_SINK_ID / _select_usage_sink) since a live callable
+        # cannot round-trip through Harbor's serializable AgentConfig.kwargs either.
+        self._injected_usage_sink = usage_sink
 
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
@@ -425,6 +450,17 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
                 api_key_env_var=self._api_key_env_var,
             )
         raise RuntimeError(f"unknown provider_kind: {kind!r}")
+
+    def _select_usage_sink(self) -> "Callable[[dict[str, Any]], None] | None":
+        """No sink configured is today's exact behavior, unchanged: only
+        `model_track_summary.json` is written. Mirrors `_select_provider`'s
+        direct-injection-first, then registry-by-id resolution order."""
+        if self._injected_usage_sink is not None:
+            return self._injected_usage_sink
+        sink_id = os.environ.get(ENV_USAGE_SINK_ID)
+        if sink_id:
+            return get_registered_usage_sink(sink_id)
+        return None
 
     def _resolve_requested_model(self) -> str:
         if self._requested_model_override is not None:
@@ -722,6 +758,26 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
                 for receipt in ledger.receipts()
             ]
             await self._finalize_submission(environment, outcome)
+            usage_sink = self._select_usage_sink()
+            if usage_sink is not None:
+                # ENG-023 usage-accounting closure: fires exactly once, on EVERY stopping
+                # path (this is the same try/finally that guarantees _finalize_submission
+                # above always runs) - submit, MAX_STEPS exhaustion, deadline, malformed-call
+                # exhaustion, or an unrecoverable provider error. `aieb_runner` stays generic
+                # here: the sink is a plain Callable[[dict], None] with no dependency on
+                # aieb_api - the REAL callback that writes UsageRequestRow/UsageReceiptRow/
+                # AttemptModelIdentityRow rows lives outside this package (see
+                # scripts/run_eng023_model_loop_spike.py).
+                usage_sink(
+                    {
+                        "actor_role": "engineer",
+                        "requested_model": outcome.requested_model,
+                        "reported_model": outcome.reported_model,
+                        "settings_digest": self._expected_settings_digest,
+                        "coverage_label": outcome.coverage_label,
+                        "usage_receipts": outcome.usage_receipts,
+                    }
+                )
 
     def _call_provider_with_retries(
         self,
