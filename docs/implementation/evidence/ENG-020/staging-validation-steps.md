@@ -94,15 +94,21 @@ disposable one) is new.
 4. Never cancel a scored run merely to hide a bad outcome (spec section 45) - a rollback
    addresses the deployment, not the campaign's recorded evidence.
 5. If the rollback was a DATABASE restore, advance the system fence epoch with the operator
-   command BEFORE resuming any dispatch: set the kill switch (barrier), then
-   `python scripts/fence_advance.py --check` (pre-flight) and
-   `python scripts/fence_advance.py --reason "post-rollback fence advance"` - see the
+   command BEFORE resuming any dispatch. The barrier is set ON THE LIVE DB and then lost by the
+   restore (the restored DB carries the BACKUP's kill-switch state), so RE-ESTABLISH it on the
+   restored database first - then
+   `python scripts/fence_advance.py --check` (pre-flight must exit 0) and
+   `python scripts/fence_advance.py --reason "post-rollback fence advance"` (the check, refusal,
+   and advance are ONE transaction: a concurrent kill-switch deactivation either completes first
+   and causes REFUSAL with no epoch change, or waits until the advance commits) - see the
    "Database restored from backup" runbook. Then run `scripts/backup_restore_drill.py`'s FIVE
-   assertions (restored lease still `leased`, pre-restore worker fenced at FIRST touch with its
+   assertions (restored lease still `leased`, restored DB inherits the backup's INACTIVE kill
+   switch, the operator controls exercised THROUGH `scripts/fence_advance.py` with advance only
+   under a re-established barrier, pre-restore worker fenced at FIRST touch with its
    credential dead and status agreeing, reconciliation quarantines the stale-epoch orphan, stale
-   generation finalize refused, fresh claim works) against the ROLLED-BACK state before resuming
-   normal dispatch, exactly as they were proven against a restored database in this repository's
-   own drill.
+   generation finalize refused, fresh claim works after resume) against the ROLLED-BACK state
+   before resuming normal dispatch, exactly as they were proven against a restored database in
+   this repository's own drill.
 
 ## 6. Post-incident (if steps 1-5 were triggered by a real incident, not a routine deploy)
 

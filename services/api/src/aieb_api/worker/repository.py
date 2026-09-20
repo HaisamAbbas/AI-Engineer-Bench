@@ -224,6 +224,33 @@ def advance_fence_epoch(
     return row.lease_fence_epoch
 
 
+class KillSwitchBarrierError(RuntimeError):
+    """ENG-020 gap 4 (re-review round 2): the operator fence advance REQUIRES the global kill
+    switch to be ACTIVE, atomically with the epoch bump. Raised - with the epoch NOT advanced -
+    when the barrier is missing or a concurrent deactivation won the race first."""
+
+
+def advance_fence_epoch_with_barrier(
+    session: Session, *, reason: str, activated_by_user_id: uuid.UUID | None = None, commit: bool = True,
+) -> int:
+    """ENG-020 gap 4 (re-review round 2): the OPERATOR advance, made ATOMIC with the kill-switch
+    barrier. ONE transaction (1) locks the kill_switch singleton row FOR UPDATE - the same lock
+    activate/deactivate_kill_switch take - (2) confirms it is ACTIVE, raising KillSwitchBarrierError
+    with the epoch untouched otherwise, then (3) bumps the fence epoch under its own FOR UPDATE
+    lock and (4) commits ONCE (`commit=False` leaves both locks open for the caller's single outer
+    commit). A concurrent deactivation therefore either wins the kill_switch row lock FIRST - this
+    call then sees active=False and refuses with NO epoch change - or BLOCKS on that row until this
+    advance has fully committed, so the barrier can never disappear between the check and the
+    mutation (the re-review's reproduced `advanced=False` while the epoch HAD advanced)."""
+    kill_switch = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+    if not kill_switch.active:
+        raise KillSwitchBarrierError(
+            "the kill switch is not active: the restore runbook requires it (no new dispatch) "
+            "before the system fence epoch may advance; nothing was advanced"
+        )
+    return advance_fence_epoch(session, reason=reason, activated_by_user_id=activated_by_user_id, commit=commit)
+
+
 def _fenced_work_item_where(*, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_fence_epoch: int):
     """Shared WHERE predicates for every fenced lease operation (ENG-015 fencing plus the
     ENG-020 restore-drill fence epoch): the row must still be leased to this worker/generation

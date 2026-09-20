@@ -74,18 +74,31 @@ Gap 4 (restore-drill pre-reconciliation fencing hole) is IMPLEMENTED as a system
 (monotonic `system_fence.lease_fence_epoch`, migration `d5a3f7b9c1e2`, committed and pushed in
 `f1000a6`): every fenced lease/credential operation now requires its stored epoch stamp to equal
 the current epoch, and the reconciler sweeps stale-epoch leases even when in-window. The deciding
-review re-opened the closure with three findings whose SURGERY IS STAGED UNCOMMITTED and
-regression-tested (negative controls written, then reverted to green): (1) BLOCKING - fence
-advancement was not atomic against in-flight fenced mutations, fixed with the fence row's
-PostgreSQL FOR SHARE lock for each fenced transaction (`current_fence_epoch(..., share_lock=True)`)
-vs the advance's exclusive lock; (2) - `attempt_credential_status` reported stale credentials
-valid, fixed so `valid` requires `row.lease_epoch == current`; (3) - the restore runbook gains a
-kill-switch/isolation barrier and an executable, authenticated operator command
-`scripts/fence_advance.py` (refuses to advance unless the kill switch is active; `--check` exits
-non-zero without the barrier). Re-review of this round is PENDING; ENG-020 stays IN_PROGRESS until
-it lands. gap 5 (operator kill-switch API/CLI - the repository knob exists, the operator surface
-does not) and gap 6 (Prometheus `/metrics` + alerting) have NOT started; gap 5 is next after gap 4
-accepts. PG-gated execution is no longer blocked here: the `aieb-test-postgres` container
+review's findings 1 and 2 were fixed and pushed in `27b14be` (fence row held FOR SHARE for each
+fenced transaction via `current_fence_epoch(..., share_lock=True)` so the exclusive advance cannot
+interleave; and `attempt_credential_status` `valid` now requires `row.lease_epoch == current`).
+RE-REVIEW ROUND 2 on `27b14be` then found the operator command's kill-switch barrier check was
+NOT atomic with the epoch bump (BLOCKING: a concurrent deactivation could land after the check and
+after `advance_fence_epoch` had committed, so the command reported `advanced=False` while the
+epoch had moved and automation could retry-advance repeatedly), plus two mediums (the claimed
+"operator-DB-role authenticated" was not implemented - no operator role/grants/current_user
+validation; and the drill bypassed the command, calling `repository.advance_fence_epoch()` directly,
+which is why the non-atomicity escaped it). All three are FIXED in locally-staged, uncommitted
+changes (regression-tested; negative controls reverted to green): `advance_fence_epoch_with_barrier`
+makes the barrier and bump ONE transaction (lock `kill_switch` FOR UPDATE, confirm ACTIVE, bump the
+fence epoch under its own lock, commit once - a concurrent deactivation either completes first and
+causes REFUSAL with no epoch change, or blocks until the advance commits; both orderings
+two-session regression-tested, worker-leasing 44 + credentials 15 green); the command now reports
+`current_user` and `--by-user` is re-scoped to an OPTIONAL, INFORMATIONAL audit label (executable
+`--check`/refusal/advance verified against the control plane); and the drill now drives
+`scripts/fence_advance.py` AS A SUBPROCESS (restored DB inherits the backup's INACTIVE kill switch;
+`--check` fails then passes; refusal leaves the epoch unchanged; advance only under a
+RE-ESTABLISHED barrier; resume precedes the fresh-claim assertion) with the runbook rewritten to
+that exact order. RE-REVIEW OF THIS ROUND IS PENDING (fixes staged uncommitted on `27b14be`);
+re-review of `27b14be` itself confirmed HEAD == origin/main there and untouched tracked files. gap 5
+(operator kill-switch API/CLI - the repository knob exists, the operator surface does not) and gap 6
+(Prometheus `/metrics` + alerting) have NOT started; gap 5 is next after gap 4 accepts. PG-gated
+execution is no longer blocked here: the `aieb-test-postgres` container
 (postgres:16, port 5544, `aieb_test_password`) is what the recent runs of the PG suites
 (credential 10/10) used; the other existing ENG-015/016/017/020 PG suites (worker leasing, API
 service, migrations, drills) can be run the same way going forward.

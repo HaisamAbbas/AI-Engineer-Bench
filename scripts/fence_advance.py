@@ -1,29 +1,40 @@
 """ENG-020 gap 4: the OPERATOR command that advances the system fence epoch after a database
 restore - the only way to do so, and the exact command the restore runbook names.
 
-Authentication: the caller must present the control-plane OPERATOR database role. The command
-fail-closes without AIEB_DATABASE_URL (exactly like the API service), and performs every fence
-mutation inside that role's session; no password or token is ever written anywhere. This is the
-same operator boundary every existing control-plane action in this repository uses (the kill
-switch, reconciliation, the drills) - there is no separate token infrastructure, and inventing
-one would be new auth surface rather than honoring the real one.
+Authorization (honest statement, re-review round 2): there is NO dedicated least-privilege
+operator database role, grants, or `current_user` validation yet. Authorization relies solely on
+possession of a WRITE-CAPABLE database credential - whatever `AIEB_DATABASE_URL` authenticates
+(the command fail-closes without it, exactly like the API service), and every fence mutation
+happens inside that session. The command reports `current_user` so the database identity that
+actually performed the advance is VISIBLE; `--by-user` is an OPTIONAL, INFORMATIONAL actor label
+recorded on the audit row for human readability - it is user-asserted, NOT authenticated
+attribution and must reference an existing `users` row (the FK enforces that), so it is never
+taken as proof of who really ran the command. A dedicated operator role with real grants is
+recorded as a disclosed gap in the runbook/evidence rather than invented late.
 
-Operational barrier (deciding-review finding 3): advancing the epoch is structurally blocked
-unless the global KILL SWITCH is ACTIVE, so no NEW dispatch can be in flight while the fence
-moves. In-flight work that is still connected is handled by the fence row's FOR SHARE /
-FOR UPDATE serialization in `repository` (finding 1) - but the runbook still requires workers
-and the reconciler to be stopped or network-isolated first, so the advance never races even a
-single already-running worker's transaction. Verifies the barrier and re-checks it inside the
-command right before mutating.
+Operational barrier (deciding-review findings 3 + round 2): advancing the epoch REQUIRES the
+global KILL SWITCH to be ACTIVE, and that check is ATOMIC with the mutation - one transaction
+locks the kill_switch row FOR UPDATE, confirms it is active (raising otherwise, epoch untouched),
+bumps the fence epoch under its own lock, and commits once. A concurrent deactivation either
+completes first (the command then REFUSES with no epoch change) or waits until the advance has
+fully committed. Every fenced lease/credential operation holds the fence row FOR SHARE for its
+whole transaction (finding 1), so the advance serializes against even a single already-running
+worker's transaction; the runbook STILL requires workers/reconciler to be stopped or
+network-isolated first as defense-in-depth.
+
+The command ALSO requires the barrier to be re-established ON THE RESTORED DATABASE after the
+restore: a restore overwrites the live DB's kill_switch row with the backup's (usually inactive)
+state, so a barrier set before restoring is LOST. The runbook therefore restores first, then
+re-establishes the barrier on the restored DB, then runs this command.
 
 Usage:
     python scripts/fence_advance.py --check
     python scripts/fence_advance.py --reason "restore drill 2026-09-20" [--by-user <uuid>]
 
-`--check` is read-only: prints the current fence epoch and the kill-switch state, exits non-zero
-if the barrier is missing (so it doubles as a pre-flight gate). The mutating form refuses to run
-unless the kill switch is active, prints the old/new epochs, and re-runs the same barrier check
-inside the advance transaction.
+`--check` is read-only: prints the current fence epoch, the kill-switch state, and the session's
+`current_user`, and exits non-zero (3) if the barrier is missing - a pre-flight gate. The mutating
+form refuses to run unless the kill switch is active and prints the old/new epochs plus the DB
+identity that advanced them.
 """
 from __future__ import annotations
 
@@ -50,38 +61,39 @@ def _session_factory():
     return db.session_factory()
 
 
+def _current_user(session) -> str:
+    from sqlalchemy import text
+
+    return str(session.execute(text("select current_user")).scalar_one())
+
+
 def _check(session_factory) -> dict[str, object]:
     from aieb_api.worker import repository
 
     with session_factory() as session:
         epoch = repository.current_fence_epoch(session)
         kill_switch_active = repository.is_kill_switch_active(session)
-    return {"fence_epoch": epoch, "kill_switch_active": kill_switch_active}
+        db_user = _current_user(session)
+    return {"fence_epoch": epoch, "kill_switch_active": kill_switch_active, "db_user": db_user}
 
 
 def _advance(session_factory, *, reason: str, by_user: uuid.UUID | None) -> dict[str, object]:
     from aieb_api.worker import repository
 
     with session_factory() as session:
-        if not repository.is_kill_switch_active(session):
-            print(
-                "fence-advance REFUSED: the kill switch is not active. The restore runbook requires it "
-                "to be set (no new dispatch) before the fence may advance.",
-                file=sys.stderr,
-            )
-            return {"advanced": False, "refused": "kill switch not active"}
         before = repository.current_fence_epoch(session)
-        after = repository.advance_fence_epoch(session, reason=reason, activated_by_user_id=by_user)
-        # Re-check the barrier from inside the post-advance view so the printed state is the
-        # state the operator actually acted on.
-        still_active = repository.is_kill_switch_active(session)
-    if not still_active:
-        print("fence-advance REFUSED: the kill switch state changed mid-command; nothing was advanced.", file=sys.stderr)
-        return {"advanced": False, "refused": "kill switch changed mid-command"}
+        try:
+            after = repository.advance_fence_epoch_with_barrier(
+                session, reason=reason, activated_by_user_id=by_user,
+            )
+        except repository.KillSwitchBarrierError as exc:
+            print(f"fence-advance REFUSED: {exc}", file=sys.stderr)
+            return {"advanced": False, "refused": "kill switch not active"}
+        db_user = _current_user(session)
     if after != before + 1:
         print(f"fence-advance FAILED: expected epoch {before} -> {before + 1}, observed {after}", file=sys.stderr)
         raise SystemExit(1)
-    return {"advanced": True, "fence_epoch_before": before, "fence_epoch_after": after}
+    return {"advanced": True, "fence_epoch_before": before, "fence_epoch_after": after, "db_user": db_user}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,14 +101,23 @@ def main(argv: list[str] | None = None) -> int:
         prog="fence-advance",
         description="ENG-020 operator command: advance the system fence epoch after a database restore.",
     )
-    parser.add_argument("--check", action="store_true", help="read-only: print fence epoch + kill-switch state, exit non-zero if the barrier is missing")
+    parser.add_argument("--check", action="store_true", help="read-only: print fence epoch + kill-switch state + db user, exit non-zero if the barrier is missing")
     parser.add_argument("--reason", help="audit reason for the advance (required to advance)")
-    parser.add_argument("--by-user", type=uuid.UUID, default=None, help="operator user id recorded as the actor")
+    parser.add_argument(
+        "--by-user",
+        type=uuid.UUID,
+        default=None,
+        help="optional INFORMATIONAL actor label recorded on the audit row (must reference an existing users row); "
+             "NOT authentication - the DB identity used is reported as current_user",
+    )
     args = parser.parse_args(argv)
 
     session_factory = _session_factory()
     state = _check(session_factory)
-    print(f"fence epoch {state['fence_epoch']}; kill switch {'ACTIVE' if state['kill_switch_active'] else 'inactive'}")
+    print(
+        f"fence epoch {state['fence_epoch']}; kill switch "
+        f"{'ACTIVE' if state['kill_switch_active'] else 'inactive'}; db user {state['db_user']}"
+    )
     if args.check:
         return 0 if state["kill_switch_active"] else 3
     if not args.reason:
@@ -104,7 +125,10 @@ def main(argv: list[str] | None = None) -> int:
     result = _advance(session_factory, reason=args.reason, by_user=args.by_user)
     if not result["advanced"]:
         return 3
-    print(f"fence epoch advanced: {result['fence_epoch_before']} -> {result['fence_epoch_after']}")
+    print(
+        f"fence epoch advanced: {result['fence_epoch_before']} -> {result['fence_epoch_after']} "
+        f"(db user {result['db_user']})"
+    )
     return 0
 
 

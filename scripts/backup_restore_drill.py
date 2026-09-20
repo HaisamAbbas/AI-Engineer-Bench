@@ -23,6 +23,15 @@ simulation):
    pre-restore worker cannot read epoch 0 and land an epoch-0 mutation after the advance
    committed. Covered continuously by the two-session regression in
    tests/test_worker_leasing.py::test_fence_advance_is_atomic_against_in_flight_fenced_operations.
+5. The operator CONTROLS are exercised through the real command
+   `scripts/fence_advance.py` - NOT a direct repository call (re-review round 2): `--check`
+   pre-flight in both barrier states, kill-switch REFUSAL with no epoch change, and the
+   mutating advance under a re-established barrier - plus the runbook-bug reproduction that a
+   restore OVERWRITES the live DB's kill-switch row with the backup's (inactive) state, so
+   the barrier must be re-established ON THE RESTORED DATABASE after the restore, and the
+   atomicity of that barrier with the epoch bump (ordering A: deactivation first -> refusal,
+   no change; ordering B: deactivation blocks until the advance commits - covered by the
+   two-session regressions in tests/test_worker_leasing.py).
 
 The drill's pre-restore lease is DELIBERATELY still WITHIN its lease window when the backup is
 taken (lease_expiry set to the future, not backdated): that is exactly the pre-reconciliation
@@ -197,6 +206,18 @@ def main() -> None:
     _pg_tool("pg_dump", [*conn_args, "-U", user, "-F", "c", SOURCE_DB], password=password, capture_to=dump_path)
     print(f"backed up {SOURCE_DB} to {dump_path}")
 
+    # The runbook-bug reproduction the re-review flagged: the operator sets the barrier on the
+    # LIVE (pre-restore) DB before restoring, but the backup was taken earlier with the kill
+    # switch INACTIVE - so restoring it OVERWRITES the live DB's kill_switch row with the backup's
+    # inactive state and the barrier is LOST. Set the live-DB barrier now, then prove the restored
+    # DB does NOT inherit it (assertion 1) and that the runbook must re-establish it there.
+    with db.session_factory()() as session:
+        repository.activate_kill_switch(
+            session, activated_by_user_id=None,
+            reason="backup/restore drill: pre-restore live-DB barrier, expected to be lost by the restore",
+        )
+    print(f"set the live-DB kill switch before restoring - the restore must NOT carry it (backup had it inactive)")
+
     _pg_tool("createdb", [*conn_args, "-U", user, RESTORED_DB], password=password)
     restore_start = time.monotonic()
     if _DOCKER_CONTAINER:
@@ -225,19 +246,58 @@ def main() -> None:
         assert row.state == "leased", f"expected the abandoned lease to survive restore as 'leased', got {row.state!r}"
         assert row.generation == stale_generation, "generation must be unchanged immediately after restore"
         assert row.lease_expiry > datetime.now(timezone.utc), "the restored lease is still WITHIN its window - the gap-4 case"
+        assert repository.is_kill_switch_active(session) is False, (
+            "the restored DB must have the BACKUP's kill-switch state (inactive), not the live DB's "
+            "pre-restore barrier - the restore overwrote the barrier, so it must be re-established AFTER the restore"
+        )
         fence_before = repository.current_fence_epoch(session)
     assert fence_before == 0, "the fence epoch itself must survive restore unchanged"
-    print(f"[assertion 1] PASS: the lease is still 'leased' at generation {stale_generation}, expiry in the future, fence epoch {fence_before}")
+    print(f"[assertion 1] PASS: the lease is still 'leased' at generation {stale_generation}, expiry in the future, fence epoch {fence_before}; the restore LOST the pre-restore live-DB kill-switch barrier (backup was inactive), so the runbook must re-establish it on the restored database")
 
-    # THE OPERATOR POST-RESTORE STEP (gap 4): advance the system fence epoch. From this commit
-    # on, every lease/credential stamped with an earlier epoch is fenced at first touch - no
-    # reconciliation required.
+    # THE OPERATOR POST-RESTORE STEP (gap 4) - now driven through the REAL operator command
+    # `scripts/fence_advance.py`, exactly as the restore runbook names it (re-review round 2:
+    # the drill previously called repository.advance_fence_epoch() directly, which is why the
+    # command's own defects escaped its assertions).
+    fence_advance = [sys.executable, str(ROOT / "scripts/fence_advance.py")]
+    adv_env = {**os.environ, "AIEB_DATABASE_URL": restored_url}
+
+    # --check while the barrier is MISSING on the restored DB: must fail the pre-flight (exit 3).
+    check_missing = subprocess.run([*fence_advance, "--check"], env=adv_env, capture_output=True, text=True)
+    assert check_missing.returncode == 3, f"--check must exit 3 while the barrier is missing (got {check_missing.returncode}): {check_missing.stdout}\n{check_missing.stderr}"
+    assert "kill switch inactive" in check_missing.stdout, f"--check must report the inactive barrier: {check_missing.stdout}"
+    assert "db user " in check_missing.stdout, "--check must report the database identity (current_user)"
+    print("[operator step 1] PASS: fence_advance.py --check pre-flight fails (exit 3) while the restored DB has no barrier, and reports the db user")
+
+    # The mutating form must REFUSE outright while the barrier is missing - and change NOTHING.
+    refused = subprocess.run([*fence_advance, "--reason", "drill: must be refused", "--by-user", str(uuid.uuid4())], env=adv_env, capture_output=True, text=True)
+    assert refused.returncode == 3, f"the advance must be refused while the barrier is missing (got {refused.returncode}): {refused.stdout}\n{refused.stderr}"
+    assert "REFUSED" in refused.stdout + refused.stderr
     with db.session_factory()() as session:
-        advanced_to = repository.advance_fence_epoch(
-            session, reason="backup/restore drill: post-restore fence advance",
+        assert repository.current_fence_epoch(session) == fence_before, "a REFUSED advance must leave the epoch UNCHANGED (atomic refusal, no mutation)"
+    print(f"[operator step 2] PASS: fence_advance.py refuses to advance while the barrier is missing - exit 3, epoch unchanged at {fence_before}")
+
+    # Re-establish the barrier ON THE RESTORED DATABASE (finding: the restore lost the live-DB
+    # barrier; the runbook re-sets it here), then verify it via --check (exit 0) and advance.
+    with db.session_factory()() as session:
+        repository.activate_kill_switch(
+            session, activated_by_user_id=None,
+            reason="backup/restore drill: barrier re-established on the restored database",
         )
+    check_present = subprocess.run([*fence_advance, "--check"], env=adv_env, capture_output=True, text=True)
+    assert check_present.returncode == 0, f"--check must pass once the barrier is re-established (got {check_present.returncode}): {check_present.stdout}\n{check_present.stderr}"
+    assert "kill switch ACTIVE" in check_present.stdout, check_present.stdout
+    print("[operator step 3] PASS: barrier re-established ON the restored DB; --check pre-flight now passes (exit 0, kill switch ACTIVE)")
+
+    advanced_run = subprocess.run(
+        [*fence_advance, "--reason", "backup/restore drill: post-restore fence advance"],
+        env=adv_env, capture_output=True, text=True,
+    )
+    assert advanced_run.returncode == 0, f"the advance under the barrier must succeed (got {advanced_run.returncode}): {advanced_run.stdout}\n{advanced_run.stderr}"
+    assert f"fence epoch advanced: {fence_before} -> {fence_before + 1}" in advanced_run.stdout, advanced_run.stdout
+    with db.session_factory()() as session:
+        advanced_to = repository.current_fence_epoch(session)
     assert advanced_to == fence_before + 1
-    print(f"[operator step] PASS: advanced the system fence epoch to {advanced_to} on the restored database")
+    print(f"[operator step 4] PASS: fence_advance.py advanced the system fence epoch {fence_before} -> {advanced_to} on the restored database (db user reported)")
 
     # Assertion 2 (pretend the PRE-RESTORE worker came back and tried to act - BEFORE any
     # reconciliation runs, and while its lease expiry is still in the future). Every fenced
@@ -300,6 +360,14 @@ def main() -> None:
     assert stale_retry_finalized is False, "a stale pre-restore generation must be fenced out after reconciliation, not accepted"
     print("[assertion 4] PASS: the stale pre-restore worker/generation is fenced out and cannot commit results")
 
+    # Resume (the runbook's final step): clear the barrier on the restored DB and confirm it is
+    # really off, then prove a FRESH worker can claim and heartbeat under the advanced epoch.
+    with db.session_factory()() as session:
+        repository.deactivate_kill_switch(session)
+    with db.session_factory()() as session:
+        assert repository.is_kill_switch_active(session) is False, "resume requires the kill switch to be OFF"
+    print("[resume] PASS: barrier cleared on the restored database (kill switch OFF)")
+
     # Assertion 5 (the advance must not break the system): a FRESH worker can still claim the
     # replacement work item, heartbeat it, and is NOT itself fenced.
     with db.session_factory()() as session:
@@ -312,7 +380,7 @@ def main() -> None:
         ) is True, "a fresh post-restore worker must be able to heartbeat"
     print("[assertion 5] PASS: a fresh post-restore worker claims and heartbeats under the advanced fence epoch")
 
-    print("Backup/restore drill: ALL FIVE assertions passed.")
+    print("Backup/restore drill: ALL FIVE assertions passed (operator controls exercised through scripts/fence_advance.py).")
 
 
 if __name__ == "__main__":

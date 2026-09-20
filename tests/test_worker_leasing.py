@@ -922,6 +922,86 @@ class WorkerLeasingTests(unittest.TestCase):
                 session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
             ))
 
+    def test_fence_advance_refuses_atomically_when_deactivation_committed_first(self) -> None:
+        """ENG-020 gap 4, re-review round 2: the kill-switch barrier and the epoch bump are ONE
+        transaction. Ordering A - a concurrent deactivation commits FIRST - must produce a
+        REFUSAL with the epoch UNCHANGED. The reviewer reproduced the broken version on 27b14be
+        as: advance reports 'advanced=False' while the epoch had STILL committed 0 -> 1 (the
+        command checked the barrier, advanced + committed, then re-checked the barrier in a new
+        view), so automation could retry and advance repeatedly. Regression-red there; green with
+        advance_fence_epoch_with_barrier."""
+        from aieb_api.worker.repository import KillSwitchBarrierError
+
+        self._frozen_enqueued_campaign()
+        # Barrier UP, then a deactivation that COMMITS BEFORE the advance's transaction begins.
+        with self.session_factory() as session:
+            repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+        with self.session_factory() as session:
+            repository.deactivate_kill_switch(session)
+        with self.session_factory() as session:
+            self.assertFalse(repository.is_kill_switch_active(session))
+        # The advance therefore refuses INSIDE its single transaction, with NO epoch change.
+        with self.session_factory() as session:
+            with self.assertRaises(KillSwitchBarrierError):
+                repository.advance_fence_epoch_with_barrier(session, reason="test: barrier must be atomic")
+        with self.session_factory() as session:
+            self.assertEqual(repository.current_fence_epoch(session), 0)
+
+    def test_fence_advance_blocks_a_concurrent_deactivation_until_it_commits(self) -> None:
+        """ENG-020 gap 4, re-review round 2: ordering B - a deactivation that STARTS while the
+        advance's single transaction is IN FLIGHT must BLOCK on the kill_switch row (the same
+        FOR UPDATE lock activate/deactivate take) until the advance has committed, so the
+        barrier can never vanish between the check and the mutation. The unlocked version on
+        27b14be let the deactivation land mid-command and report advanced=False with the epoch
+        moved. Regression-red there; green with advance_fence_epoch_with_barrier."""
+        from sqlalchemy.exc import OperationalError
+
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+        with self.session_factory() as session:
+            self.assertTrue(repository.is_kill_switch_active(session))
+
+        # The advance opens its single transaction (barrier lock + fence lock) and does NOT
+        # commit yet - the reviewer's in-flight window.
+        session_a = self.session_factory()
+        advanced_to = repository.advance_fence_epoch_with_barrier(
+            session_a, reason="test: atomic advance in flight", commit=False,
+        )
+        self.assertEqual(advanced_to, 1)
+
+        # A concurrent deactivation STARTS while the advance is in flight. It cannot land before
+        # the advance commits - launch it on a background thread that must BLOCK on the
+        # kill_switch row (the same FOR UPDATE lock the advance holds) until session_a commits.
+        errors: list[BaseException] = []
+        landed = threading.Event()
+
+        def _deactivate_after_waiting() -> None:
+            try:
+                with self.session_factory() as session:
+                    repository.deactivate_kill_switch(session)
+            except BaseException as exc:  # surfaced below via `errors`
+                errors.append(exc)
+            finally:
+                landed.set()
+
+        deactivation = threading.Thread(target=_deactivate_after_waiting, daemon=True)
+        deactivation.start()
+        time.sleep(0.4)  # give it time to reach (and block on) the row lock
+        self.assertFalse(landed.is_set(), "the concurrent deactivation must WAIT, not slip in before the advance commits")
+
+        # The successful advance commits FIRST...
+        session_a.commit()
+        session_a.close()
+        # ...and only THEN does the deferred deactivation proceed.
+        landed.wait(timeout=10)
+        deactivation.join(timeout=10)
+        self.assertFalse(errors, "the deferred deactivation must eventually succeed: %r" % (errors,))
+        self.assertTrue(landed.is_set())
+        with self.session_factory() as session:
+            self.assertEqual(repository.current_fence_epoch(session), 1)
+            self.assertFalse(repository.is_kill_switch_active(session))
+
     # ---- 6. verifier outage (trusted scorer crash, not a candidate defect) --
 
     def test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail(self) -> None:

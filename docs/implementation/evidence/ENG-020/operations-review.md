@@ -271,12 +271,57 @@ BLOCKING race and two smaller gaps, all fixed and regression-tested in this roun
 3. **MEDIUM - the restore runbook gave a bare repository call, no operational barrier.** FIXED:
    the "Database restored from backup" runbook now REQUIRES a barrier before the advance - kill
    switch active (no new dispatch), reconciler/workers stopped or network-isolated, defense-in-depth
-   behind the FOR SHARE serialization - and provides a concrete, executable, operator-role-
-   authenticated command `scripts/fence_advance.py` (`--check` pre-flight prints epoch +
-   barrier and exits non-zero when the barrier is missing; the mutating form REFUSES to advance
-   unless the kill switch is active, requires an audit `--reason`, and re-checks the barrier
-   inside the transaction). The command was executed against the test control plane: refused
-   without the barrier (exit 3), advanced `1 -> 2` only with the kill switch active.
+   behind the FOR SHARE serialization - and provides a concrete, executable command
+   `scripts/fence_advance.py` (`--check` pre-flight prints epoch + barrier and exits non-zero
+   when the barrier is missing; the mutating form REFUSES to advance unless the kill switch is
+   active and requires an audit `--reason`). The command was executed against the test control
+   plane: refused without the barrier (exit 3), advanced `1 -> 2` only with the kill switch
+   active. (REVISED in the re-review round below: the barrier check is now ATOMIC with the bump,
+   and the runbook's "operator-DB-role-authenticated" wording was corrected to an honest
+   statement - authorization is the write-capable DB credential, not a dedicated operator role.)
+
+### Re-review round 2 (reviewer re-check of `27b14be`): operator-command barrier atomized; drill now exercises the command
+The re-review accepted the FOR SHARE rewrite (finding 1) and the status fix (finding 2) but
+re-opened the closure with three findings, all fixed and regression-tested in this round:
+
+1. **BLOCKING - the barrier check and the epoch bump were NOT one transaction.** `_advance()` in
+   `scripts/fence_advance.py` checked the kill switch, called `advance_fence_epoch()`, which
+   COMMITTED, then re-checked the kill switch in a fresh view. The reviewer reproduced a
+   concurrent deactivation landing between the check and the commit: the command reported
+   `advanced=False` while the epoch came back 0 -> 1 committed - automation could retry and
+   advance repeatedly, and the barrier could disappear before the mutation. FIXED:
+   `repository.advance_fence_epoch_with_barrier(...)` is ONE transaction - lock the `kill_switch`
+   singleton row FOR UPDATE, confirm it is ACTIVE (`KillSwitchBarrierError`, epoch untouched,
+   otherwise), bump the fence epoch under its own FOR UPDATE lock, commit ONCE. A concurrent
+   deactivation either completes first (this call refuses, NO epoch change) or BLOCKS on the
+   kill_switch row until the advance commits. Two two-session regressions prove both orderings:
+   `test_fence_advance_refuses_atomically_when_deactivation_committed_first` (RED on 27b14be's
+   unlocked version was trivial; the regression that actually fails the reverted version is the
+   second one) and
+   `test_fence_advance_blocks_a_concurrent_deactivation_until_it_commits` - the deactivation
+   thread cannot land until the in-flight advance commits (RED when the barrier check is reverted
+   to an unlocked read, the exact interleaving reported).
+2. **MEDIUM - "operator-DB-role authenticated" was not true.** No dedicated operator role,
+   grants, or `current_user` validation existed; `--by-user` accepted an arbitrary UUID without
+   binding it to the DB identity. FIXED by honest documentation, not invented capability: the
+   command now REPORTS `current_user` (the identity the write-capable credential actually
+   authenticated, printed by `--check` and the advance line); `--by-user` is explicitly an
+   OPTIONAL, INFORMATIONAL actor label for the audit row (FK-constrained to an existing `users`
+   row), NOT authenticated attribution; the runbook and this document state that authorization
+   relies solely on access to a write-capable database credential and that a dedicated
+   least-privilege operator role is a disclosed gap.
+3. **MEDIUM - the drill bypassed the operator command.** `backup_restore_drill.py` called
+   `repository.advance_fence_epoch()` directly, so the command's non-atomicity escaped the
+   five-assertion drill; and the runbook activated the kill switch BEFORE restoring, while the
+   restore overwrites that row with the backup's (inactive) state. FIXED: the drill now drives
+   `scripts/fence_advance.py` AS A SUBPROCESS against the restored DB - asserts (a) the restored
+   DB inherited the backup's INACTIVE kill switch (the pre-restore live-DB barrier is LOST), (b)
+   `--check` pre-flight fails (exit 3) without a barrier and passes (exit 0) with one, (c) the
+   mutating form REFUSES with the epoch UNCHANGED when the barrier is missing, (d) the advance
+   only happens under a barrier RE-ESTABLISHED ON THE RESTORED DATABASE, and (e) resume (kill
+   switch cleared) before the fresh-claim assertion. The runbook was rewritten to the same order:
+   stop/isolate + set barrier on the live DB (knowing it will be lost), restore, RE-ESTABLISH the
+   barrier on the restored DB, `--check`, advance, reconcile, resume.
 
 ### CI (spec section 42)
 - `permissions: contents: read` added to all five workflows (the three pre-existing ones plus
@@ -338,20 +383,32 @@ BLOCKING race and two smaller gaps, all fixed and regression-tested in this roun
   error - the expand-phase compatibility property, reproduced, not merely asserted.
 - Backup/restore drill: **ALL FIVE assertions PASS**, real `pg_dump`/`pg_restore` cycle between
   `aieb_restore_drill_source` and `aieb_restore_drill_restored` - now covering the in-window
-  (still-renewable) restored lease, the fence advance fencing the pre-restore worker at FIRST
-  touch BEFORE reconciliation, the pre-restore token dead at first use with its STATUS agreeing,
-  the stale-epoch reconciler sweep, the stale-generation finalize refusal, and a fresh
-  post-restore claim - restore completed in ~0.9s (disclosed local-proxy measurement, not a
-  production RPO/RTO figure - spec section 40's real targets, RPO <=15 minutes / RTO <=4 hours,
-  require real staging/production infrastructure this environment does not have).
-- Fence advance atomicity + status agreement (deciding review, after `f1000a6`):
-  `tests/test_worker_leasing.py` **42/42 passed** including the new
+  (still-renewable) restored lease, the restored DB inheriting the BACKUP'S INACTIVE kill switch
+  (the pre-restore live-DB barrier is lost and must be re-established after the restore), the
+  operator controls exercised THROUGH `scripts/fence_advance.py` (`--check` pre-flight in both
+  barrier states, refusal with the epoch unchanged, advance under a re-established barrier), the
+  fence advance fencing the pre-restore worker at FIRST touch BEFORE reconciliation, the
+  pre-restore token dead at first use with its STATUS agreeing, the stale-epoch reconciler sweep,
+  resume (kill switch cleared), and a fresh post-restore claim - restore completed in ~0.9s
+  (disclosed local-proxy measurement, not a production RPO/RTO figure - spec section 40's real
+  targets, RPO <=15 minutes / RTO <=4 hours, require real staging/production infrastructure this
+  environment does not have).
+- Fence advance atomicity + status agreement + barrier atomicity (deciding review + re-review
+  round, after `f1000a6`):
+  `tests/test_worker_leasing.py` **44/44 passed** including
   `::test_fence_advance_is_atomic_against_in_flight_fenced_operations` (two-session: a concurrent
-  advance blocks while a fenced transaction holds the fence row, RED without the FOR SHARE lock),
+  advance blocks while a fenced transaction holds the fence row FOR SHARE, RED without it),
+  `::test_fence_advance_refuses_atomically_when_deactivation_committed_first` and
+  `::test_fence_advance_blocks_a_concurrent_deactivation_until_it_commits` (the operator
+  advance's kill-switch barrier is ONE transaction with the bump: ordering A - a deactivation
+  committed first - refuses with NO epoch change; ordering B - a deactivation that starts while
+  the advance is in flight - BLOCKS on the kill_switch row until the advance commits. The second
+  is RED when the barrier check is reverted to an unlocked read, the exact interleaving reported);
   and `tests/test_attempt_credentials.py` **15/15 passed** including
   `::test_status_and_verify_report_a_stale_epoch_credential_as_invalid` (RED when the epoch
-  condition was dropped). Operator-role command executed against the test control plane: refused
-  without the kill-switch barrier (exit 3), advanced `1 -> 2` only with it active.
+  condition was dropped). `scripts/fence_advance.py` executed against the test control plane:
+  refused without the kill-switch barrier (exit 3, epoch unchanged), advanced `0 -> 1` only with
+  it active and re-established on the restored database, and reports the session's `current_user`.
 - Toolchain pinning across a simulated software upgrade:
   `tests/test_api_service.py::test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade`
   - **1/1 passed**. Freezes a real campaign, registers a genuinely newer entrant revision under

@@ -55,32 +55,60 @@ epoch closes this: every lease/credential is stamped with the epoch under which 
 issued, every fenced operation requires that stamp to equal the CURRENT epoch, and the reconciler
 sweeps stale-epoch leases on its next poll even while they are still renewable.
 
-1. **Establish the barrier - HALF the barn door before the fence moves.** Set the kill switch
+1. **Back up is already taken; the barrier is set on the LIVE DB but the RESTORE WILL LOSE IT.**
+   Before restoring, set the kill switch
    (`repository.activate_kill_switch(session, activated_by_user_id=<admin>, reason="restore drill")`)
-   so NO new dispatch is possible, and STOP the reconciler loop AND every worker process (or
-   network-isolate workers at the load balancer) so no already-running worker holds an open
-   transaction across the advance. The epoch advance itself is atomic even against a worker that
-   slips through (deciding-review finding 1: fenced operations share the fence row FOR SHARE for
-   their whole transaction, and the advance's exclusive lock waits) - the barrier is the
-   defense-in-depth that makes an operator deliberately aware of every actor, not the only line.
-2. Restore the database, verify it (migration head, a migration rollback drill), then pre-flight:
-   `python scripts/fence_advance.py --check` - read-only, prints the fence epoch and confirms the
-   kill-switch barrier is in place.
-3. **Advance the fence** with the DEDICATED, executable, operator-DB-role-authenticated command:
-   `python scripts/fence_advance.py --reason "restore drill 2026-09-20" [--by-user <operator-uid>]`.
-   It REFUSES to advance while the kill switch is inactive, requires the audit `--reason`, and
-   re-checks the barrier inside the transaction. After it prints `fence epoch advanced: N -> N+1`,
-   every pre-restore lease and credential is fenced at first touch - no reconciliation required.
-4. Let the reconciler's next poll recover the stale-epoch orphans (replacing/requeuing per each
+   and STOP the reconciler loop AND every worker process (or network-isolate workers at the load
+   balancer) so no already-running worker holds an open transaction across the advance. BUT: a
+   restore OVERWRITES the `kill_switch` row with the BACKUP's state - taken earlier, normally
+   inactive - so this pre-restore barrier does NOT survive the restore (proven by the drill).
+   The fence epoch advance is atomic even against a worker that slips through (deciding-review
+   finding 1: fenced operations share the fence row FOR SHARE for their whole transaction, and the
+   advance's exclusive lock waits) - the barrier is the defense-in-depth that makes an operator
+   deliberately aware of every actor, not the only line.
+2. Restore the database and verify it (migration head, a migration rollback drill). The restored
+   DB will have the BACKUP's kill-switch state (inactive) - it does NOT matter that the barrier
+   was active on the live DB pre-restore.
+3. **Re-establish the barrier ON THE RESTORED DATABASE and verify it.** Because the restore lost
+   it, act ON the restored DB: set the kill switch
+   (`repository.activate_kill_switch(...)` against the restored database) and "half-close" the
+   other barn door (no new dispatch: the reconciler and workers are still stopped or isolated).
+   Then pre-flight: `python scripts/fence_advance.py --check` - must exit 0 with `kill switch
+   ACTIVE` (it prints the fence epoch and the session's `current_user` too; exit 3 if the barrier
+   is missing).
+4. **Advance the fence** with the DEDICATED executable command:
+   `python scripts/fence_advance.py --reason "restore drill 2026-09-20" [--by-user <users_row_id>]`.
+   It REFUSES to advance while the kill switch is inactive, and that refusal - and the advance -
+   are ATOMIC with the barrier check: one transaction locks the `kill_switch` row FOR UPDATE,
+   confirms it is active (raising otherwise with the epoch UNCHANGED), and bumps the fence epoch
+   under its own lock, committing once. A concurrent deactivation either completes first (the
+   command then refuses with NO epoch change) or waits until the advance has fully committed -
+   there is no window in which the barrier can vanish between the check and the mutation (both
+   orderings are two-session regression-tested). After it prints
+   `fence epoch advanced: N -> N+1`, every pre-restore lease and credential is fenced at first
+   touch - no reconciliation required.
+5. Let the reconciler's next poll recover the stale-epoch orphans (replacing/requeuing per each
    phase's artifact-first evidence) and revokes their credentials inside the same pass. Health-check
    the queue before opening traffic.
-5. Resume: clear the kill switch (`repository.deactivate_kill_switch(session)`) and restart the
-   reconciler/workers only after dispatch reaches a verified steady state. Before/while resuming,
-   run `scripts/backup_restore_drill.py` - a real `pg_dump`/`pg_restore` cycle proving the whole
-   sequence: the in-window lease survives restore as `leased`, the fence advance fences the
-   pre-restore worker at FIRST touch (heartbeat/issue/finalize refused BEFORE reconciliation), the
-   pre-restore TOKEN is dead and its STATUS agrees (finding 2), the reconciler quarantines the
-   stale-epoch lease, and a fresh worker claims and heartbeats under the new epoch.
+6. Resume: clear the kill switch (`repository.deactivate_kill_switch(session)` on the restored DB)
+   and restart the reconciler/workers only after dispatch reaches a verified steady state.
+   Before/while resuming, run `scripts/backup_restore_drill.py` - a real `pg_dump`/`pg_restore`
+   cycle proving the whole sequence THROUGH `scripts/fence_advance.py` itself: the restored DB
+   inherits the backup's INACTIVE kill switch (the loss that forces step 3), `--check`/refusal/
+   advance under a re-established barrier, the in-window lease surviving restore as `leased`, the
+   fence advance fencing the pre-restore worker at FIRST touch (heartbeat/issue/finalize refused
+   BEFORE reconciliation), the pre-restore TOKEN dead with STATUS agreeing (finding 2), the
+   reconciler quarantining the stale-epoch lease, resume, and a fresh worker claiming/heartbeating
+   under the new epoch.
+
+Authorization (honest statement, re-review round 2): `scripts/fence_advance.py` has NO dedicated
+least-privilege operator role, grants, or `current_user` validation. Its authorization is
+possession of a WRITE-CAPABLE database credential - whatever `AIEB_DATABASE_URL` authenticates -
+and the command REPORTS `current_user` so the identity that actually advanced the epoch is
+visible. `--by-user` is an OPTIONAL, INFORMATIONAL actor label recorded on the audit row for
+readability (it must reference an existing `users` row, enforced by the FK); it is NOT
+authenticated attribution. A dedicated operator role with real grants is a disclosed gap, not
+claimed capability.
 
 ## Scorer defect
 
