@@ -68,11 +68,13 @@ checks already run in `eng015-verification.yml`) - the gap is Python-only.
   could never run. Moved to a new, dedicated `dependency-review.yml` triggered on `pull_request`
   for dependency-file changes, which is the only event type `dependency-review-action` can
   meaningfully run against (it compares base and head refs).
-- `scoped_credential_id` was removed from `IsolationPolicy` (ENG-019) as dead/unwired; the
-  auto-pause threshold here is scoped per-campaign, not per-backend as spec section 39 literally
-  states ("three consecutive failures... from the same backend") - defensible today since
-  exactly one backend (`HarborBackend`) exists, but recorded here as a disclosed deviation
-  rather than left silent, per review.
+- `scoped_credential_id` was removed from `IsolationPolicy` (ENG-019) as dead/unwired, then the
+  mechanism it promised - per-attempt scoped credentials with real candidate/verifier identity
+  separation - was actually IMPLEMENTED in the Prompt-15 continuation pass (spec section 37; see
+  "Scoped attempt credentials" below). The auto-pause threshold here is scoped per-campaign,
+  not per-backend as spec section 39 literally states ("three consecutive failures... from the
+  same backend") - defensible today since exactly one backend (`HarborBackend`) exists, but
+  recorded here as a disclosed deviation rather than left silent, per review.
 
 ## Implemented
 
@@ -100,10 +102,80 @@ finalize, then stops claiming new ones.
   manual pause) is refused with 403, so the operator review the mechanism exists for cannot be
   skipped by habit.
 - **Kill switch** (`kill_switch` singleton table, same migration): global, independent of any
-  one campaign's health. `repository.activate_kill_switch` stops ALL new dispatch immediately
-  (`claim_work_item` refuses unconditionally while active) and requests bounded teardown of
-  active work by cancelling every non-terminal campaign through the existing, already-tested
-  cancellation/drain machinery - not a second, novel teardown path.
+   one campaign's health. `repository.activate_kill_switch` stops ALL new dispatch immediately
+   (`claim_work_item` refuses unconditionally while active) and requests bounded teardown of
+   active work by cancelling every non-terminal campaign through the existing, already-tested
+   cancellation/drain machinery - not a second, novel teardown path.
+
+### Scoped attempt credentials (spec section 37)
+Implemented in the Prompt-15 continuation pass (the same codex audit's third gap) - NOT the
+class of claim the earlier `scoped_credential_id` field made. Structure:
+- `attempt_credential` table (migration `ba47e9c84511`): one live credential per
+  `(attempt_id, actor_role)` (`candidate`|`verifier`), storing only a sha256 hash (a DB leak
+  cannot mint usable tokens), with `expires_at` and `revoked_at`. Re-issuing rotates the token in
+  place (unique constraint) rather than accumulating rows.
+- Repository (`worker/repository.py`): `issue_attempt_credential` (returns the plaintext token
+  exactly once, records a `credential.<role>.issued` attempt event),
+  `verify_attempt_credential` (constant-time compare against the exact attempt+role row; no row /
+  revoked / expired / wrong token all return false, never leaking why),
+  `revoke_attempt_credential` (idempotent; the phase-end path), `attempt_credential_status`.
+- Delivery end to end: the worker issues the candidate credential and injects
+  `AIEB_ATTEMPT_ID`/`AIEB_ATTEMPT_ROLE`/`AIEB_ATTEMPT_CREDENTIAL` into the engineering
+  subprocess environment (`EngineeringCommand.extra_env`), and issues the verifier credential
+  delivered as `attempt_vars` into the spawn-based isolated VERIFY subprocess
+  (`run_verification(attempt_vars=...)`); both are revoked in the phase executor's `finally`.
+- The single control-plane presentation point, `POST /v1/attempts/{attempt_id}/credentials/verify`,
+  is authenticated BY the presented credential itself - deliberately NOT operator-authenticated.
+  A leaked verifier token proves exactly verifier-for-that-attempt and nothing else; a candidate
+  credential proves candidate-for-that-attempt only. This is the concrete identity separation
+  spec section 37 requires.
+- Rationale and honest scope: no external cloud credential-issuance system exists in this
+  environment, so these are self-issued, attempt-scoped short-lived credentials verified against
+  this DB - not a claim of SSO/SPIFFE/Vault integration. Verifier-side presentation in a live
+  campaign (real evaluator code calling the endpoint) remains an integration follow-up: the
+  mechanism, delivery, and verification endpoint are implemented and the non-PG delivery proven;
+  the DB-backed lifecycle is covered by `tests/test_attempt_credentials.py`.
+
+**Codex follow-up review (2026-09-20), six findings closed at the time, four re-opened and
+re-closed in a fifth review round** (same audit's hardening pass, prompt-15 continuation). (1) A
+real credential-authorized capability was added - `GET /v1/attempts/{attempt_id}/candidate`
+returns the persisted candidate only under a valid candidate/verifier credential for that attempt.
+(2) All three child channels (engineering, BUILD, isolated VERIFY) now receive an explicit
+allowlist-scrubbed environment (`_sanitized_child_env`), so worker secrets (`AIEB_DATABASE_URL`,
+`*_TOKEN`, etc.) can never be inherited by candidate/evaluator code. (3) Issuance is lease-fenced:
+migration `bc5e9d4b2107` adds `work_item_id`/`worker_id`/`lease_generation` to `attempt_credential`,
+`issue_attempt_credential` refuses a stale worker (`LeaseFenceError`, row untouched), and
+`revoke_attempt_credentials` runs in the reconciler's lease-expiry sweep inside the same locked
+transaction - a crashed worker's tokens die at recovery, never lingering to their 1h TTL. (4) The
+PG test seed no longer collides on unique identity constraints. (5) Invalid-token responses stop
+leaking the roll's real expiry; malformed UUID paths are 404s. (6) Stale `IsolationPolicy`
+docstring and trailing whitespace fixed. The suite now runs against the disposable
+`aieb-test-postgres` container: `tests/test_attempt_credentials.py` 10/10,
+`tests/test_attempt_lifecycle.py` 19/19 (incl. the environment-scrub regression). Single alembic
+head `bc5e9d4b2107`, upgrade path green.
+
+A FIFTH review round then found four of those closures incomplete and closed them: issuance was
+not scoped to the credential's ATTEMPT nor to the work-item TYPE (cross-attempt minting and
+role-blind minting refused - `LeaseFenceError`/`ValueError`, with `_WORK_ITEM_TYPE_ROLES`;
+`engineering`->candidate, `verification`/`regrade`->verifier); a stale worker's delayed
+`finally`-revoke is now FENCED by the issuing lease's stored `(work_item_id, worker_id,
+lease_generation)` so it NO-OPS against a rotated token (`new_before_stale_revoke` /
+`new_after_stale_revoke` controls green); the reconciler's sweep now covers CRASHED `regrade`
+items too (its `reconcile_expired_leases` SELECT includes `"regrade"` and revokes both roles at
+loop top); and verification now genuinely CONSUMES the capability - it issues the verifier
+credential first and reads the persisted candidate through the credential-gated
+`load_stored_candidate_authorized` (the same gate the endpoint enforces), revoking on every
+infra-abort path after issuance. The endpoint is now verifier-ROLE-only (valid candidate-role
+token -> 403) and returns the FULL `stored_candidate` payload. Also closed: the isolated VERIFY
+spawn child imported the evaluator module at bootstrap, BEFORE the environment scrub -
+`_run_verify_isolated` now passes the evaluator as (module, qualname) identity strings and the
+entrypoint resolves the import only after scrubbing, and `_sanitized_child_env` strips
+credentials embedded in allowlisted VALUES (URL userinfo, `?password=/token=/key=/secret=`).
+Green at the fifth round: `tests/test_attempt_credentials.py` 14/14,
+`tests/test_attempt_lifecycle.py` 21/21, `tests/test_worker_leasing.py` 38/38, the ENG-019 threat
+model 39/39. Gap 3 remains in review pending the reviewer's negative-control run of these exact
+controls; full detail in `sandbox-review.md` (fifth review round) and DECISIONS.md
+ENG019-006/ENG020-007.
 
 ### Migration rollback drill (spec section 43)
 `scripts/migration_rollback_drill.py` - explicitly NOT limited to a schema round-trip on an
@@ -126,7 +198,13 @@ duration, which is reported only as a disclosed local-proxy measurement):
    live connection, now proven to survive an actual restore).
 3. A worker retrying with its stale pre-restore lease generation is fenced out after
    reconciliation and cannot commit results - the concrete form "revoke stale credentials"
-   takes here, since no separate server-side credential store exists to revoke.
+   takes here. The Prompt-15 continuation pass ADDED the server-side credential store this
+   report previously said none existed: `attempt_credential` rows (short expiry + explicit
+   phase-end revocation) are what a phase's process actually presents for
+   candidate/verifier identity - see "Scoped attempt credentials" above; the restore-drill's
+   own pre-reconciliation fencing hole (a restored-backup DB that still shows a lease as live,
+   letting a stale worker act before reconciliation refences it) is ledgered as the open gap 4
+   from that same audit, not silently absorbed here.
 
 ### CI (spec section 42)
 - `permissions: contents: read` added to all five workflows (the three pre-existing ones plus
@@ -196,6 +274,19 @@ duration, which is reported only as a disclosed local-proxy measurement):
   - **1/1 passed**. Freezes a real campaign, registers a genuinely newer entrant revision under
   the same slug, and confirms the frozen campaign's manifest is completely unaffected, at both
   the database row and the API response.
+- Scoped-credential env delivery and the DB-backed lifecycle: `tests/test_attempt_lifecycle.py`
+  **21/21 passed** including `::test_engineering_extra_env_is_delivered_to_the_subprocess`
+  (candidate token reaches the engineering subprocess environment),
+  `::test_verification_attempt_vars_are_delivered_to_the_isolated_verify_subprocess` (verifier
+  token reaches the spawn-based VERIFY subprocess and is echoed back by a module-level evaluator),
+  and the fifth round's import-time env-leak control. `tests/test_attempt_credentials.py`
+  **14/14 passed** against the `aieb-test-postgres` container (postgres:16, `localhost:5544`,
+  `POSTGRES_PASSWORD=aieb_test_password`, `postgresql+psycopg`): lease-fenced issuance (stale
+  takeover + expiry), revoked-by-reconciler crash sweep (engineering AND regrade), attempt/type-
+  scoped issuance refusal, stale-`finally`-revoke no-op against a rotated token, full-payload
+  verifier-only capability endpoint (cross-attempt 401, same-attempt candidate-role 403), role
+  derivation, rotation, cross-attempt cross-role scoping, unknown-role rejection, and the
+  token-authenticated verify endpoint via TestClient.
 - Full backend regression after all of the above: see the commit's own verification note for
   the exact discovery-run count (this document is written before that final run completes, to
   keep the two artifacts in sync rather than back-filling a number after the fact).

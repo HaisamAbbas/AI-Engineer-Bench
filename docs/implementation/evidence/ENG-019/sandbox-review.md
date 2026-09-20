@@ -103,6 +103,206 @@ interrupts a still-running attempt before its deadline, never producing a verdic
 `::test_configuration_and_teardown_failures_do_not_become_verdicts` (a configuration or
 teardown failure is classified as infrastructure-invalid, never silently scored as a verdict).
 
+## Third independent review round (2026-09-19/20) - two more of Prompt 15's named threats were still bypassable, both fixed fail-closed
+
+A further review, again re-reading Prompt 15's test list against the TREE rather than against
+the previous document, found two named threats the second round's fix left open:
+
+1. **Compose interpolation could bypass the socket/host-path mount check entirely.** The
+   second round's `_find_unauthorized_host_mount` scanned raw compose YAML text for
+   `docker.sock`. A task could trivially write `mounts: ["- ${DOCKER_SOCK}/var/run/docker.sock"]`
+   with `DOCKER_SOCK=.` in a sibling `.env` (or `$XDG_RUNTIME_DIR`, etc.) and the literal-text
+   scan saw only a `${...}` placeholder - the host-path offence resolved only after Docker Compose
+   itself interpolated it, i.e. exactly when the task's definition was actually used. The crate
+   hierarchy (`.env` next to compose, compose next to `include:`/`extends:` targets) multiplied
+   the bypass surface: a malicious `shared.yaml` pulled in via `include:` never matched the
+   `docker-compose*.yaml` glob at all.
+
+   Fixed fail-closed: the bind-scan now resolves `${VAR}`/`$VAR` and the `:-`/`-`/`:?`/`?`/`:+`/`+`
+   operators against the compose file's sibling `.env` plus the parent process environment
+   (process env wins, matching docker/compose semantics); refuses any bind source still
+   containing `$` after resolution and any `${X:?required}` whose variable is unset; parses with
+   `yaml.safe_load` so unknown tags (`!override`, `!merge`, `!reset`) and any unparsable file
+   become an explicit refusal ("cannot be safely inspected") rather than a silent skip; and walks
+   the compose dependency graph - `include:` entries and `extends: {file: ...}` targets - so a
+   docker-socket mount hidden in a referenced `shared.yaml` is caught even though that file never
+   matches the compose glob. Verified against a REAL specimen found in this repo's own research
+   tree (`.cache/research/harbor-v0.22.0/.../clbench/task-template/environment/docker-compose.yaml`,
+   which mounts `${CONTEXT_DIR}/messages` - previously skipped, now correctly flagged as outside
+   the task directory).
+
+2. **"Effective" network policy was never actually checked.** The guard verified only the
+   *declared* allowlist on the in-memory `EnvironmentConfig` the same call had constructed. A
+   task declaring no network mode at all falls through to Harbor's effective `PUBLIC` (its
+   `allowlist.mode` default is `PUBLIC` when unset), and a task that allowlists the cloud-metadata
+   egress host at the policy layer would have been launched with that host forwarded to a
+   container. Prompt 15's `SE-02` sentence is about what IS dropped, not what a form says.
+
+   Fixed fail-closed: before any Docker/Harbor call, `launch()` now computes the trial's
+   EFFECTIVE plan with Harbor's own resolver (`resolve_trial_network_plan` plus
+   `resolve_task_verifier_mode`/`resolve_step_verifier_mode` - the exact calls `Trial` itself
+   uses, so there is no second, drift-prone copy of the merge logic) with the policy's
+   `extra_allowed_hosts` merged into the agent AND environment configs, and refuses
+   (`UnhardenedBackendError`) when the effective phase network is `PUBLIC` or when an ALLOWLIST
+   phase includes a denied metadata host. A task dir with no `task.toml` is not an offence
+   (nothing to widen; `Trial.create` rejects it anyway, and no backend call was made); a
+   malformed `task.toml` is. A task declaring no network mode but relying on the default is
+   therefore refused, not launched.
+
+Both are now "offense -> refusal before any Docker/Harbor call", matching the same standard the
+second round applied to the socket check.
+
+## Fourth independent review round (codex, 2026-09-20) - scoped-credential hardening, six findings closed
+
+The Prompt-15 closure pass's granted acceptance - per-attempt scoped credentials with candidate/
+verifier identity separation - then received an independent codex review of the credential path.
+It returned six findings; all six were closed with code and tests, in this repo, on this date. A
+SECOND review round of the same credential path then found four of those closures incomplete and
+re-opened them; that round is documented as the fifth review round immediately below, and the
+outcome statements in the six items are qualified there rather than silently rewritten.
+
+1. **CLEARED - the credential authorized no useful capability** (only introspection-style
+   verify). New `GET /v1/attempts/{attempt_id}/candidate` is a credential-authorized capability:
+   `Authorization: Bearer <token>` where the token must be a valid candidate- or verifier-role
+   credential for EXACTLY that attempt; it returns the persisted candidate artifact metadata from
+   `repository.load_stored_candidate` (404 when no candidate yet; 401 when no valid credential).
+   Test: `test_get_candidate_capability_is_credential_authorized` (incl. cross-attempt 401 and
+   post-revocation 401).
+2. **CLEARED - subprocesses inherited the worker's full environment** (engineering used
+   `{**os.environ, **extra_env}` at the old `lifecycle.py:577`; the BUILD and isolated VERIFY
+   children inherited the parent env too). All three child channels now receive an explicit,
+   allowlisted environment: `lifecycle.py` `_CHILD_ENV_ALLOWLIST` + `_sanitized_child_env()`
+   (infra/build-tooling/ML-cache members only; `*_PASSWORD`/`*_SECRET*`/`*_TOKEN`/`*_API_KEY`/
+   `AWS_*`/`AZURE_*`/`GCP_*` and the entire `AIEB_*` namespace excluded), applied in `_start`
+   (always, not only when `extra_env` present) and via `os.environ.clear()`-then-update inside
+   `_build_subprocess_entrypoint` and `_verify_subprocess_entrypoint` (snapshot BEFORE clear),
+   with the issued attempt vars layered on. Regression: `test_subprocess_environ_never_inherits_worker_secrets`
+   plants `AIEB_DATABASE_URL` + `CI_BUILD_TOKEN` sentinels in the worker env and asserts they
+   never reach the engineering subprocess or the isolated VERIFY evaluator process, while PATH
+   (allowlisted) and the delivered AIEB_* credential vars do.
+3. **CLEARED - issuance/revocation were not lease-fenced and recovery never revoked.** Migration
+   `bc5e9d4b2107` adds `work_item_id`/`worker_id`/`lease_generation` to `attempt_credential`;
+   `issue_attempt_credential` is now fenced to the live leased work item under `FOR UPDATE`
+   (worker/generation must match and the lease be unexpired or `LeaseFenceError` is raised and the
+   row untouched - a stale worker can neither issue nor rotate, and can't revoke anything since
+   revoking is only ever stricter); `revoke_attempt_credentials` (both roles) runs at the top of
+   `reconcile_expired_leases`'s recovery loop inside the SAME locked single-commit transaction, so
+   a crashed worker's tokens die at lease recovery instead of lingering up to their 1h TTL.
+   `runner_bridge.py` threads the fence identity into both phase executors and handles
+   `LeaseFenceError` like heartbeat fencing. Tests: `test_stale_worker_is_fenced_out_of_issuance`
+   (takeover + expiration) and `test_reconcile_sweep_revokes_credentials_after_crash`.
+4. **CLEARED - the PG suite errored on duplicate seeded identities.** `_seed_attempt` now derives
+   uuid-based unique digests AND unique task/entrant slugs/versions per call; the two failing
+   tests (`test_credentials_are_role_and_attempt_scoped`, `test_get_candidate_capability_...`)
+   pass.
+5. **CLEARED - invalid-token responses leaked expiry and bad UUIDs 500'd.** The verify endpoint
+   returns `expires_at: None` on any failed validation; `_parse_attempt_or_404` turns malformed
+   UUID path values into 404s. Tests: leak assertion in the endpoint test +
+   `test_malformed_attempt_uuid_is_404_not_500`.
+6. **CLEARED - stale docstring and whitespace.** `IsolationPolicy`'s docstring no longer claims
+   scoped credentials are "deliberately unimplemented"; `git diff --check` is clean.
+
+Verification against real PostgreSQL: `tests/test_attempt_credentials.py` now passes 10/10 against
+the disposable `aieb-test-postgres` container (postgres:16 on `localhost:5544`, configured via
+`postgresql+psycopg`), and `tests/test_attempt_lifecycle.py` passes 19/19 including the two
+environment-delivery tests and the new scrub regression. Alembic has a single head
+(`bc5e9d4b2107`) and the whole chain upgrades cleanly.
+
+## Fifth independent review round (codex, 2026-09-20) - four incomplete closures re-opened and closed
+
+A SECOND review round of the credential path found four of the fourth round's closures
+incomplete, each with a concrete negative control that the then-current code failed - so the
+fourth round's "closed" claims were premature. All four are now closed with code and tests. The
+reviewer's negative controls are each reproduced as a regression test before the fix is
+accepted; gap 3 is NOT claimed closed on the basis of this document's word alone - it is the
+reviewer's own run of those controls that decides.
+
+1. **Issuance was attempt- and role-blind (fourth round item 1/3 incomplete).** The fence
+   checked the lease row's identity but NOT that the lease's work item belonged to the attempt
+   being credentialed, and NEVER that the requested role matched the item's type - so an
+   engineering lease on attempt A could mint a valid CANDIDATE credential for attempt B, and any
+   item could mint either role. Closed: `issue_attempt_credential` now requires
+   `WorkItemRow.attempt_id == attempt_id` in the fenced SELECT (cross-attempt refusal ->
+   `LeaseFenceError`) and derives the allowed roles from the work-item TYPE via the
+   `_WORK_ITEM_TYPE_ROLES` map (`engineering` -> `{candidate}`; `verification`/`regrade` ->
+   `{verifier}`; anything else mints nothing; any other pairing ->
+   `ValueError`). New controls: `test_issuance_is_fenced_to_the_attempt_of_the_lease` and
+   `test_issuance_role_is_derived_from_work_item_type` (both green).
+2. **A stale worker's delayed `finally`-revoke killed a replacement's rotated token (fourth
+   round item 3 incomplete).** Revoke filtered only by attempt+role, so when a takeover rotated
+   the credential under a new worker/generation, the OLD worker's late revoke no-oped nothing -
+   it wiped the NEW token (reviewer controls `new_before_stale_revoke=True,
+   new_after_stale_revoke=True`). Closed: `revoke_attempt_credential` is now FENCED by the
+   issuing lease's stored fence identity - the UPDATE's WHERE includes `work_item_id`,
+   `worker_id`, and `lease_generation` of the credential row, so the stale finally NO-OPS
+   (returns False, changes nothing) and the rotated token survives. The reconciler's wholesale
+   `revoke_attempt_credentials` (both roles, unconditional) stays reserved for lease recovery.
+   New control: `test_stale_finally_revoke_noops_against_rotated_token`.
+3. **The reconciler missed crashed regrade items (fourth round item 3 incomplete).** The
+   recovery sweep revokes credentials only for `engineering`/`verification` items; a
+   `regrade` item whose lease expired mid-verify (the worker crashed holding a verifier
+   credential) was recovered without revoking it, so its token lived on to TTL. Closed:
+   `reconcile_expired_leases` now selects `("engineering", "verification", "regrade")` and the
+   regrade recovery branch revokes both roles at loop top exactly like verification. New
+   control: `test_reconciler_revokes_credentials_after_crashed_regrade`.
+4. **The candidate capability was not consumed, and was verifier-capable without a verifier
+   (fourth round item 1/2 incomplete).** `GET /v1/attempts/{attempt_id}/candidate` was
+   role-agnostic (a candidate-role token opened it) and returned only IDs/digests - a verifier
+   who "got" the capability could not reconstruct what it was for, and the verification phase
+   still read the candidate through the worker's bare DB session, so no code path ever
+   exercised a credential-authorized read. Closed: the endpoint now returns the FULL
+   `stored_candidate` payload and is VERIFIER-ROLE-ONLY, role-differentiated
+   (`_require_role`: 401 absent/invalid, 403 valid-but-wrong-role); verification now ISSUES its
+   verifier credential first, then reads the candidate through
+   `repository.load_stored_candidate_authorized` - the SAME gate the endpoint enforces, raising
+   `CredentialDeniedError` (-> `infrastructure_invalid`) when the token isn't a valid live
+   verifier credential for that attempt - and revokes on every infra-abort path after issuance
+   (`_abort_infra`) plus the phase-ending finally and the reconciler if the worker crashes.
+   New controls: `test_get_candidate_capability_is_credential_authorized` (now asserts the full
+   payload, cross-attempt 401, and same-attempt candidate-role 403).
+
+A fifth finding in the same review was environmental, not credential-path: **the isolated VERIFY
+child imported the evaluator module during spawn bootstrap, before the environment scrub, so
+import-time module code observed worker secrets** (reviewer: "a module whose top-level captures
+env sees what the var NAME filters alone cannot guarantee"). Closed: `_verify_subprocess_entrypoint`
+now receives the evaluator as `(module, qualname)` identity STRINGS - never the pickled callable -
+and resolves it via `_resolve_evaluator_by_identity` (importlib + attribute walk) ONLY after
+`os.environ` is scrubbed; `_sanitized_child_env()` additionally strips embedded credentials from
+allowlisted VALUES (URL userinfo like `http://user:pass@host`, `?password=/token=/key=/secret=`
+query segments) so a name allowlist cannot smuggle a credential inside a legitimate-looking
+variable. New controls: `test_import_time_env_leak_is_closed...` (a fixture evaluator whose
+TOP-LEVEL code snapshots `os.environ` at import and asserts it never saw the planted secrets)
+and `test_proxy_value_embedded_credentials_are_scrubbed_from_child_env`.
+
+Verification (all green in this pass): `tests/test_attempt_credentials.py` 14/14,
+`tests/test_attempt_lifecycle.py` 21/21 (incl. the two new controls above and the two new env
+controls), `tests/test_worker_leasing.py` 38/38, `tests/test_eng019_sandbox_threat_model.py`
+39/39. Single alembic head `bc5e9d4b2107`, upgrade chain green. Full mechanical detail in
+`operations-review.md` (fifth review round) and DECISIONS.md ENG019-006/ENG020-007; gap 3 remains
+in review pending the reviewer's own negative-control run, and gaps 4/5/6 remain open.
+
+## Implementation - network-policy guard and hardened mount scan
+
+- `packages/aieb-runner/src/aieb_runner/backends/harbor/backend.py`:
+  - `_task_network_offence(task_dir) -> str | None`: reads the task's OWN `task.toml`
+    (Harbor `TaskConfig`) and resolves its effective network plan via Harbor's own resolver;
+    returns a refusal reason when the effective phase mode is `PUBLIC` (default included) or an
+    ALLOWLIST phase contains a denied metadata host. Returns `None` (no offence) when there is no
+    `task.toml`; returns an offence when it is malformed. The review's per-trial merge of
+    `extra_allowed_hosts` into agent + environment configs is applied before resolution, so the
+    refusal is measured against what the trial would ACTUALLY launch, matching
+    `Trial._network_plan`'s own merge.
+  - `_find_unauthorized_host_mount(task_dir) -> str | None` is now fully fail-closed: compose
+    sources are discovered via the flat `{task_dir}/environment/*.yaml` delivery plus
+    `include:`/`extends:` graph walking of every discovered file; each is parsed with
+    `yaml.safe_load` (any parse/unknown-tag failure -> "cannot be safely inspected" offence);
+    `${...}`/`$VAR` interpolation is resolved against sibling `.env` (docker/compose operator set)
+    then the process environment; required-but-unset and residual-`$` bind sources refused; every
+    bind source must resolve within `task_dir`. ASN.1 diagnostics name the socket, this repo's
+    `tests/maintainer/` answer-key root, and generic host paths by their actual handler.
+  - `launch()` ordering preserved: socket/host-path mount refusal precedes the network-policy
+    refusal, so prior tests expecting the mount refusal still hold.
+
 ## Implemented
 
 - `packages/aieb-runner/src/aieb_runner/backends/base.py`: `IsolationPolicy` (egress allowlist,
@@ -123,8 +323,14 @@ teardown failure is classified as infrastructure-invalid, never silently scored 
   `hardened_isolation_required=True`; (2) wires a token-authenticated `EgressGuardProxy` into the
   launched container's environment; (3) refuses launch if the task's own environment definition
   mounts the Docker socket, the hidden evaluator fixture directory, or any other host path
-  outside the task's own directory (`_find_unauthorized_host_mount`, YAML-parsed, real check -
-  see the second review round below); (4) closes the guard proxy on cleanup.
+  outside the task's own directory - and, since the third review round, that refusal RESISTS the
+  sinkhole moves that emptied the first two rounds' checks: compose interpolation
+  (`${VAR}`/`$VAR`/operators, `.env` + process env), `include:`/`extends:` graph walking,
+  YAML-unknown-tag and unparsable-file refusals, and required-but-unset/residual-`$` sources
+  (see the third review round below); (4) refuses launch when the task's EFFECTIVE network plan
+  (Harbor's own resolver, post-`extra_allowed_hosts` merge - `_task_network_offence`) is
+  `PUBLIC` or allowlists a denied metadata host, closing the "declared-vs-effective" hole;
+  (5) closes the guard proxy on cleanup.
 - ADR-11's owed S3-compatible artifact storage migration is explicitly **re-deferred**, not
   silently absorbed into this pass or dropped - it remains its own ledgered follow-up.
 
@@ -146,8 +352,20 @@ added here.
 
 ## Verified results (actual, measured)
 
-- `tests/test_eng019_sandbox_threat_model.py`: **23/23 passed** (up from 11, then 16, then 23
-  across this and the second review round). Covers: deny-by-default denies an unlisted host and
+- `tests/test_eng019_sandbox_threat_model.py`: **39/39 passed** (up from 23 across the third
+  review round). The prior 23 remain green; the third round adds `EffectiveNetworkPolicyGuardTest`
+  (6 tests: a task declaring effective `PUBLIC` egress - including the undeclared default - is
+  refused before any Harbor call; a `no-network` task passes both guards; a compliant allowlist
+  passes; an allowlist naming a denied metadata host is refused; a task dir without `task.toml`
+  is not refused; a malformed `task.toml` is refused) and 10 new mount-scan tests (sibling-`.env`
+  docker-socket interpolation, `:-` default interpolation, `/etc/shadow` interpolation,
+  required-interpolation refusal, residual-`$` refusal via `$${...}`, `!override` merge-tag
+  refusal, `include: [shared.yaml]` graph following, `extends: {file: base.yaml}` graph following,
+  plus the re-based UUID/clean-task guards). Because the repo ROOT itself now contains a real
+  interpolated escaping mount under `.cache/research/`, the pre-refactor
+  `test_launch_does_not_refuse_when_hardened_isolation_is_not_required` was re-based onto a bare
+  temp dir (the guard is intentionally no longer satisfiable against this worktree's own root).
+  Covers: deny-by-default denies an unlisted host and
   logs it; an empty allowlist denies everything; SE-02 (cloud-metadata host denied and logged
   even if allowlisted); an allowlisted host is genuinely forwarded (proven against a real local
   HTTP server); an unauthenticated request is refused with 407 before any policy check; the
@@ -182,9 +400,22 @@ added here.
   holds by construction" is not treated as equivalent to tested, matching the standard this
   same review applied to the Docker-socket check.
 - **Per-attempt short-lived credentials and candidate/verifier identity separation (spec section
-  37): not implemented.** `scoped_credential_id` was removed from `IsolationPolicy` rather than
-  left as an inert field - no real cloud credential-issuance system exists in this environment
-  to issue, scope, or revoke one against. This is a genuine gap, not merely a documentation one.
+  37): IMPLEMENTED and, as of the fourth review round, PG-verified.** The `attempt_credential`
+  table (one live credential per `(attempt_id, actor_role)`, sha256-hashed tokens, expiry +
+  revocation, lease-fence identity per the fourth round), repository
+  issue/verify/revoke/status (issue lease-fenced to the live work-item lease), a
+  `POST /v1/attempts/{attempt_id}/credentials/verify` endpoint authenticated BY the presented
+  credential itself (deliberately not operator-authenticated - that separation is the point) plus
+  the credential-authorized `GET /v1/attempts/{attempt_id}/candidate` capability, and end-to-end
+  delivery of `AIEB_ATTEMPT_ID`/`AIEB_ATTEMPT_ROLE`/`AIEB_ATTEMPT_CREDENTIAL` into allowlist-scrubbed
+  engineering, BUILD, and isolated VERIFY subprocess environments
+  (`EngineeringCommand.extra_env` / `run_verification(attempt_vars=...)`) are all implemented.
+  `tests/test_attempt_credentials.py` passes 10/10 against the disposable `aieb-test-postgres`
+  container (including the six-finding hardening suite), and `tests/test_attempt_lifecycle.py`
+  passes 19/19 (env delivery + environment-scrub regression). The original inert
+  `scoped_credential_id` field on `IsolationPolicy` is gone; the mechanism exists, is wired end to
+  end through repository -> worker -> subprocess environment -> API capability, is fenced to the
+  lease that issued it, and is revoked on phase end AND on lease recovery.
 - ADR-11's S3-compatible artifact storage migration: re-deferred, not started.
 - The two-references-one-blob retention case: holds by construction, not directly tested.
 - Independent review of this closure and current-tree remote CI remain open, matching every

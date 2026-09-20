@@ -20,13 +20,62 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harbor.models.task.config import EnvironmentConfig as HarborEnvConfig
+from harbor.models.task.config import NetworkMode, TaskConfig as HarborTaskConfig
+from harbor.models.trial.config import AgentConfig, EnvironmentConfig, ResourceMode
 from aieb_runner.backends.base import (
     ExecutionSpec,
     IsolationPolicy,
     UnhardenedBackendError,
 )
 from aieb_runner.backends.egress_proxy import EgressGuardProxy
-from aieb_runner.backends.harbor.backend import HarborBackend, _find_unauthorized_host_mount
+from aieb_runner.backends.harbor.backend import (
+    HarborBackend,
+    _find_unauthorized_host_mount,
+    _task_network_offence,
+)
+
+
+def _minimal_task_toml(network_mode: str, allowed_hosts: list[str] | None = None) -> str:
+    """A programmatically-valid Harbor task.toml for guard tests - [environment] declares the
+    given network mode, everything else is Harbor's defaults."""
+    config = HarborTaskConfig(
+        environment=HarborEnvConfig(
+            network_mode=NetworkMode(network_mode),
+            allowed_hosts=allowed_hosts or [],
+        )
+    )
+    return config.model_dump_toml()
+
+
+def _write_task(tmp: Path, toml: str | None = None, compose: str | None = None, dotenv: str | None = None) -> Path:
+    task_dir = Path(tmp) / "task"
+    task_dir.mkdir(exist_ok=True)
+    if toml is not None:
+        (task_dir / "task.toml").write_text(toml, encoding="utf-8")
+    if dotenv is not None or compose is not None:
+        (task_dir / "environment").mkdir(exist_ok=True)
+        if compose is not None:
+            (task_dir / "environment" / "docker-compose.yaml").write_text(compose, encoding="utf-8")
+    if dotenv is not None:
+        (task_dir / "environment" / ".env").write_text(dotenv, encoding="utf-8")
+    return task_dir
+
+
+def _guard_agent_environment() -> tuple[AgentConfig, EnvironmentConfig]:
+    """The trial AgentConfig/EnvironmentConfig shapes launch() builds (with the AIEB egress
+    allowlist merged into extra_allowed_hosts), used to compute the effective network plan."""
+    agent = AgentConfig(import_path="unused.agent", override_timeout_sec=1.0, extra_allowed_hosts=[])
+    environment = EnvironmentConfig(
+        type="docker",
+        delete=True,
+        cpu_enforcement_policy=ResourceMode.LIMIT,
+        memory_enforcement_policy=ResourceMode.LIMIT,
+        override_cpus=1,
+        override_memory_mb=256,
+        extra_allowed_hosts=[],
+    )
+    return agent, environment
 
 
 class EgressGuardProxyTest(unittest.TestCase):
@@ -157,12 +206,17 @@ class HarborBackendRefusalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend._runs, {})
 
     async def test_launch_does_not_refuse_when_hardened_isolation_is_not_required(self) -> None:
-        # Confirms the refusal is conditional, not blanket - a non-hardened-required spec must
-        # reach past the guard clause (it will then fail on the real Docker/Harbor call in this
-        # sandboxed test environment, which is expected and not what this test asserts).
+        # Confirms the refusal is conditional, not blanket - a compliant spec (no socket mount,
+        # no host-path mount, a no-network/allowlist effective network policy, no explicit
+        # hardnening requirement) must reach past every guard clause. It will then fail on the
+        # real Docker/Harbor call in this sandboxed test environment (or on the missing
+        # task.toml being unacceptable to Harbor), which is expected and not what this test
+        # asserts. Notably this MUST be a task-shaped directory, not the repo root: the repo
+        # root legitimately contains compose fixtures whose interpolated `${CONTEXT_DIR}`
+        # bind mounts resolve outside their directory and ARE refused now.
         backend = HarborBackend()
         spec = ExecutionSpec(
-            task_dir=Path("."),
+            task_dir=Path(tempfile.mkdtemp()),
             runs_dir=Path(".cache/eng019-tests/unused2"),
             trial_name="not-refused-trial",
             agent_import_path="unused.agent",
@@ -172,6 +226,97 @@ class HarborBackendRefusalTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Exception) as ctx:
             await backend.launch(spec)
         self.assertNotIsInstance(ctx.exception, UnhardenedBackendError)
+
+    async def test_launch_refuses_a_task_that_declares_public_egress_before_any_harbor_call(self) -> None:
+        """A task whose OWN task.toml declares `network_mode = "public"` defeats L3 deny-by-
+        default: the application-layer EgressGuardProxy cannot contain raw sockets, so the
+        effective harbor network policy is what actually constrains egress. Such a task must
+        be refused with UnhardenedBackendError before any Docker/Harbor call."""
+        backend = HarborBackend()
+        spec = ExecutionSpec(
+            task_dir=_write_task(
+                tempfile.mkdtemp(),
+                toml=_minimal_task_toml("public"),
+                compose="services:\n  main: {}\n",
+            ),
+            runs_dir=Path(".cache/eng019-tests/public-egress"),
+            trial_name="public-egress-trial",
+            agent_import_path="unused.agent",
+            agent_timeout_sec=1.0,
+        )
+        with self.assertRaises(UnhardenedBackendError) as ctx:
+            await backend.launch(spec)
+        self.assertIn("PUBLIC", str(ctx.exception))
+        self.assertEqual(backend._runs, {})
+
+    async def test_launch_with_a_no_network_task_passes_both_guards(self) -> None:
+        """A compliant task (no-network effective policy, no unauthorized mounts) passes the
+        ADR-12 guard clauses and may fail later on Docker/Harbor for an unrelated reason - it
+        must NEVER be refused as if it were a security violation."""
+        backend = HarborBackend()
+        spec = ExecutionSpec(
+            task_dir=_write_task(tempfile.mkdtemp(), toml=_minimal_task_toml("no-network")),
+            runs_dir=Path(".cache/eng019-tests/no-network"),
+            trial_name="no-network-trial",
+            agent_import_path="unused.agent",
+            agent_timeout_sec=1.0,
+        )
+        with self.assertRaises(Exception) as ctx:
+            await backend.launch(spec)
+        self.assertNotIsInstance(ctx.exception, UnhardenedBackendError)
+
+
+class EffectiveNetworkPolicyGuardTest(unittest.TestCase):
+    """Unit-level coverage of `_task_network_offence`: the effective (task-declared) harbor
+    phase policies must be no-network or allowlist and free of denied metadata hosts, because
+    that is the network LAYER policy actually enforced (raw sockets bypass the app-layer
+    proxy)."""
+
+    def test_a_public_declaring_task_is_an_offence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml=_minimal_task_toml("public"))
+            agent, environment = _guard_agent_environment()
+            offence = _task_network_offence(task_dir, agent, environment, IsolationPolicy())
+            self.assertIsNotNone(offence)
+            self.assertIn("PUBLIC", offence)
+
+    def test_a_no_network_task_is_compliant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml=_minimal_task_toml("no-network"))
+            agent, environment = _guard_agent_environment()
+            self.assertIsNone(_task_network_offence(task_dir, agent, environment, IsolationPolicy()))
+
+    def test_an_allowlist_task_is_compliant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml=_minimal_task_toml("allowlist", ["api.allowed.test"]))
+            agent, environment = _guard_agent_environment()
+            self.assertIsNone(_task_network_offence(task_dir, agent, environment, IsolationPolicy()))
+
+    def test_an_allowlist_that_includes_a_denied_metadata_host_is_an_offence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml=_minimal_task_toml("allowlist", ["api.allowed.test", "169.254.169.254"]))
+            agent, environment = _guard_agent_environment()
+            offence = _task_network_offence(task_dir, agent, environment, IsolationPolicy())
+            self.assertIsNotNone(offence)
+            self.assertIn("169.254.169.254", offence)
+
+    def test_a_task_directory_without_a_task_toml_is_not_an_offence_here(self) -> None:
+        """No task.toml = not a loadable Harbor task; Trial.create rejects it normally right
+        after the guards, so there is no effective policy to WIDEN and nothing to refuse at
+        this layer - refusing here would break the 'compliant spec reaches the Docker call'
+        contract (see HarborBackendRefusalTest.test_launch_does_not_refuse...)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml=None)
+            agent, environment = _guard_agent_environment()
+            self.assertIsNone(_task_network_offence(task_dir, agent, environment, IsolationPolicy()))
+
+    def test_a_task_to_malformed_to_load_is_uncheckable_and_therefore_an_offence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = _write_task(tmp, toml="[task\n  broken =")
+            agent, environment = _guard_agent_environment()
+            offence = _task_network_offence(task_dir, agent, environment, IsolationPolicy())
+            self.assertIsNotNone(offence)
+            self.assertIn("cannot be validated", offence)
 
 
 class UnauthorizedHostMountDetectionTest(unittest.TestCase):
@@ -272,6 +417,109 @@ class UnauthorizedHostMountDetectionTest(unittest.TestCase):
             (task_dir / "data").mkdir()
             self._write_compose(task_dir, f"      - {(task_dir / 'data').as_posix()}:/app/data")
             self.assertIsNone(_find_unauthorized_host_mount(task_dir))
+
+    def test_an_interpolated_socket_mount_from_a_dotenv_file_is_flagged(self) -> None:
+        """A socket path smuggled through `${VAR}` defined in the task's OWN `.env` file must
+        be resolved and flagged - the textual pre-fix scan silently missed this (the audit's
+        interpolation case)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - ${SNEAKY_SOCK}:/var/run/docker.sock2")
+            (task_dir / "environment" / ".env").write_text("SNEAKY_SOCK=/var/run/docker.sock\n", encoding="utf-8")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("Docker socket", offense[1])
+
+    def test_a_default_value_interpolation_of_the_socket_path_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - ${GUARD_SOCK:-/var/run/docker.sock}:/var/run/docker.sock")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("Docker socket", offense[1])
+
+    def test_an_interpolated_host_path_escape_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - ${HOST_ETC}/shadow:/tmp/stolen")
+            (task_dir / "environment" / ".env").write_text("HOST_ETC=/etc\n", encoding="utf-8")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("outside the task directory", offense[1])
+
+    def test_an_uncheckable_required_interpolation_is_refused_not_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, "      - ${MUST_SET:?socket path must be provided}:/var/run/docker.sock")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("cannot be safely inspected", offense[1])
+
+    def test_a_bind_source_still_containing_an_interpolation_marker_is_refused(self) -> None:
+        """`$$` legitimately escapes to a literal `$` (leaving `${VAR}` un-interpolated by
+        Compose itself); a bind source that STILL carries an interpolation marker after our
+        single-pass resolution is exactly the input Compose could never have mounted literally,
+        so it is refused rather than guessed at (fail-closed)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            self._write_compose(task_dir, r"      - $${STILL_UNRESOLVED}:/container/x")
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("cannot be safely inspected", offense[1])
+
+    def test_a_compose_merge_tag_is_refused_not_skipped(self) -> None:
+        """Compose's `!override`/`!merge`/`!reset` overlay tags mutate produced YAML in ways a
+        static scan cannot predict reliably - an uncheckable file is refused, never skipped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir(exist_ok=True)
+            (environment_dir / "docker-compose.yaml").write_text(
+                "services:\n  main:\n    volumes: !override\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+                encoding="utf-8",
+            )
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertIn("cannot be safely inspected", offense[1])
+
+    def test_an_included_compose_file_that_does_not_match_the_globs_is_still_scanned(self) -> None:
+        """`include:` can pull a socket mount from a file whose name does NOT match the
+        docker-compose*.y*ml/compose*.y*ml globs (e.g. shared.yaml) - the reference must be
+        followed, not missed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir(exist_ok=True)
+            (environment_dir / "docker-compose.yaml").write_text(
+                "include: [shared.yaml]\nservices:\n  main: {}\n",
+                encoding="utf-8",
+            )
+            (environment_dir / "shared.yaml").write_text(
+                "services:\n  main:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
+                encoding="utf-8",
+            )
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertEqual(offense[0].name, "shared.yaml")
+            self.assertIn("Docker socket", offense[1])
+
+    def test_an_extends_file_reference_is_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task_dir = Path(tmp)
+            environment_dir = task_dir / "environment"
+            environment_dir.mkdir(exist_ok=True)
+            (environment_dir / "docker-compose.yaml").write_text(
+                "services:\n  main:\n    extends:\n      file: base.yaml\n      service: base\n",
+                encoding="utf-8",
+            )
+            (environment_dir / "base.yaml").write_text(
+                "services:\n  base:\n    volumes:\n      - /etc/shadow:/tmp/stolen\n",
+                encoding="utf-8",
+            )
+            offense = _find_unauthorized_host_mount(task_dir)
+            self.assertIsNotNone(offense)
+            self.assertEqual(offense[0].name, "base.yaml")
+            self.assertIn("outside the task directory", offense[1])
 
     async def _launch_with_task_dir(self, task_dir: Path) -> None:
         backend = HarborBackend()

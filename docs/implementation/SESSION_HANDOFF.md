@@ -1,7 +1,70 @@
 # Session handoff
 
-Updated: 2026-09-18
+Updated: 2026-09-20
 Prompt 14 is COMPLETE at the engineering-ticket level. ENG-011's aggregation prerequisite and ENG-017/018 were accepted by an independent technical review after the committed PostgreSQL review/API batch passed 92/92 and the complete recorded discovery passed 223 tests with one optional Harbor skip. This is not a claim of separate-human or organizational approval. Production OIDC, two-human official-publication approval, hardened isolation, deployment CI, and public release remain later-ticket or operational gates. No real public release was made. Older phase claims below are historical.
+
+## Prompt 15 continuation pass (2026-09-19/20) - codex-audit gaps 1, 2, 3 implemented
+
+A codex audit of the Prompt-15 closure found six substantive gaps the closure's own tests had
+missed. Three are now implemented and tested (the six findings' disposition is ledgered in
+DECISIONS.md ENG019-004/ENG020-005 and this handoff):
+
+1. **Raw-socket/L3 egress bypass unverifiable** -> the effective-network-policy guard now REfuses:
+   `HarborBackend.launch()` computes the trial's effective phase network via Harbor's OWN resolver
+   (`resolve_trial_network_plan` + verifier-mode resolution, post `extra_allowed_hosts` merge) and
+   refuses before any Docker/Harbor call when the effective mode is `PUBLIC` (including the
+   declared-vs-default case) or an ALLOWLIST phase names a denied metadata host
+   (`_task_network_offence`, `packages/aieb-runner/src/aieb_runner/backends/harbor/backend.py`).
+   Decision: an undeclared network mode is fail-closed refusal, a mount-offence takes the error
+   slot first (kept ordering).
+2. **Docker-socket mount scan bypassable by Compose interpolation / include / extends / YAML tags**
+   -> `_find_unauthorized_host_mount` is fail-closed: resolves `${VAR}`/`$VAR` + `:-`/`-`/`:?`/`?`/`:+`/`+`/`$$`
+   against sibling `.env` then process env, follows `include:` and `extends.file:` graphs, refuses
+   unknown-tag/unparsable compose files ("cannot be safely inspected", `!override`/`!merge`/`!reset`),
+   refuses residual-`$` and required-but-unset bind sources. Proven against a real specimen in this
+   repo's own `.cache/research/harbor-v0.22.0/.../clbench/task-template/environment/docker-compose.yaml`
+   (`${CONTEXT_DIR}/messages` - previously silently skipped). 39/39 green in
+   `tests/test_eng019_sandbox_threat_model.py`; the old
+   `test_launch_does_not_refuse_when_hardened_isolation_is_not_required` was re-based to a bare temp
+   dir because the repo ROOT is genuinely non-compliant any more (by design).
+3. **No per-attempt scoped credentials / no candidate-verifier identity separation (spec §37)**
+   -> implemented end to end: `attempt_credential` table + Alembic migration
+   (`ba47e9c84511_attempt_scoped_credentials.py`), one live sha256-hashed credential per
+   `(attempt_id, actor_role)` with expiry+revocation, repository
+   `issue/verify_attempt_credential`/`revoke_attempt_credential`/`attempt_credential_status`,
+   `POST /v1/attempts/{attempt_id}/credentials/verify` (authenticated BY the presented credential,
+   deliberately NOT operator-authenticated - that separation is the mechanism),
+   `EngineeringCommand.extra_env` (candidate) and `run_verification(attempt_vars=...)` (verifier)
+   delivering `AIEB_ATTEMPT_ID/ROLE/CREDENTIAL` into the subprocess environments, worker phase
+   executors in `runner_bridge.py` issuing at phase start and revoking in `finally`. Non-PG
+   behavior proven: `tests/test_attempt_lifecycle.py` 18/18 (incl. two new env-delivery tests).
+
+A codex follow-up review of gap 3 returned six findings (4 high, 1 medium, 1 low), all now closed
+(disposition ledgered in DECISIONS.md ENG019-005/ENG020-006 and `sandbox-review.md` fourth review
+round): (1) the credential now authorizes a REAL capability - `GET /v1/attempts/{attempt_id}/candidate`
+returns the persisted candidate only under a valid candidate/verifier credential for that attempt;
+(2) child environments are allowlist-scrubbed (`_sanitized_child_env()`, applied in `_start`, the
+BUILD entrypoint, and the isolated VERIFY entrypoint) so worker secrets like `AIEB_DATABASE_URL` are
+never inherited by candidate/evaluator code - regression
+`test_subprocess_environ_never_inherits_worker_secrets` plants sentinels and asserts they never
+reach either subprocess; (3) issuance is lease-fenced (migration `bc5e9d4b2107` adds
+`work_item_id`/`worker_id`/`lease_generation`; `LeaseFenceError` on a stale/expired worker;
+`revoke_attempt_credentials` runs inside `reconcile_expired_leases`'s recovery transaction so a
+crashed worker's tokens DIE at lease recovery, never lingering to TTL); (4) the PG test seed no
+longer collides on unique identity constraints; (5) invalid-token responses no longer leak the
+roll's real expiry and malformed UUIDs are 404s; (6) the stale `IsolationPolicy` docstring and a
+trailing-whitespace finding were cleaned up. Gap 3 is now CLOSED: `tests/test_attempt_credentials.py`
+passes 10/10 against the disposable `aieb-test-postgres` container (postgres:16 on `localhost:5544`,
+`postgresql+psycopg://postgres:aieb_test_password@...`), and `tests/test_attempt_lifecycle.py`
+19/19. Single alembic head `bc5e9d4b2107`.
+
+Remaining from the audit, NOT yet started (ledger order): gap 4 (restore-drill pre-reconciliation
+fencing hole - a restored-from-backup DB could let a stale worker / overlapping lease act);
+gap 5 (operator kill-switch API/CLI - the repository knob exists, the operator surface does not);
+gap 6 (Prometheus `/metrics` + alerting). Next step is gap 4. PG-gated execution is no longer
+blocked here: the `aieb-test-postgres` container (postgres:16, port 5544, `aieb_test_password`) is
+what the recent runs of the PG suites (credential 10/10) used; the other existing ENG-015/016/017/020
+PG suites (worker leasing, API service, migrations, drills) can be run the same way going forward.
 
 
 Current phase: ENG-011 and ENG-015 through ENG-018 are COMPLETE. See `evidence/ENG-011/aggregation-review.md` and `evidence/ENG-018/review-closure.md`. STATUS.md's backlog table is authoritative; later official-release prerequisites remain blocked under their own tickets.

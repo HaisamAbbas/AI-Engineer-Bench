@@ -24,3 +24,6 @@ apps/web/*.tsbuildinfo
 /AI-Engineer-Bench-Architecture-v0.1.md
 /AI-Engineer-Bench-Implementation-Spec-v1.0.md
 /AI-Engineer-Bench-Codex-Prompt-Pack.md
+
+# Local assistant tooling state (never committed)
+/.commandcode/

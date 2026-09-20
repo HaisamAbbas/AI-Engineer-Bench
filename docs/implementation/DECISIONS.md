@@ -871,9 +871,170 @@ This log records implementation choices made while executing the source specific
 - Consequence: `tests/test_eng019_sandbox_threat_model.py` grew from 16 to 23 tests, all
   passing. `tests/test_api_service.py` gained the toolchain-pinning test, passing. Evidence
   docs (`sandbox-review.md`, `operations-review.md`) and STATUS.md rewritten so every one of
-  these five clauses - the two built and the three disclosed - is now visible, matching this
-  project's standing rule that undisclosed gaps are worse than disclosed ones. ENG-019 and
-  ENG-020 remain IN_PROGRESS; no scope was silently widened or narrowed.
+these five clauses - the two built and the three disclosed - is now visible, matching this
+   project's standing rule that undisclosed gaps are worse than disclosed ones. ENG-019 and
+   ENG-020 remain IN_PROGRESS; no scope was silently widened or narrowed.
+
+## ENG019-004 / ENG020-005 - Codex-audit continuation: effective-network guard, interpolation-proof mount scan, and per-attempt scoped credentials
+
+- Date: 2026-09-20
+- Status: accepted (implemented and tested; DB-backed half of the credential suite runnable
+  only with a live PostgreSQL, which is unavailable on this host)
+- Decision: a codex audit of the Prompt-15 closure's own evidence found three substantive gaps
+  its tests had missed. Closing each, with the
+  explicit fail-closed posture this project already applied to the socket check:
+  1. **Raw-socket/L3 egress containment was not verifiable, so the "effective" egress policy was
+     never actually enforced at launch.** The old guard validated the DECLARED allowlist on an
+     in-memory config object, so a task relying on Harbor's effective `PUBLIC` default (no
+     `network_mode` declared) or allowlisting the cloud-metadata egress host at the policy layer
+     would launch regardless. Now `launch()` computes the trial's effective plan with Harbor's own
+     `resolve_trial_network_plan`/verifier-mode resolvers (post `extra_allowed_hosts` merge - the
+     same calls `Trial.create` uses, so no drift-prone second copy) and refuses
+     (`UnhardenedBackendError`, before any Docker/Harbor call) when the effective phase mode is
+     `PUBLIC` or an ALLOWLIST phase names a denied metadata host. Deliberate decisions: a task dir
+     with NO `task.toml` is NOT an offence (nothing to widen; `Trial.create` rejects such a task
+     anyway) but a MALFORMED `task.toml` is; the effective-mode default is treated as
+     fail-closed; mount-offence errors keep the first error slot to preserve existing tests.
+  2. **The docker-socket/host-path mount scan could be bypassed by Compose interpolation and by
+     `include:`/`extends:` files that never matched its glob.** The raw-text scan saw `${VAR}`
+     placeholders, and referenced `shared.yaml` files were never scanned at all. Now fail-closed:
+     resolve `${VAR}`/`$VAR` and the `:-`/`-`/`:?`/`?`/`:+`/`+`/`$$` operators against the compose
+     file's sibling `.env` then the process environment; refuse any bind source still containing
+     `$` after resolution and any required-but-unset interpolation; parse with `yaml.safe_load` so
+     unknown tags (`!override`/`!merge`/`!reset`) or unparsable files become an explicit refusal
+     rather than a skip; walk the `include:`/`extends.file:` dependency graph. Proven against a
+     REAL specimen in this repository's own research tree (a `${CONTEXT_DIR}/messages` mount the
+     old scan silently skipped). Honest consequence: the repo ROOT is no longer a compliant
+     "non-hardened task dir" for the old negative test, so that test now uses a bare temp dir.
+  3. **Per-attempt short-lived credentials and candidate/verifier identity separation (spec §37)
+     were listed as not implemented, then implemented as one integrated mechanism.** The roster
+     was considered the clean window to land this, since ENG019-003 had already removed the inert
+     `scoped_credential_id` field rather than leave a fake. Design: one live credential per
+     `(attempt_id, actor_role)` (`candidate`|`verifier`), sha256-hashed tokens (database leak
+     cannot mint usable tokens), expiry + revocation, rotation by re-issue; repository
+     issue/verify/revoke/status; the single verify endpoint is authenticated BY the presented
+     credential, deliberately NOT operator-authenticated - a leaked verifier token can prove only
+     verifier-for-that-attempt, never operator or another role/attempt; delivery is
+     `AIEB_ATTEMPT_ID/ROLE/CREDENTIAL` via `EngineeringCommand.extra_env` (candidate subprocess)
+     and `run_verification(attempt_vars=...)` into the spawn-based VERIFY subprocess; the worker
+     issues at phase start and revokes in `finally`. No real cloud credential-issuance system is
+     invoked (none exists here) - this is a self-issued, attempt-scoped credential plus a
+     sha256-compared verifier endpoint, which is the narrow honest claim, not a claim of SSO/SPIFFE.
+- Consequence: `tests/test_eng019_sandbox_threat_model.py` 39/39 green; `tests/test_attempt_lifecycle.py`
+  18/18 green including the two new subprocess-env delivery tests; `tests/test_attempt_credentials.py`
+  (PG-gated) added and collects cleanly. Evidence docs (`sandbox-review.md`, `operations-review.md`
+  as they apply), STATUS.md and this handoff updated. Gaps 4 (restore-drill fencing), 5 (kill-switch
+  API/CLI), and 6 (Prometheus metrics/alerts) from the same audit remain open, in that order.
+
+## ENG019-005 / ENG020-006 - Codex follow-up review of the credential path: six findings closed at the time
+
+- Date: 2026-09-20
+- Status: accepted (implemented, PG-verified) at the time; four findings re-opened and re-closed by
+  ENG019-006/ENG020-007 (fifth review round) below
+- Decision: the same codex audit reviewed the per-attempt credential implementation added in
+  ENG019-004 and returned six findings (4 high, 1 medium, 1 low) that had to be closed before Gap 3
+  could be claimed closed. All six are accepted as real and fixed:
+  1. **High - the token authorized no useful capability** (verify was introspection-only). Added a
+     real, narrowly scoped capability: `GET /v1/attempts/{attempt_id}/candidate`, authorized by a
+     valid candidate- or verifier-role credential for exactly that attempt, returning the persisted
+     candidate artifact via `repository.load_stored_candidate`. 401 without a valid credential,
+     404 when no candidate exists.
+  2. **High - subprocesses inherited the worker's full environment.** Engineering used
+     `{**os.environ, **command.extra_env}`; BUILD and the isolated VERIFY children inherited it too.
+     All three now run under `_sanitized_child_env()` (allowlist of infra/build/ML-cache members;
+     `*_PASSWORD`/`*_SECRET*`/`*_TOKEN`/`*_API_KEY`/`AWS_*`/`AZURE_*`/`GCP_*` and every `AIEB_*`
+     member excluded by construction), with the issued AIEB attempt vars layered on explicitly.
+     DELIBERATE ordering detail: the scrub snapshots BEFORE `os.environ.clear()` (a clear-then-filter
+     would empty the dict being filtered and drop allowlisted members like PATH - caught by the
+     regression test's `path_present` assertion).
+  3. **High - issuance/revocation were not lease-fenced and recovery never revoked.** Migration
+     `bc5e9d4b2107` stores the issuing lease identity (`work_item_id`/`worker_id`/`lease_generation`)
+     on every credential; `issue_attempt_credential` gates issuance on the live leased work item
+     (`FOR UPDATE`; generation/worker must match and the lease be unexpired) or raises
+     `LeaseFenceError` leaving the row untouched; `runner_bridge.py` handles it like heartbeat
+     fencing. `revoke_attempt_credentials` (both roles) runs inside `reconcile_expired_leases`'s
+     single locked recovery transaction, so a crashed worker's tokens DIE at lease recovery instead
+     of lingering to their 1h TTL. A stale worker's revoke being a no-op is accepted as fine: it is
+     only ever stricter, and the sweep covers the crash case.
+  4. **High - the PG suite errored on duplicate seeded identities.** `_seed_attempt` now uses
+     per-call uuid-derived digests AND unique task/entrant slugs so repeated seeds cannot hit
+     `uq_evaluator_revision_digest_contract`/`uq_entrant_revision_slug_version` (verified: the
+     cleaned suite is what now runs 10/10).
+  5. **Medium - invalid-token responses leaked the roll's real expiry and malformed UUIDs 500'd.**
+     `expires_at` is now only returned on a successful validation; `_parse_attempt_or_404` maps bad
+     UUIDs to 404.
+  6. **Low - the `IsolationPolicy` docstring still claimed scoped credentials were "deliberately
+     unimplemented" and a trailing whitespace finding.** Fixed; `git diff --check` clean.
+- Consequence: `tests/test_attempt_credentials.py` passes 10/10 against the disposable
+  `aieb-test-postgres` container (postgres:16, `localhost:5544`, `postgresql+psycopg`), including
+  the new fence/takeover, expiration, reconcile-revocation, capability-endpoint, leak, and
+  malformed-UUID tests; `tests/test_attempt_lifecycle.py` 19/19 including the environment-scrub
+  regression (`test_subprocess_environ_never_inherits_worker_secrets`). Alembic has a single head
+  (`bc5e9d4b2107`). Reviewer note: calling `_sanitized_child_env()` and clearing `os.environ` inside
+  the child entrypoints trades a tiny sweep cost for a hard guarantee - every child correctly fails
+  closed even if a future allowlist entry is ever misjudged. A second review round of the same
+  credential path then found four of these closures incomplete and re-opened them - see
+  ENG019-006/ENG020-007 (fifth review round) below. Gaps 4/5/6 remain open in order.
+
+## ENG019-006 / ENG020-007 - Codex fifth review round: four incomplete closures re-opened and closed, plus the import-time env-leak fix
+
+- Date: 2026-09-20
+- Status: accepted (implemented, PG-verified; gap 3 left in review pending the reviewer's own
+  negative-control run)
+- Decision: a SECOND review round of the credential path (after ENG019-005 claimed it closed)
+  returned four findings, each with a concrete negative control the then-current code failed.
+  All four are accepted as real and fixed; the reviewer's each control is reproduced as a
+  regression test:
+  1. **Issuance was attempt-blind and role-blind.** The lease fence never required the work item
+     to belong to the attempt being credentialed, and never checked that the requested role was
+     allowed for the item TYPE - so an engineering lease on attempt A could mint a valid
+     candidate credential for attempt B, and any item could mint either role. Fixed:
+     `issue_attempt_credential` requires `WorkItemRow.attempt_id == attempt_id` (cross-attempt ->
+     `LeaseFenceError`) and derives allowed roles from the work-item type (`_WORK_ITEM_TYPE_ROLES`:
+     `engineering` -> `{candidate}`, `verification`/`regrade` -> `{verifier}`, anything else mints
+     nothing; other pairings -> `ValueError`). Controls:
+     `test_issuance_is_fenced_to_the_attempt_of_the_lease`,
+     `test_issuance_role_is_derived_from_work_item_type`.
+  2. **A stale worker's delayed `finally`-revoke killed a replacement's rotated token.** Revoke
+     filtered only by attempt+role, so after a takeover the old worker's late revoke wiped the NEW
+     token (`new_before_stale_revoke=True, new_after_stale_revoke=True` controls). Fixed:
+     `revoke_attempt_credential` is fenced by the credential row's OWN stored lease identity -
+     the UPDATE matches `work_item_id`/`worker_id`/`lease_generation` of the issuing lease, so a
+     stale finally NO-OPS and the rotated token survives; the reconciler's unconditional both-role
+     `revoke_attempt_credentials` stays reserved for lease recovery. Control:
+     `test_stale_finally_revoke_noops_against_rotated_token`.
+  3. **The reconciler missed crashed `regrade` items.** Its sweep selected only
+     `engineering`/`verification`; a regrade lease expiring mid-verify (worker crashed holding a
+     verifier token) recovered the item without revoking the token. Fixed:
+     `reconcile_expired_leases` now selects `("engineering", "verification", "regrade")` and the
+     regrade recovery branch revokes both roles at loop top exactly like verification. Control:
+     `test_reconciler_revokes_credentials_after_crashed_regrade`.
+  4. **The candidate capability was not consumed, and admitted a candidate-role read.** The
+     endpoint was role-agnostic and returned only IDs/digests, and the verification phase still
+     read the candidate through the worker's bare DB session - no code path ever exercised a
+     credential-authorized read. Fixed: the endpoint is VERIFIER-ROLE-ONLY (`_require_role`: 401
+     absent/invalid, 403 valid-but-wrong-role) and returns the FULL `stored_candidate`; verification
+     ISSUES its verifier credential first, then reads the candidate through
+     `repository.load_stored_candidate_authorized` - the SAME gate the endpoint enforces -
+     raising `CredentialDeniedError` (-> `infrastructure_invalid`) when the token is not a valid
+     live verifier credential for that attempt, and revoking on every infra-abort path after
+     issuance (`_abort_infra`) plus the phase-ending finally and the reconciler on worker crash.
+     Control: `test_get_candidate_capability_is_credential_authorized` (full payload, cross-attempt
+     401, same-attempt candidate-role 403).
+  5. **Import-time env leak (separate, environmental):** the isolated VERIFY child imported the
+     evaluator module during spawn bootstrap, before the environment scrub, so top-level module
+     code observed worker secrets. Fixed: `_run_verify_isolated`/`_verify_subprocess_entrypoint`
+     pass the evaluator as `(module, qualname)` identity STRINGS (never the pickled callable) and
+     resolve it only after `os.environ` is scrubbed; `_sanitized_child_env()` also strips
+     credentials embedded in allowlisted VALUES (URL userinfo, `?password=/token=/key=/secret=`
+     segments). Controls: `test_import_time_env_leak_...`,
+     `test_proxy_value_embedded_credentials_are_scrubbed_from_child_env`.
+- Consequence: `tests/test_attempt_credentials.py` 14/14, `tests/test_attempt_lifecycle.py` 21/21,
+  `tests/test_worker_leasing.py` 38/38, `tests/test_eng019_sandbox_threat_model.py` 39/39,
+  all green against the `aieb-test-postgres` container/PG attrs. Single head `bc5e9d4b2107`.
+  Gap 3 is NOT declared closed by this document: the reviewer's own run of the negative
+  controls above is the gate, and gaps 4 (restore-drill fencing), 5 (kill-switch API/CLI), and 6
+  (Prometheus metrics/alerts) remain open in order.
 
 ## ENG023 - Fixed reference model-track loop (plan corrected after codebase verification)
 

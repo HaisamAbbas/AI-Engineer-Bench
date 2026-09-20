@@ -9,9 +9,11 @@ tree has stopped, then reconstructed into a new build allocation.
 from __future__ import annotations
 
 import ctypes
+import importlib
 import json
 import multiprocessing as mp
 import os
+import re
 import select
 import shutil
 import socket
@@ -25,7 +27,7 @@ from enum import StrEnum
 from multiprocessing.connection import wait as wait_for_process
 from pathlib import Path
 from threading import Event, Thread
-from typing import Callable
+from typing import Callable, Mapping
 
 from aieb_core.models import ExecutionValidity, SubmissionPolicy, Verdict
 
@@ -56,6 +58,25 @@ class CancelledError(BaseException):
     BaseException rather than Exception for the same reason KeyboardInterrupt
     does - a broad `except Exception` around a trusted evaluator must not
     swallow a cancellation and misreport it as a scorer failure."""
+
+
+def _resolve_evaluator_by_identity(module: str, qualname: str) -> Evaluator:
+    """Resolve a (module, qualname) evaluator identity to its callable, running ONLY AFTER the
+    child environment has been scrubbed (codex-audit finding 4, second review round). Spawn
+    unpickles the Process by re-importing the parent's __main__ and the pickled target/args; a
+    pickled FUNCTION was previously materialized by import at that bootstrap point - BEFORE any
+    scrub - so a module whose import-time code read os.environ observed the worker's full
+    secrets. Passing identity STRINGS instead means no evaluator module is imported at spawn
+    bootstrap; this resolver is invoked from the entrypoint after os.environ is replaced."""
+    module_obj = importlib.import_module(module)
+    obj: object = module_obj
+    for part in qualname.split("."):
+        if not hasattr(obj, part):
+            raise ImportError(f"evaluator identity {module}:{qualname} has no attribute {part!r}")
+        obj = getattr(obj, part)
+    if not callable(obj):
+        raise TypeError(f"evaluator identity {module}:{qualname} resolved to a non-callable")
+    return obj  # type: ignore[return-value]
 
 
 def _invoke_evaluator(evaluate: Evaluator, build: Path, stop: Event) -> dict[str, object]:
@@ -118,6 +139,11 @@ class FailureAttribution(StrEnum):
 class EngineeringCommand:
     argv: tuple[str, ...]
     deadline_sec: float
+    # ENG-020 scoped-credential delivery (spec section 37): extra environment variables to
+    # launch the engineering subprocess with, merged over the parent process environment.
+    # This is how the candidate-role attempt credential is actually DELIVERED to the
+    # contestant code - a credential no caller ever sets cannot be a credential.
+    extra_env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -261,9 +287,71 @@ def _decode_worker_result(payload: bytes) -> tuple[str, object]:
     return kind, value
 
 
+# codex-audit finding 2 (Prompt-15 continuation): a subprocess must NEVER inherit the worker's
+# full environment - control-plane secrets (AIEB_DATABASE_URL, *_TOKEN/_PASSWORD/AWS_* etc.)
+# would otherwise be readable by candidate code and by the trusted evaluator. Every child gets
+# an explicit ALLOWLIST of infra/build-control members only; a double blocklist (exact names +
+# secret-bearing substrings) catches anything a future allowlist entry might accidentally admit.
+_CHILD_ENV_ALLOWLIST = frozenset({
+    # Windows/POSIX system + user-interface scaffolding subprocesses need.
+    "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "OS", "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_ARCHITEW6432", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+    "NUMBER_OF_PROCESSORS", "COMPUTERNAME", "USERNAME", "USERDOMAIN", "APPDATA", "LOCALAPPDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "PUBLIC", "TEMP", "TMP", "PWD", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    # Python/ML runtime wiring (pre-trained asset caches must still resolve).
+    "PYTHONPATH", "PYTHONHOME", "PYTHONUTF8", "PYTHONDONTWRITEBYTECODE",
+    "PY_TOOLCHAIN", "TRANSFORMERS_CACHE", "HF_HOME", "TORCH_HOME", "CUDA_HOME", "CUDA_PATH",
+    # Compiler/build toolchain locations.
+    "CC", "CXX", "JAVA_HOME", "JDK_HOME", "GRADLE_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
+    "NVM_DIR", "NODE_HOME",
+    # Outbound traffic scaffolding (builds legitimately need registries); not secret-bearing.
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy",
+})
+_CHILD_ENV_EXPLICIT_BLOCKLIST = frozenset({
+    "AIEB_DATABASE_URL", "AIEB_REDIS_URL", "DATABASE_URL", "REDIS_URL", "PGHOST", "PGPORT",
+    "PGUSER", "PGDATABASE", "PGPASSWORD", "GOOGLE_APPLICATION_CREDENTIALS",
+})
+_CHILD_ENV_SECRET_SUBSTRINGS = ("PASSWORD", "SECRET", "TOKEN", "API_KEY", "AWS_", "AZURE_", "GCP_")
+
+# Any allowlisted variable that may carry a URL - proxy members above all - can smuggle
+# credentials INSIDE its value (`HTTPS_PROXY=http://proxyuser:proxypass@corp.example:3128`),
+# which a name allowlist alone never catches (codex-audit finding 4, second review round).
+_URL_USERINFO_RE = re.compile(r"^(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)(?P<userinfo>[^@/]+)@")
+_URL_BEARER_RE = re.compile(r"(?i)[?&](password|token|key|secret)=[^&\s]+")
+
+
+def _strip_url_embedded_credentials(value: str) -> str:
+    """Scrub embedded credentials OUT of an allowlisted environment VALUE: strip URL userinfo
+    (`http://user:pass@host` -> `http://host`) and any `?password=/token=/key=/secret=` query
+    segment. The variable NAME is legitimate (a proxy works fine without its auth material in
+    the sandbox child); the credential inside it is not.
+    """
+    stripped = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), value, count=1)
+    return _URL_BEARER_RE.sub("", stripped)
+
+
+def _sanitized_child_env() -> dict[str, str]:
+    """The ONLY environment a subprocess may ever see: allowlisted infra/build-control members
+    from the worker's process environment (POSIX-spawn children inherit it, so this builds the
+    explicit room), with the blocklists applied defensively. `AIEB_*` is excluded wholesale here
+    - the runner itself injects the exact AIEB_* members a given child is entitled to (extra_env
+    / attempt_vars), and nothing else from that namespace may be transmitted by inheritance."""
+    sanitized: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper = key.upper()
+        if upper in _CHILD_ENV_EXPLICIT_BLOCKLIST or "AIEB" in upper:
+            continue
+        if any(marker in upper for marker in _CHILD_ENV_SECRET_SUBSTRINGS):
+            continue
+        if upper in _CHILD_ENV_ALLOWLIST:
+            sanitized[key] = _strip_url_embedded_credentials(value)
+    return sanitized
+
+
 def _verify_subprocess_entrypoint(
-    evaluate: Evaluator, build: Path, stop: "mp.synchronize.Event", result_endpoint: object,
-    startup_event: "mp.synchronize.Event",
+    evaluate_identity: tuple[str, str], build: Path, stop: "mp.synchronize.Event", result_endpoint: object,
+    startup_event: "mp.synchronize.Event", attempt_vars: Mapping[str, str] | None = None,
 ) -> None:
     """Runs the trusted evaluator in an OWNED, forcibly-killable child
     process (review finding #2: "an uncooperative evaluator remains neither
@@ -275,7 +363,15 @@ def _verify_subprocess_entrypoint(
     whether it cooperates. It establishes a Unix process group before
     evaluator code runs; Windows waits until its parent assigns it to a Job
     Object. Must be module-level so it is picklable for multiprocessing's
-    spawn start method."""
+    spawn start method.
+
+    `evaluate_identity` is the evaluator's (module, qualname) as STRINGS, not
+    the pickled callable (codex-audit finding 4): spawn would otherwise
+    import the evaluator's module while unpickling the Process args at
+    bootstrap - BEFORE the environment scrub - leaking the worker's secrets
+    to import-time code. The identity is resolved to a callable only after
+    os.environ is replaced, so the evaluator's module import runs inside the
+    scrubbed environment."""
     if os.name != "nt":
         os.setsid()
         startup_event.set()
@@ -283,6 +379,20 @@ def _verify_subprocess_entrypoint(
         return
     result_writer = _open_child_result_writer(result_endpoint)
     try:
+        # codex-audit finding 2: this child adopted the worker's full environment at spawn;
+        # scrub it down to the shared allowlist BEFORE any evaluator code runs, then deliver
+        # the issued AIEB_* attempt variables (attempt id, role, short-lived credential) on top.
+        # Snapshot BEFORE clearing - os.environ.clear() empties the very dict we must filter.
+        scrubbed = _sanitized_child_env()
+        os.environ.clear()
+        os.environ.update(scrubbed)
+        if attempt_vars:
+            # ENG-020 verifier-role credential delivery: the AIEB_* attempt variables
+            # (attempt id, role, short-lived credential) become visible to the trusted
+            # evaluator process exactly as they were issued, so the verifier can prove its
+            # scoped identity to the control plane. Set BEFORE any evaluator code runs.
+            os.environ.update(attempt_vars)
+        evaluate = _resolve_evaluator_by_identity(*evaluate_identity)
         _send_worker_result(result_writer, "ok", _invoke_evaluator(evaluate, build, stop))
     except CancelledError:
         _send_worker_result(result_writer, "cancelled", None)
@@ -311,6 +421,12 @@ def _build_subprocess_entrypoint(
         return
     result_writer = _open_child_result_writer(result_endpoint)
     try:
+        # Same scrub as _verify_subprocess_entrypoint: this BUILD child must never see the
+        # worker's secrets either (codex-audit finding 2), even though it only runs the
+        # package's own reconstruction code. Snapshot before clearing (see sibling function).
+        scrubbed = _sanitized_child_env()
+        os.environ.clear()
+        os.environ.update(scrubbed)
         reconstruct_candidate(
             frozen_source=frozen_source,
             destination=destination,
@@ -562,6 +678,11 @@ class LocalAttemptRunner:
             options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             options["start_new_session"] = True
+        # Always pass an explicit environment: the child inherits whatever the POSIX/Windows
+        # spawn gave it by default, so without this it would see the worker's FULL environment
+        # including control-plane secrets (codex-audit finding 2). The scrubbed allowlist is
+        # always in effect; the extra_api/env the runner explicitly requests are then layered on.
+        options["env"] = {**_sanitized_child_env(), **command.extra_env}
         process = subprocess.Popen(command.argv, **options)  # type: ignore[arg-type]
         try:
             LocalAttemptRunner._attach_windows_kill_job(process)
@@ -833,7 +954,10 @@ class LocalAttemptRunner:
             return f"invalid worker result: {exc}"
 
     @staticmethod
-    def _run_verify_isolated(evaluate: Evaluator, build: Path, cancel_event: Event | None) -> VerifyRun:
+    def _run_verify_isolated(
+        evaluate: Evaluator, build: Path, cancel_event: Event | None,
+        *, attempt_vars: Mapping[str, str] | None = None,
+    ) -> VerifyRun:
         """Run VERIFY in an owned process tree and receive bounded JSON over
         a private capability channel. Only the child endpoint is passed to
         the evaluator process; no candidate-visible path can replace its
@@ -842,9 +966,15 @@ class LocalAttemptRunner:
         stop_event = ctx.Event()
         startup_event = ctx.Event()
         result_receiver, result_endpoint = _create_result_channel()
+        # Pass the evaluator's (module, qualname) IDENTITY as plain strings, never the pickled
+        # callable (codex-audit finding 4): spawning pickles the Process args and the child
+        # bootstrap imports `__main__`/the target module BEFORE _verify_subprocess_entrypoint
+        # scrubs the environment, so a pickled function would cause the evaluator module to be
+        # imported - and its import-time code run - inside the worker's unsanitized env.
+        evaluate_identity = (evaluate.__module__, evaluate.__qualname__)
         process = ctx.Process(
             target=_verify_subprocess_entrypoint,
-            args=(evaluate, build, stop_event, result_endpoint, startup_event),
+            args=(evaluate_identity, build, stop_event, result_endpoint, startup_event, attempt_vars),
             daemon=True,
         )
         started = False
@@ -1021,6 +1151,7 @@ class LocalAttemptRunner:
 
     def run_verification(
         self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome, cancel_event: Event | None = None,
+        *, attempt_vars: Mapping[str, str] | None = None,
     ) -> AttemptOutcome:
         """BUILD -> VERIFY -> FINALIZE/CLEANUP, given an outcome that already
         carries a collected `candidate` - either from this same process's own
@@ -1095,7 +1226,7 @@ class LocalAttemptRunner:
             # in-process daemon thread (review finding #2): a
             # cancellation-ignoring evaluator is genuinely terminated after
             # grace, never merely abandoned - see _run_verify_isolated.
-            verify_run = self._run_verify_isolated(evaluator, build, cancel_event)
+            verify_run = self._run_verify_isolated(evaluator, build, cancel_event, attempt_vars=attempt_vars)
             if verify_run.cancelled:
                 outcome.execution_validity = ExecutionValidity.CANCELLED
                 outcome.termination_reason = "cancelled"

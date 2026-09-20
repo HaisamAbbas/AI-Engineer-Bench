@@ -729,3 +729,40 @@ class KillSwitchRow(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_kill_switch_singleton"),
     )
+
+
+class AttemptCredentialRow(Base):
+    """ENG-020 (spec section 37): per-attempt, per-role, short-lived, scoped credentials.
+
+    A candidate-role and a verifier-role credential each exist as a separate row keyed by
+    (attempt_id, actor_role), storing only a sha256 hash - the plaintext token is delivered
+    once via the environment and never persisted, so a database leak cannot mint usable
+    credentials. The control plane verifies a presented token by hashing it and matching the
+    exact role/attempt requested, which is what lets a trusted VERIFY subprocess prove its
+    scoped identity to the API rather than impersonating the operator or another attempt.
+    Revocation is what the worker performs when a phase ends, so the credential dies even if
+    its expiry has not yet been reached."""
+
+    __tablename__ = "attempt_credential"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    attempt_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Lease-fence identity (codex audit finding 3, Prompt-15 continuation): the work item,
+    # worker, and lease generation under which this credential was issued. Every (re)issue is
+    # a rotation AND a new fence record, so the audit can see exactly which lease issued the
+    # token currently accepted; a stale worker's issue attempt fails the fence check and never
+    # reaches this table. NULL for rows predating the fence columns (no live credential should
+    # exist after migration, but historical rows without a fence record remain inspectable).
+    work_item_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("work_item.id"), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("attempt_id", "actor_role", name="uq_attempt_credential_attempt_role"),
+        CheckConstraint("actor_role in ('candidate','verifier')", name="ck_attempt_credential_actor_role"),
+    )

@@ -48,12 +48,15 @@ class IsolationPolicy:
     must raise from `launch()`, never launch and merely log a warning - "not hardened" must be
     unusable as if it were hardened, not just disclosed as such.
 
-    Deliberately does NOT declare a `scoped_credential_id`/per-attempt-credential field: no real
-    cloud credential-issuance system exists to issue, scope, or revoke one against in this
-    environment, and an inert field here would read as a capability that isn't implemented.
-    Per-attempt short-lived credentials revoked on termination and real candidate/verifier
-    identity separation (spec section 37) are explicitly deferred - see DECISIONS.md ADR-12 and
-    `docs/implementation/evidence/ENG-019/sandbox-review.md`'s "Remaining external acceptance".
+    Deliberately does NOT declare a `scoped_credential_id`/per-attempt-credential field: that
+    identity belongs to the RUNNER/control-plane layer, not to a sandbox backend's launch
+    policy. Per-attempt short-lived scoped credentials ARE implemented (ENG-020, spec section
+    37): the API worker issues a candidate- and verifier-role token per attempt - fenced to the
+    issuing work-item lease, revoked on phase end and on lease recovery, delivered to the
+    engineering/verifying subprocess environments via `extra_env`/`attempt_vars` - and each
+    attempt's process can authenticate to exactly the control-plane capability its role is
+    entitled to. See DECISIONS.md ADR-12 and
+    `docs/implementation/evidence/ENG-020/operations-review.md`.
     """
 
     egress_allowlist: tuple[str, ...] = ()

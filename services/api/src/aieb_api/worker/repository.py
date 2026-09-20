@@ -16,11 +16,14 @@ engineering to repeat (the persisted candidate is reused as-is).
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
 import re
+from typing import Sequence
 
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
@@ -29,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..models import (
+    AttemptCredentialRow,
     AttemptEventRow,
     AttemptRow,
     CampaignRow,
@@ -48,6 +52,54 @@ DEFAULT_LEASE_SECONDS = 60
 
 # ENG-020 auto-pause (spec sections 39/48): distinct from the global kill switch below.
 AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD = 3
+
+# ENG-020 scoped credentials (spec section 37): candidate- and verifier-role, per attempt.
+CREDENTIAL_ROLES = ("candidate", "verifier")
+DEFAULT_CREDENTIAL_TTL_SECONDS = 3600
+
+# ENG-020 credential issuance is scoped by the WORK-ITEM TYPE that holds the caller's lease
+# (codex-audit finding 3, second review round): only an `engineering` work item may mint the
+# candidate-role credential, and only a `verification` or `regrade` item may mint the
+# verifier-role credential. An item whose type is unknown mints nothing. This closes the
+# cross-role hole where an engineering item carrying a verifier request (or a verification
+# item a candidate request) would happily mint the wrong actor_role.
+_WORK_ITEM_TYPE_ROLES = {
+    "engineering": ("candidate",),
+    "verification": ("verifier",),
+    "regrade": ("verifier",),
+}
+
+
+@dataclass(frozen=True)
+class IssuedAttemptCredential:
+    """The plaintext token plus its expiry - the ONLY place the plaintext ever
+    exists after generation: it is returned once to the caller (delivered to the
+    subprocess environment) and only its sha256 hash is persisted."""
+
+    token: str
+    expires_at: datetime
+
+
+class LeaseFenceError(RuntimeError):
+    """Raised by issue_attempt_credential when the caller does NOT hold the work-item lease
+    it claims for this attempt (worker/generation mismatch, item not leased to them, or lease
+    already expired). The credential row is left untouched - a stale or fenced worker must
+    never issue, rotate, or revoke a live credential. The caller (a worker) must treat this
+    exactly like heartbeat fencing: it no longer legitimately owns the work item, so it must
+    stop; the reconciler - which is what fenced it - recovers the item."""
+
+
+@dataclass(frozen=True)
+class AttemptCredentialStatus:
+    actor_role: str
+    issued_at: datetime | None
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    valid: bool
+    # Lease-fence identity (codex-audit finding 3): which lease issued the live credential.
+    work_item_id: uuid.UUID | None = None
+    worker_id: str | None = None
+    lease_generation: int | None = None
 
 
 def append_attempt_event(session: Session, *, attempt_id: uuid.UUID, event_type: str, payload: dict[str, str | int | bool | None]) -> None:
@@ -495,6 +547,14 @@ class LoadedCandidate:
     manifest_digest: str
 
 
+class CredentialDeniedError(RuntimeError):
+    """Raised by load_stored_candidate_authorized when the presented scoped credential is
+    not a valid live credential for the exact (attempt_id, actor_role) requested - the
+    credential-gated candidate read is just as scoped as the endpoint that exposes it. The
+    presenter (a worker in the verification phase, or the endpoint's verifier route) must
+    actually HOLD a valid credential to consume the capability, never a bare DB session."""
+
+
 def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> LoadedCandidate | None:
     """Read back the persisted candidate for an attempt - id, its serialized
     StoredCandidate JSON, and the authoritative digests CandidateRow itself
@@ -514,6 +574,25 @@ def load_stored_candidate(session: Session, attempt_id: uuid.UUID) -> LoadedCand
         candidate_id=row.id, stored_candidate=row.stored_candidate, stored_candidate_digest=row.stored_candidate_digest,
         tree_digest=row.tree_digest, manifest_digest=row.manifest_digest,
     )
+
+
+def load_stored_candidate_authorized(
+    session: Session, *, attempt_id: uuid.UUID, actor_role: str, token: str,
+) -> LoadedCandidate | None:
+    """CREDENTIAL-GATED candidate read (codex-audit finding 3, second review round): the
+    persisted-candidate capability - the SAME gate the HTTP endpoint enforces - requires a
+    valid live scoped credential for exactly this attempt and exactly this role, verified by
+    the exact same verify_attempt_credential check before any candidate row is returned.
+    Returns None when no candidate is persisted (caller fails safe); raises
+    CredentialDeniedError when the presented credential is not a valid live one for this
+    attempt/role - a worker's bare database session can never bypass the gate by calling
+    load_stored_candidate directly. Verification consumes this capability: it issues its
+    verifier credential first, then reads the candidate THROUGH the credential."""
+    if not verify_attempt_credential(session, attempt_id=attempt_id, actor_role=actor_role, token=token):
+        raise CredentialDeniedError(
+            f"credential-gated candidate read refused: no valid live {actor_role!r} credential for attempt {attempt_id}"
+        )
+    return load_stored_candidate(session, attempt_id)
 
 
 def attach_candidate_references(session: Session, *, attempt_id: uuid.UUID, candidate_id: uuid.UUID) -> int:
@@ -686,11 +765,17 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
     orphaned: list[uuid.UUID] = []
     expired = session.execute(
         select(WorkItemRow)
-        .where(WorkItemRow.type.in_(("engineering", "verification")), WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
+        .where(WorkItemRow.type.in_(("engineering", "verification", "regrade")), WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
         .with_for_update(skip_locked=True)
     ).scalars().all()
     for item in expired:
         attempt = session.get(AttemptRow, item.attempt_id)
+        # Lease-recovery gate for scoped credentials (codex-audit finding 3): the worker that
+        # held this item is DEAD (its lease lapsed without a fenced finalize), so any credential
+        # it issued is desalting immediately. Without this sweep a crashed worker's token stayed
+        # usable up to its 1h TTL by whoever held it. Participation in this same locked,
+        # single-commit transaction (commit=False) makes revocation atomic with the recovery.
+        revoke_attempt_credentials(session, attempt_id=attempt.id, commit=False)
         trial = session.get(TrialRow, attempt.trial_id)
         campaign = session.get(CampaignRow, trial.campaign_id)
         max_replacements = (
@@ -735,7 +820,10 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
                 exhausted += 1
             continue
 
-        # item.type == "verification"
+        # item.type == "verification" | "regrade" (codex-audit finding 3, second review round):
+        # an expired regrade item is swept identically to verification - its verifier credential
+        # was already revoked at the top of this loop, and recovery either resumes from a
+        # recorded evaluation or requeues a fresh item of the same type in place.
         evaluation = (
             session.execute(select(EvaluationRow).where(EvaluationRow.candidate_id == candidate.id)).scalar_one_or_none()
             if candidate is not None else None
@@ -801,6 +889,190 @@ def deactivate_kill_switch(session: Session) -> None:
     row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
     row.active = False
     session.commit()
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def issue_attempt_credential(
+    session: Session, *, attempt_id: uuid.UUID, actor_role: str, work_item_id: uuid.UUID, worker_id: str, lease_generation: int,
+    ttl_seconds: int = DEFAULT_CREDENTIAL_TTL_SECONDS,
+) -> IssuedAttemptCredential:
+    """ENG-020 (spec section 37), lease-fenced (codex-audit finding 3): issue a short-lived,
+    per-role, per-attempt token. The unique (attempt_id, actor_role) constraint means a fresh
+    issue ROTATES the previous credential for that role (one live credential per role at a
+    time), and the plaintext is returned exactly once - the caller delivers it to a subprocess
+    environment; only the sha256 hash is stored.
+
+    Issuance is FENCED to the caller's work-item lease: it succeeds only while the
+    (work_item_id, worker_id, lease_generation) triple matches the live leased row - FOR THIS
+    SAME ATTEMPT - with an unexpired lease, under that row's lock. A stale worker whose lease
+    expired or was reassigned (generation bumped by a new claimant) gets LeaseFenceError and
+    the credential, current or otherwise, is untouched. The fence identity is stored on the
+    row, so the audit can attribute any accepted token to the exact lease that minted it.
+    Issuance is additionally scoped by WORK-ITEM TYPE (codex-audit finding 3, second review
+    round): only an `engineering` lease may issue the candidate-role credential, only a
+    `verification`/`regrade` lease the verifier-role credential - a request whose cross-attempt
+    or cross-role identity does not line up is refused, never minted. Worker (candidate/
+    verifier) calls only; callers that must impersonate an operator cannot mint one of these
+    because that is an entirely different, role-checked token class."""
+    if actor_role not in CREDENTIAL_ROLES:
+        raise ValueError(f"unknown actor_role {actor_role!r}; expected one of {CREDENTIAL_ROLES}")
+    lease = session.execute(
+        select(WorkItemRow)
+        .where(
+            WorkItemRow.id == work_item_id,
+            WorkItemRow.attempt_id == attempt_id,
+            WorkItemRow.worker_id == worker_id,
+            WorkItemRow.generation == lease_generation,
+            WorkItemRow.state == "leased",
+            WorkItemRow.lease_expiry > datetime.now(timezone.utc),
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if lease is None:
+        session.rollback()
+        raise LeaseFenceError(
+            "credential issuance refused: this worker/generation no longer holds the work-item lease "
+            f"for this attempt (work_item={work_item_id}, attempt={attempt_id}, worker={worker_id!r}, generation={lease_generation})"
+        )
+    allowed_roles = _WORK_ITEM_TYPE_ROLES.get(lease.type, ())
+    if actor_role not in allowed_roles:
+        session.rollback()
+        raise ValueError(
+            f"credential issuance refused: work item type {lease.type!r} may only mint "
+            f"{allowed_roles or 'no'} role credential(s), not {actor_role!r}"
+        )
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+    row = session.execute(
+        select(AttemptCredentialRow)
+        .where(AttemptCredentialRow.attempt_id == attempt_id, AttemptCredentialRow.actor_role == actor_role)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if row is None:
+        session.add(
+            AttemptCredentialRow(
+                attempt_id=attempt_id,
+                actor_role=actor_role,
+                token_hash=_hash_token(token),
+                expires_at=expires_at,
+                work_item_id=work_item_id,
+                worker_id=worker_id,
+                lease_generation=lease_generation,
+            )
+        )
+    else:
+        row.token_hash = _hash_token(token)
+        row.expires_at = expires_at
+        row.revoked_at = None
+        row.work_item_id = work_item_id
+        row.worker_id = worker_id
+        row.lease_generation = lease_generation
+    append_attempt_event(session, attempt_id=attempt_id, event_type=f"credential.{actor_role}.issued", payload={"ttl_seconds": ttl_seconds, "work_item_id": str(work_item_id), "worker_id": worker_id})
+    session.commit()
+    return IssuedAttemptCredential(token=token, expires_at=expires_at)
+
+
+def verify_attempt_credential(session: Session, *, attempt_id: uuid.UUID, actor_role: str, token: str) -> bool:
+    """ENG-020 (spec section 37): role-scoped, attempt-scoped proof of identity for a presented
+    token - the check succeeds only when the exact (attempt_id, actor_role) row exists, is not
+    revoked, is not expired, and hashes to the presented token. This is what a trusted VERIFY
+    subprocess (or candidate code) uses to authenticate to the control plane as that attempt's
+    verifier (or candidate), never as the operator or any other attempt."""
+    if actor_role not in CREDENTIAL_ROLES:
+        return False
+    row = session.execute(
+        select(AttemptCredentialRow)
+        .where(AttemptCredentialRow.attempt_id == attempt_id, AttemptCredentialRow.actor_role == actor_role)
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    if row.revoked_at is not None:
+        return False
+    if row.expires_at <= datetime.now(timezone.utc):
+        return False
+    return secrets.compare_digest(row.token_hash, _hash_token(token))
+
+
+def _mark_credentials_revoked(session: Session, attempt_id: uuid.UUID, *, actor_roles: Sequence[str], commit: bool) -> int:
+    """Internal: flip revoked_at on the matching live credential rows for an attempt. With
+    commit=False this participates in the CALLER's transaction (the reconciler must revoke
+    both roles inside its single recovery pass); the public wrappers commit."""
+    now = datetime.now(timezone.utc)
+    updated = session.execute(
+        update(AttemptCredentialRow)
+        .where(
+            AttemptCredentialRow.attempt_id == attempt_id,
+            AttemptCredentialRow.actor_role.in_(actor_roles),
+            AttemptCredentialRow.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    if commit:
+        session.commit()
+    return updated.rowcount
+
+
+def revoke_attempt_credential(
+    session: Session, *, attempt_id: uuid.UUID, actor_role: str,
+    work_item_id: uuid.UUID, worker_id: str, lease_generation: int,
+) -> bool:
+    """Revoke the live credential for (attempt_id, actor_role) - what a worker does when its
+    phase ends, so the scoped identity dies even before its expiry. FENCED by the issuer's
+    stored lease identity (codex-audit finding 3, second review round): only the exact
+    (work_item_id, worker_id, lease_generation) under which the credential row was issued may
+    revoke it. A stale worker whose delayed finally arrives AFTER a new worker already rotated
+    the token now NO-OPS - the current worker's fresh token is untouched - since the row's
+    fence identity now belongs to the replacement lease. Idempotent: revoking an
+    already-revoked/missing/non-matching credential returns False and changes nothing. The
+    reconciler's wholesale sweep uses the separate, unconditional revoke_attempt_credentials
+    when the lease actually died."""
+    if actor_role not in CREDENTIAL_ROLES:
+        return False
+    now = datetime.now(timezone.utc)
+    updated = session.execute(
+        update(AttemptCredentialRow)
+        .where(
+            AttemptCredentialRow.attempt_id == attempt_id,
+            AttemptCredentialRow.actor_role == actor_role,
+            AttemptCredentialRow.revoked_at.is_(None),
+            AttemptCredentialRow.work_item_id == work_item_id,
+            AttemptCredentialRow.worker_id == worker_id,
+            AttemptCredentialRow.lease_generation == lease_generation,
+        )
+        .values(revoked_at=now)
+    )
+    session.commit()
+    return updated.rowcount == 1
+
+
+def revoke_attempt_credentials(session: Session, *, attempt_id: uuid.UUID, commit: bool = True) -> int:
+    """Revoke EVERY live credential for the attempt (both candidate and verifier) - what lease
+    recovery calls when the work item died without a normal-path revoke (worker crash, lease
+    expiry, kill-switch teardown, reconciler sweep), so a dead worker's token is NEVER usable
+    for the remainder of its TTL. Returns the number of rows revoked. Non-committing assembly
+    for callers that must revoke inside their own transaction (commit=False)."""
+    return _mark_credentials_revoked(session, attempt_id, actor_roles=list(CREDENTIAL_ROLES), commit=commit)
+
+
+def attempt_credential_status(session: Session, *, attempt_id: uuid.UUID, actor_role: str) -> AttemptCredentialStatus:
+    """Read-only status of a credential row (or that no credential exists) - for evidence and
+    tests; carries no secret, only the hash's presence."""
+    row = session.execute(
+        select(AttemptCredentialRow)
+        .where(AttemptCredentialRow.attempt_id == attempt_id, AttemptCredentialRow.actor_role == actor_role)
+    ).scalar_one_or_none()
+    if row is None:
+        return AttemptCredentialStatus(actor_role=actor_role, issued_at=None, expires_at=None, revoked_at=None, valid=False)
+    now = datetime.now(timezone.utc)
+    valid = row.revoked_at is None and row.expires_at > now
+    return AttemptCredentialStatus(
+        actor_role=row.actor_role, issued_at=row.issued_at, expires_at=row.expires_at, revoked_at=row.revoked_at, valid=valid,
+        work_item_id=row.work_item_id, worker_id=row.worker_id, lease_generation=row.lease_generation,
+    )
 
 
 def record_infrastructure_outcome(session: Session, campaign_id: uuid.UUID, execution_validity: str) -> bool:

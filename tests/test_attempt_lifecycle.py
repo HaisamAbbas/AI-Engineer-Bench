@@ -62,6 +62,25 @@ def _oversized_result_evaluator(candidate_path: Path, stop=None) -> dict[str, ob
     return {"pass": True, "payload": "x" * (9 * 1024 * 1024)}
 
 
+def _credential_echo_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
+    """Module-level (picklable for the spawn-based VERIFY subprocess): proves the
+    ENG-020 verifier-role attempt variables reached the isolated evaluator process."""
+    return {"pass": True, "credential_seen": os.environ.get("AIEB_ATTEMPT_CREDENTIAL")}
+
+
+def _secret_probe_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
+    """Module-level (picklable for the spawn-based VERIFY subprocess): proves the scrub
+    (codex-audit finding 2) - the child's environment holds the allowlisted members and the
+    delivered AIEB_* attempt vars, but NEVER the worker's control-plane secrets."""
+    return {
+        "pass": True,
+        "credential_seen": os.environ.get("AIEB_ATTEMPT_CREDENTIAL"),
+        "database_url_seen": os.environ.get("AIEB_DATABASE_URL", "<absent>"),
+        "build_token_seen": os.environ.get("CI_BUILD_TOKEN", "<absent>"),
+        "path_present": bool(os.environ.get("PATH")),
+    }
+
+
 def _tree_spawning_evaluator(candidate_path: Path, stop=None) -> dict[str, object]:
     """Spawn a server-like descendant and then ignore VERIFY cancellation."""
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -259,6 +278,203 @@ class AttemptLifecycleTests(unittest.TestCase):
         self.assertTrue(outcome.evidence_path.is_file())
         self.assertFalse((self.root / "attempts" / "valid" / "engineer").exists())
         self.assertFalse((self.root / "attempts" / "valid" / "build").exists())
+
+    def test_engineering_extra_env_is_delivered_to_the_subprocess(self) -> None:
+        """ENG-020 scoped-credential delivery, candidate role: the contestant code runs as a
+        subprocess, so the attempt variables must reach its environment - a credential never
+        delivered to the code that should present it is not a credential."""
+        script = self.script(
+            "env-echo.py",
+            "import os\nprint(os.environ['AIEB_ATTEMPT_CREDENTIAL'])\n" + self.reference_editor(),
+        )
+        config = AttemptConfig(
+            **{
+                **self.config("env-echo", script, deadline=20).__dict__,
+                "engineering": EngineeringCommand(
+                    (sys.executable, str(script)),
+                    20,
+                    extra_env={
+                        "AIEB_ATTEMPT_ID": "attempt-env-echo",
+                        "AIEB_ATTEMPT_ROLE": "candidate",
+                        "AIEB_ATTEMPT_CREDENTIAL": "candidate-token-abc",
+                    },
+                ),
+            }
+        )
+        outcome = self.runner.run_engineering(config)
+        self.assertIsNotNone(outcome.candidate)
+        self.assertIn("candidate-token-abc", outcome.engineering_stdout)
+
+    def test_verification_attempt_vars_are_delivered_to_the_isolated_verify_subprocess(self) -> None:
+        """ENG-020 verifier role: the verify subprocess (spawn-based, own process tree) sees
+        the issued attempt variables, so the verifier can prove its scoped identity."""
+        outcome = self._collected_outcome("verifier-env")
+        resumed = AttemptOutcome(outcome.attempt_id, candidate=outcome.candidate)
+        verified = self.runner.run_verification(
+            self.config("verifier-env", self.script("verifier-env.py", self.reference_editor()), 20),
+            _credential_echo_evaluator,
+            resumed,
+            attempt_vars={
+                "AIEB_ATTEMPT_ID": "attempt-verifier-env",
+                "AIEB_ATTEMPT_ROLE": "verifier",
+                "AIEB_ATTEMPT_CREDENTIAL": "verifier-token-xyz",
+            },
+        )
+        self.assertEqual(verified.verdict, Verdict.PASS, verified.diagnostics)
+        self.assertEqual(verified.evaluation["credential_seen"], "verifier-token-xyz")
+
+    def test_subprocess_environ_never_inherits_worker_secrets(self) -> None:
+        """Codex-audit finding 2: candidate code and the trusted evaluator run as subprocesses
+        of the worker, so they must NEVER inherit the worker's full environment. Prove it by
+        planting sentinel secrets (a control-plane DB URL and a build token) in the parent
+        process environment and asserting neither reaches the engineering subprocess nor the
+        isolated verify subprocess - while the runner's own surface (an allowlisted member like
+        PATH, and the delivered AIEB_* attempt vars) still does, so legitimate tooling does not
+        silently break."""
+        planted = {
+            "AIEB_DATABASE_URL": "postgresql://sentinel:PLANTED@db.example/compromised",
+            "CI_BUILD_TOKEN": "PLANTED_TOK",
+        }
+        kept = {key: os.environ.get(key) for key in planted}
+        os.environ.update(planted)
+        try:
+            script = self.script(
+                "env-scrub.py",
+                "import os\n"
+                "print('CRED', os.environ.get('AIEB_ATTEMPT_CREDENTIAL', '<absent>'))\n"
+                "print('DB', os.environ.get('AIEB_DATABASE_URL', '<absent>'))\n"
+                "print('TOK', os.environ.get('CI_BUILD_TOKEN', '<absent>'))\n"
+                + self.reference_editor(),
+            )
+            config = AttemptConfig(
+                **{
+                    **self.config("env-scrub", script, deadline=20).__dict__,
+                    "engineering": EngineeringCommand(
+                        (sys.executable, str(script)),
+                        20,
+                        extra_env={
+                            "AIEB_ATTEMPT_ID": "attempt-env-scrub",
+                            "AIEB_ATTEMPT_ROLE": "candidate",
+                            "AIEB_ATTEMPT_CREDENTIAL": "candidate-token-scrubbed",
+                        },
+                    ),
+                }
+            )
+            outcome = self.runner.run_engineering(config)
+            self.assertIsNotNone(outcome.candidate, outcome.diagnostics)
+            self.assertIn("CRED candidate-token-scrubbed", outcome.engineering_stdout)
+            self.assertNotIn(planted["AIEB_DATABASE_URL"], outcome.engineering_stdout)
+            self.assertNotIn("DB postgresql://", outcome.engineering_stdout)
+            self.assertNotIn(planted["CI_BUILD_TOKEN"], outcome.engineering_stdout)
+            self.assertNotIn("TOK PLANTED_TOK", outcome.engineering_stdout)
+
+            verified = self.runner.run_verification(
+                config,
+                _secret_probe_evaluator,
+                AttemptOutcome(outcome.attempt_id, candidate=outcome.candidate),
+                attempt_vars={
+                    "AIEB_ATTEMPT_ID": "attempt-env-scrub-verify",
+                    "AIEB_ATTEMPT_ROLE": "verifier",
+                    "AIEB_ATTEMPT_CREDENTIAL": "verifier-token-scrubbed",
+                },
+            )
+            self.assertEqual(verified.verdict, Verdict.PASS, verified.diagnostics)
+            self.assertEqual(verified.evaluation["credential_seen"], "verifier-token-scrubbed")
+            self.assertNotEqual(verified.evaluation["database_url_seen"], planted["AIEB_DATABASE_URL"])
+            self.assertNotEqual(verified.evaluation["build_token_seen"], planted["CI_BUILD_TOKEN"])
+            self.assertTrue(verified.evaluation["path_present"], "allowlisted PATH must survive the scrub")
+        finally:
+            for key, value in kept.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_import_time_env_leak_is_closed_evaluator_module_runs_after_scrub(self) -> None:
+        """Codex-audit finding 4 (second review round): spawn unpickles the Process target and
+        args at child bootstrap, BEFORE _verify_subprocess_entrypoint scrubs os.environ - so a
+        pickled evaluator FUNCTION forced the evaluator's module to be imported (and its
+        import-time code to run) against the worker's unsanitized environment. The fix passes
+        the evaluator as (module, qualname) identity STRINGS and resolves it - importing the
+        module - only after the scrub, so top-level module code sees the scrubbed env.
+        fixtures/worker/import_time_probe.py snapshots os.environ AT IMPORT TIME and reports
+        it; run verification against it with planted secrets and assert its import-time
+        snapshot never saw them, even though the module was fresh (child-side) at spawn."""
+        from tests.fixtures.worker.import_time_probe import evaluate as import_time_probe_evaluate
+
+        planted = {
+            "AIEB_DATABASE_URL": "postgresql://sentinel:PLANTED@db.example/compromised",
+            "CI_BUILD_TOKEN": "PLANTED_TOK",
+        }
+        kept = {key: os.environ.get(key) for key in planted}
+        os.environ.update(planted)
+        try:
+            collected = self._collected_outcome("import-time-leak")
+            verified = self.runner.run_verification(
+                self.config("import-time-leak", self.script("import-time-leak.py", self.reference_editor()), 20),
+                import_time_probe_evaluate,
+                AttemptOutcome(collected.attempt_id, candidate=collected.candidate),
+                attempt_vars={
+                    "AIEB_ATTEMPT_ID": "attempt-import-time-leak",
+                    "AIEB_ATTEMPT_ROLE": "verifier",
+                    "AIEB_ATTEMPT_CREDENTIAL": "verifier-token-import-time",
+                },
+            )
+            self.assertEqual(verified.verdict, Verdict.PASS, verified.diagnostics)
+            self.assertEqual(
+                verified.evaluation["import_time_db_url"], "<absent>",
+                "import-time evaluator module code observed the worker's DB secret before the scrub",
+            )
+            self.assertEqual(
+                verified.evaluation["import_time_build_token"], "<absent>",
+                "import-time evaluator module code observed the worker's build token before the scrub",
+            )
+            self.assertEqual(
+                verified.evaluation["import_time_secret_substr_count"], 0,
+                "import-time evaluator module code observed a secret-named environment member",
+            )
+            self.assertNotEqual(verified.evaluation["runtime_db_url"], planted["AIEB_DATABASE_URL"])
+            self.assertNotEqual(verified.evaluation["runtime_build_token"], planted["CI_BUILD_TOKEN"])
+        finally:
+            for key, value in kept.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_proxy_value_embedded_credentials_are_scrubbed_from_child_env(self) -> None:
+        """Codex-audit finding 4 (second review round): a NAME allowlist is not enough when the
+        allowlisted variable's VALUE smuggles a credential - an operator's
+        HTTPS_PROXY=http://proxyuser:proxypass@corp.example:3128 hands 'proxypass' to candidate
+        and evaluator code. _sanitized_child_env strips userinfo and URL query credentials from
+        every allowlisted value it forwards."""
+        from aieb_runner.lifecycle import _sanitized_child_env
+
+        planted = {
+            "HTTPS_PROXY": "http://proxyuser:proxypass@corp.example:3128",
+            "http_proxy": "http://user:pass@10.0.0.1:8080?password=abc",
+            "ALL_PROXY": "socks5h://admin:sekret@proxy.local:1080",
+        }
+        kept = {key: os.environ.get(key) for key in planted}
+        os.environ.update(planted)
+        try:
+            scrubbed = _sanitized_child_env()
+            https = scrubbed.get("HTTPS_PROXY", "")
+            self.assertIn("corp.example:3128", https, "proxy host must survive the scrub")
+            self.assertNotIn("proxyuser", https)
+            self.assertNotIn("proxypass", https)
+            http = scrubbed.get("http_proxy", "")
+            self.assertNotIn("user:pass@", http)
+            self.assertNotIn("password=abc", http)
+            all_proxy = scrubbed.get("ALL_PROXY", "")
+            self.assertIn("proxy.local:1080", all_proxy)
+            self.assertNotIn("admin:sekret@", all_proxy)
+        finally:
+            for key, value in kept.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_deadline_stops_process_tree_before_artifact_freeze(self) -> None:
         escaped_marker = repr(str(self.root / "late-child-marker.txt"))

@@ -15,7 +15,7 @@ import sys
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Mapping
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,7 +69,20 @@ class StoredCandidateUnavailableError(ValueError):
     crashing the worker process."""
 
 
-def _editor_script(task_dir: Path, candidate_variant: str, source_dir: str, script_path: Path, delay_seconds: float = 0) -> EngineeringCommand:
+def _attempt_env(attempt_id: uuid.UUID, actor_role: str, token: str) -> dict[str, str]:
+    """ENG-020 (spec section 37): the attempt variables delivered to a phase subprocess so
+    the contestant/verifier code can present its scoped credential to the control plane."""
+    return {
+        "AIEB_ATTEMPT_ID": str(attempt_id),
+        "AIEB_ATTEMPT_ROLE": actor_role,
+        "AIEB_ATTEMPT_CREDENTIAL": token,
+    }
+
+
+def _editor_script(
+    task_dir: Path, candidate_variant: str, source_dir: str, script_path: Path, delay_seconds: float = 0,
+    extra_env: Mapping[str, str] | None = None,
+) -> EngineeringCommand:
     delay = f"import time\ntime.sleep({delay_seconds})\n" if delay_seconds > 0 else ""
     if candidate_variant == "baseline":
         script_path.write_text(delay + "pass\n", encoding="utf-8")
@@ -80,7 +93,7 @@ def _editor_script(task_dir: Path, candidate_variant: str, source_dir: str, scri
             f"shutil.copyfile({source}, Path.cwd() / {source_dir!r} / 'backend.py')\n",
             encoding="utf-8",
         )
-    return EngineeringCommand((sys.executable, str(script_path)), 30)
+    return EngineeringCommand((sys.executable, str(script_path)), 30, extra_env=dict(extra_env or {}))
 
 
 @dataclass(frozen=True)
@@ -319,6 +332,27 @@ def execute_leased_engineering(
     if cancel_event is None:
         cancel_event = threading.Event()
 
+    # ENG-020 (spec section 37), lease-fenced (codex-audit finding 3): issue the candidate-role
+    # scoped credential under THIS lease - the worker_id/generation triple must still match the
+    # live leased row or issuance is refused (LeaseFenceError), failing safe exactly like
+    # heartbeat fencing. The token is delivered to the engineering subprocess environment.
+    # Revoked when this phase ends - the credential dies even before its expiry and never
+    # outlives the phase that used it; if THIS worker crashes, the reconciler's lease sweep
+    # revokes it (a dead worker's token is never usable for the rest of its TTL).
+    try:
+        with session_factory() as session:
+            credential = repository.issue_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="candidate",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
+            )
+    except repository.LeaseFenceError:
+        return ExecutionResult(finalized=False, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+
+    engineering = _editor_script(
+        task_dir, candidate_variant, source_dir, script, delay_seconds=engineering_delay_seconds,
+        extra_env=_attempt_env(leased.attempt_id, "candidate", credential.token),
+    )
+
     stop_heartbeat = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, args=(session_factory, leased, worker_id, lease_seconds, stop_heartbeat), daemon=True,
@@ -338,7 +372,7 @@ def execute_leased_engineering(
                 work_root=attempt_work_root / "runs",
                 base_revision_digest="1" * 64,
                 submission=SubmissionPolicy(include=(f"{source_dir}/**",), protected=("dev_tests/**",), max_artifact_bytes=52_428_800),
-                engineering=_editor_script(task_dir, candidate_variant, source_dir, script, delay_seconds=engineering_delay_seconds),
+                engineering=engineering,
                 access_scope=str(leased.attempt_id),
             ),
             cancel_event=cancel_event,
@@ -348,6 +382,11 @@ def execute_leased_engineering(
         heartbeat_thread.join(timeout=5)
         stop_cancel_poll.set()
         cancel_poll_thread.join(timeout=5)
+        with session_factory() as session:
+            repository.revoke_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="candidate",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
+            )
 
     if outcome.execution_validity == ExecutionValidity.CANCELLED:
         with session_factory() as session:
@@ -438,7 +477,6 @@ def execute_leased_verification(
         task_slug = task_row.slug
         task_version = task_row.version
         campaign_id = trial.campaign_id
-        loaded = repository.load_stored_candidate(session, leased.attempt_id)
         from ..regrading import correction_for_attempt, installed_scoring_bundle
         correction = correction_for_attempt(session, leased.attempt_id) if leased.work_type == "regrade" else None
         if leased.work_type == "regrade" and (
@@ -451,19 +489,30 @@ def execute_leased_verification(
             )
             return ExecutionResult(finalized=finalized, execution_validity="infrastructure_invalid", verdict=None)
 
-    if loaded is None:
-        # Should never happen in practice - verification is only ever enqueued
-        # right after record_candidate succeeds - but fail safe rather than
-        # crash if it somehow does.
+    # ENG-020 (spec section 37), lease-fenced (codex-audit finding 3, second review round):
+    # issue the verifier-role scoped credential under THIS lease FIRST, then CONSUME the
+    # credential-gated candidate capability with it (finding 3: verification must actually
+    # authenticate to the persisted candidate, not reach it through a bare worker DB session).
+    # A stale worker's issue is refused (LeaseFenceError -> handle below). Revoked when this
+    # phase ends, on any infra abort below, or by the reconciler if THIS worker crashes.
+    try:
         with session_factory() as session:
-            finalized = repository.finalize(
-                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
+            credential = repository.issue_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="verifier",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
             )
-        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+    except repository.LeaseFenceError:
+        return ExecutionResult(finalized=False, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
 
-    if evidence_digest(loaded.stored_candidate) != loaded.stored_candidate_digest:
+    def _abort_infra() -> ExecutionResult:
+        """Revoke the just-issued verifier credential and finalize the lease as an
+        infrastructure failure - every infra abort AFTER issuance must kill the credential it
+        minted, exactly as the phase-ending finally does (codex finding 3)."""
         with session_factory() as session:
+            repository.revoke_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="verifier",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
+            )
             finalized = repository.finalize(
                 session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
                 attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
@@ -471,17 +520,30 @@ def execute_leased_verification(
         return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
 
     try:
+        with session_factory() as session:
+            loaded = repository.load_stored_candidate_authorized(
+                session, attempt_id=leased.attempt_id, actor_role="verifier", token=credential.token,
+            )
+    except repository.CredentialDeniedError:
+        # Just-issued credential should verify; if the gate somehow refuses, fail safe.
+        return _abort_infra()
+
+    if loaded is None:
+        # Should never happen in practice - verification is only ever enqueued
+        # right after record_candidate succeeds - but fail safe rather than
+        # crash if it somehow does.
+        return _abort_infra()
+
+    if evidence_digest(loaded.stored_candidate) != loaded.stored_candidate_digest:
+        return _abort_infra()
+
+    try:
         deserialized_candidate = _deserialize_stored_candidate(loaded.stored_candidate)
     except StoredCandidateUnavailableError:
         # Missing/legacy/malformed stored_candidate (review finding #4): fail
         # safe to infrastructure_invalid rather than raising a bare KeyError
         # out of a worker process.
-        with session_factory() as session:
-            finalized = repository.finalize(
-                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
-            )
-        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+        return _abort_infra()
 
     # The persisted candidate is checked against CandidateRow's own
     # authoritative digests before anything is built or scored under its
@@ -492,15 +554,17 @@ def execute_leased_verification(
         deserialized_candidate.manifest.full_tree_hash != loaded.tree_digest
         or deserialized_candidate.manifest.digest() != loaded.manifest_digest
     ):
-        with session_factory() as session:
-            finalized = repository.finalize(
-                session, work_item_id=leased.work_item_id, worker_id=worker_id, generation=leased.generation,
-                attempt_id=leased.attempt_id, terminal_status="infrastructure_invalid", done=False,
-            )
-        return ExecutionResult(finalized=finalized, execution_validity=ExecutionValidity.INFRASTRUCTURE_INVALID.value, verdict=None)
+        return _abort_infra()
 
     runtime = TASK_RUNTIMES.get(task_slug)
     if runtime is None:
+        # No supported local evaluator - the verifier credential was already issued above, so
+        # kill it before raising so this path can never leak a live scoped identity.
+        with session_factory() as session:
+            repository.revoke_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="verifier",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
+            )
         raise UnsupportedTaskError(f"task {task_slug} has no supported local evaluator")
     source_dir, evaluator_module = runtime
     if str(ROOT) not in sys.path:
@@ -528,6 +592,9 @@ def execute_leased_verification(
     if cancel_event is None:
         cancel_event = threading.Event()
 
+    # The verifier credential was issued EARLIER (right after the lease/task plumbing, before
+    # any candidate read) and is delivered as attempt variables into the isolated VERIFY
+    # subprocess so the trusted evaluator can prove its scoped identity to the control plane.
     stop_heartbeat = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_heartbeat_loop, args=(session_factory, leased, worker_id, lease_seconds, stop_heartbeat), daemon=True,
@@ -540,12 +607,20 @@ def execute_leased_verification(
     )
     cancel_poll_thread.start()
     try:
-        outcome = runner.run_verification(config, evaluate, outcome, cancel_event=cancel_event)
+        outcome = runner.run_verification(
+            config, evaluate, outcome, cancel_event=cancel_event,
+            attempt_vars=_attempt_env(leased.attempt_id, "verifier", credential.token),
+        )
     finally:
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=5)
         stop_cancel_poll.set()
         cancel_poll_thread.join(timeout=5)
+        with session_factory() as session:
+            repository.revoke_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="verifier",
+                work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
+            )
 
     if outcome.execution_validity == ExecutionValidity.CANCELLED:
         with session_factory() as session:
