@@ -87,6 +87,10 @@ class ApiServiceTests(unittest.TestCase):
         with engine.begin() as connection:
             for table in reversed(api_models.Base.metadata.sorted_tables):
                 connection.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
+            # The kill_switch and system_fence singletons are seeded once by their migrations,
+            # not re-created by this per-test TRUNCATE - reseed them so tests find their rows.
+            connection.execute(text("INSERT INTO kill_switch (id, active) VALUES (1, false)"))
+            connection.execute(text("INSERT INTO system_fence (id, lease_fence_epoch) VALUES (1, 0)"))
         self.client = TestClient(self.app)
         self.client.__enter__()
         self.addCleanup(lambda: self.client.__exit__(None, None, None))
@@ -2601,6 +2605,226 @@ class ApiServiceTests(unittest.TestCase):
             result = session.execute(update(api_models.PublicationRow).where(api_models.PublicationRow.id == publication_id).values(status="withdrawn"))
             session.commit()
             self.assertEqual(result.rowcount, 1)
+
+    # ---- ENG-020: kill-switch API -----------------------------------
+
+    def _seed_admin(self) -> dict[str, str]:
+        return _auth_header(("administrator",))
+
+    def test_kill_switch_status_is_inactive_by_default(self) -> None:
+        response = self.client.get("/v1/kill-switch", headers=self._seed_admin())
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["active"])
+        self.assertIsNone(body["reason"])
+        self.assertIsNone(body["activated_at"])
+        self.assertIsNone(body["campaigns_teardown_requested"])
+
+    def test_kill_switch_status_requires_authentication(self) -> None:
+        response = self.client.get("/v1/kill-switch")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["code"], "unauthenticated")
+
+    def test_kill_switch_status_is_readable_by_operator_role(self) -> None:
+        response = self.client.get("/v1/kill-switch", headers=_auth_header(("operator",)))
+        self.assertEqual(response.status_code, 200)
+
+    def test_activate_kill_switch_requires_administrator_role(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "provider outage"},
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": "ks-1"},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "forbidden")
+
+    def test_activate_kill_switch_succeeds(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "provider outage"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-2"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["active"])
+        self.assertEqual(body["reason"], "provider outage")
+        self.assertIsNotNone(body["activated_at"])
+
+    def test_activate_kill_switch_requires_reason(self) -> None:
+        # Missing field entirely
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-3"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_activate_kill_switch_rejects_empty_reason(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "  "},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-empty"},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_activate_kill_switch_requires_idempotency_key(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "missing key"},
+            headers=self._seed_admin(),
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_deactivate_kill_switch_requires_idempotency_key(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/deactivate",
+            headers=self._seed_admin(),
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_activate_kill_switch_conflicts_when_already_active(self) -> None:
+        # Activate first
+        self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "first outage"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-4"},
+        )
+        # Activate again - should conflict
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "second outage"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-5"},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"]["code"], "conflict")
+
+    def test_deactivate_kill_switch_succeeds(self) -> None:
+        # Activate first
+        self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "brief outage"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-6"},
+        )
+        # Deactivate - the status response clears reason/activated_at when inactive
+        response = self.client.post(
+            "/v1/kill-switch/deactivate",
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-7"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["active"])
+        self.assertIsNone(body["reason"])
+        self.assertIsNone(body["activated_at"])
+
+    def test_deactivate_kill_switch_idempotent_when_already_inactive(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/deactivate",
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-8"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["active"])
+
+    def test_deactivate_kill_switch_requires_administrator_role(self) -> None:
+        response = self.client.post(
+            "/v1/kill-switch/deactivate",
+            headers=_auth_header(("operator",)) | {"Idempotency-Key": "ks-9"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_activate_kill_switch_is_idempotent_with_same_key(self) -> None:
+        body = {"reason": "provider outage"}
+        first = self.client.post(
+            "/v1/kill-switch/activate",
+            json=body,
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-10"},
+        )
+        second = self.client.post(
+            "/v1/kill-switch/activate",
+            json=body,
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-10"},
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json(), second.json())
+        with db.session_factory()() as session:
+            self.assertEqual(session.query(api_models.KillSwitchRow).count(), 1)
+
+    def test_concurrent_activate_same_idempotency_key_replays_not_conflict(self) -> None:
+        """A retry arriving while activation is still in flight must replay the
+        winning response after the singleton-row lock is released, rather than
+        mistaking the now-active switch for a different request's conflict."""
+        headers = self._seed_admin() | {"Idempotency-Key": "ks-concurrent-same-key"}
+        barrier = threading.Barrier(2)
+        results: list[tuple[int, dict]] = []
+
+        def call() -> None:
+            barrier.wait(timeout=5)
+            response = self.client.post(
+                "/v1/kill-switch/activate", json={"reason": "provider outage"}, headers=headers,
+            )
+            results.append((response.status_code, response.json()))
+
+        threads = [threading.Thread(target=call) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(status == 200 for status, _ in results), results)
+        self.assertEqual(results[0][1], results[1][1])
+
+    def test_kill_switch_status_fails_closed_when_singleton_is_missing(self) -> None:
+        with db.session_factory()() as session:
+            session.execute(text("DELETE FROM kill_switch WHERE id = 1"))
+            session.commit()
+
+        response = self.client.get("/v1/kill-switch", headers=self._seed_admin())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "service_unavailable")
+
+    def test_activate_kill_switch_replays_on_conflict_after_first_activation(self) -> None:
+        """Replaying the SAME idempotency key after the switch was already
+        activated (by a prior call with a DIFFERENT key) returns the original
+        stored response, not a 409 - the idempotency record is hit before the
+        conflict check."""
+        self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "first"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-first"},
+        )
+        # Now replay a DIFFERENT idempotency key with the same body - this
+        # is a genuine conflict (different key, key already active).
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "first"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-second"},
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_deactivate_then_activate_is_not_idempotent_replay(self) -> None:
+        """After deactivating, a fresh activate with a new key must succeed -
+        the deactivation did not permanently break the switch."""
+        self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "cycle-1"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-cycle-1"},
+        )
+        self.client.post(
+            "/v1/kill-switch/deactivate",
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-cycle-2"},
+        )
+        # Re-activate with a fresh key
+        response = self.client.post(
+            "/v1/kill-switch/activate",
+            json={"reason": "cycle-2"},
+            headers=self._seed_admin() | {"Idempotency-Key": "ks-cycle-3"},
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["active"])
+        self.assertEqual(body["reason"], "cycle-2")
 
 
 if __name__ == "__main__":

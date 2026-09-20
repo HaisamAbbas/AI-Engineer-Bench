@@ -4,10 +4,24 @@ Each entry ties the spec's named incident to real, existing mechanisms in this c
 aspirational steps. None of these has been exercised against real production traffic (none
 exists); each cites the test that exercises the underlying mechanism.
 
+## Observability: scraping `/metrics`
+
+`GET /metrics` on the API process exports the six metrics `deploy/alerts/prometheus-rules.yml`'s
+alert rules reference, as Prometheus text-exposition-format (0.0.4). It requires the same
+bearer-token authentication and operator/reviewer/administrator role every other operator-facing
+route in this app already requires (not a public endpoint) and returns
+`Content-Type: text/plain; version=0.0.4; charset=utf-8`. See
+`docs/implementation/evidence/ENG-020/operations-review.md`'s "Gap 6 closure" section for the full
+metric-to-alert-to-runbook-anchor mapping and what is (an in-app exporter) versus is not (a
+deployed Prometheus server, Alertmanager instance, or paging pipeline - none exists) claimed. Each
+runbook entry below already cites the alert(s) that would page an operator to it if a real
+Prometheus/Alertmanager deployment existed and were scraping this endpoint.
+
 ## Provider outage
 
 1. Activate the kill switch to stop new dispatch platform-wide while investigating:
-   `repository.activate_kill_switch(session, activated_by_user_id=<admin>, reason="provider outage")`.
+   `repository.activate_kill_switch(session, activated_by_user_id=<admin>, reason="provider outage")`
+   (or the operator CLI: `python scripts/kill_switch.py activate --reason "provider outage"`).
    This also requests bounded teardown of active work via the existing cancellation machinery
    (`repository.cancel_campaign` on every non-terminal campaign).
    Tested: `tests/test_worker_leasing.py::test_kill_switch_stops_all_new_dispatch_platform_wide`.

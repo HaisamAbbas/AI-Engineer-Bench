@@ -21,6 +21,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/attempts/{attempt_id}/candidate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Attempt Candidate Endpoint
+         * @description Credential-authorized, VERIFIER-ROLE capability (codex-audit finding 1/3): return the
+         *     persisted candidate artifact for THIS attempt - including the FULL stored_candidate
+         *     payload the verification phase actually consumes, not just digests - to a process holding
+         *     a valid VERIFIER-role credential for exactly that attempt. Role-differentiated (second
+         *     review round): a candidate-role credential is 403 here - the verifier is the reader of the
+         *     persisted candidate, the candidate is its producer. This is the actual resource a scoped
+         *     identity can reach: verification consumes this same capability through
+         *     load_stored_candidate_authorized, and a stolen verifier secret is worthless outside its
+         *     one attempt. 404 when no candidate is yet persisted; 401 when no valid credential
+         *     accompanies the request; 403 when the credential is valid but not verifier-role.
+         */
+        get: operations["get_attempt_candidate_endpoint_v1_attempts__attempt_id__candidate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/attempts/{attempt_id}/credentials/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Attempt Credential Endpoint
+         * @description Validate a presented scoped credential. `valid` is a boolean so the response leaks
+         *     nothing about WHY it failed (no row / revoked / expired / wrong token / wrong role).
+         *     The expiry is returned ONLY on success: on a failed validation it is None, so a caller
+         *     probing with an invalid token learns nothing about the roll's lifetime (codex-audit
+         *     finding 5). Per-role status details are available to evidence tooling via
+         *     attempt_credential_status.
+         */
+        post: operations["verify_attempt_credential_endpoint_v1_attempts__attempt_id__credentials_verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/campaigns": {
         parameters: {
             query?: never;
@@ -467,6 +521,93 @@ export interface paths {
         get: operations["get_entrant_revision_v1_entrants__entrant_id__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kill-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Kill Switch Status
+         * @description Check whether the platform-wide kill switch is active.
+         *
+         *     Authenticated: any operator/reviewer/administrator may read the global
+         *     dispatch-control state. The response is the singleton kill_switch row's
+         *     current flags - a read, never a mutation.
+         */
+        get: operations["get_kill_switch_status_v1_kill_switch_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kill-switch/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate Kill Switch
+         * @description ENG-020 (spec sections 39/48): activate the global kill switch, stopping
+         *     ALL new dispatch platform-wide and requesting bounded teardown of active
+         *     work (cancelling every non-terminal campaign through the existing,
+         *     already-tested cancellation machinery).
+         *
+         *     Requires the `administrator` role and an `Idempotency-Key` header. The
+         *     repository locks the singleton row FOR UPDATE, stages the state
+         *     transition + campaign cancellations (non-committing), and `finalize()`
+         *     commits them together with the idempotency record in one transaction -
+         *     concurrent calls are serialized by PostgreSQL's row lock, and a crash
+         *     between the state change and the idempotency record cannot leave the
+         *     kill switch active without a replay handle.
+         */
+        post: operations["activate_kill_switch_v1_kill_switch_activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/kill-switch/deactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Deactivate Kill Switch
+         * @description ENG-020 (spec sections 39/48): deactivate the global kill switch, clearing
+         *     the flag only.
+         *
+         *     This does NOT resume any campaign the kill switch drove to
+         *     `cancelling`/`cancelled`, and does NOT clear any campaign's own
+         *     `auto_paused` flag - both are separate, deliberate operator decisions
+         *     (see the provider-outage runbook in runbooks.md).
+         *
+         *     Requires the `administrator` role and an `Idempotency-Key` header. The
+         *     Idempotency-Key is REQUIRED for every mutation, including the idempotent
+         *     no-op when the switch is already inactive, so that all mutate paths are
+         *     replay-safe. The repository stages the deactivation (non-committing);
+         *     `finalize()` commits it together with the idempotency record.
+         */
+        post: operations["deactivate_kill_switch_v1_kill_switch_deactivate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1059,6 +1200,23 @@ export interface components {
             /** State */
             state: string;
         };
+        /** CandidateArtifactResponse */
+        CandidateArtifactResponse: {
+            /** Attempt Id */
+            attempt_id: string;
+            /** Candidate Id */
+            candidate_id: string;
+            /** Manifest Digest */
+            manifest_digest: string;
+            /** Stored Candidate */
+            stored_candidate: {
+                [key: string]: unknown;
+            };
+            /** Stored Candidate Digest */
+            stored_candidate_digest: string;
+            /** Tree Digest */
+            tree_digest: string;
+        };
         /**
          * Category
          * @enum {string}
@@ -1195,6 +1353,28 @@ export interface components {
              * @constant
              */
             schema_version: "aieb.coverage-disclosure/v1";
+        };
+        /** CredentialVerifyRequest */
+        CredentialVerifyRequest: {
+            /**
+             * Actor Role
+             * @enum {string}
+             */
+            actor_role: "candidate" | "verifier";
+            /** Token */
+            token: string;
+        };
+        /** CredentialVerifyResponse */
+        CredentialVerifyResponse: {
+            /**
+             * Actor Role
+             * @enum {string}
+             */
+            actor_role: "candidate" | "verifier";
+            /** Expires At */
+            expires_at: string | null;
+            /** Valid */
+            valid: boolean;
         };
         /** CurrentIdentity */
         CurrentIdentity: {
@@ -1618,6 +1798,25 @@ export interface components {
              * Format: uuid
              */
             reviewer_id: string;
+        };
+        /** KillSwitchRequest */
+        KillSwitchRequest: {
+            /**
+             * Reason
+             * @description non-empty audit reason for activating the kill switch
+             */
+            reason: string;
+        };
+        /** KillSwitchStatus */
+        KillSwitchStatus: {
+            /** Activated At */
+            activated_at?: string | null;
+            /** Active */
+            active: boolean;
+            /** Campaigns Teardown Requested */
+            campaigns_teardown_requested?: number | null;
+            /** Reason */
+            reason?: string | null;
         };
         /** MatrixPreview */
         MatrixPreview: {
@@ -2452,6 +2651,74 @@ export interface operations {
             };
         };
     };
+    get_attempt_candidate_endpoint_v1_attempts__attempt_id__candidate_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CandidateArtifactResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_attempt_credential_endpoint_v1_attempts__attempt_id__credentials_verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attempt_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CredentialVerifyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CredentialVerifyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     create_campaign_v1_campaigns_post: {
         parameters: {
             query?: never;
@@ -3179,6 +3446,96 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntrantRevisionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_kill_switch_status_v1_kill_switch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitchStatus"];
+                };
+            };
+        };
+    };
+    activate_kill_switch_v1_kill_switch_activate_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KillSwitchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitchStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deactivate_kill_switch_v1_kill_switch_deactivate_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["KillSwitchRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitchStatus"];
                 };
             };
             /** @description Validation Error */

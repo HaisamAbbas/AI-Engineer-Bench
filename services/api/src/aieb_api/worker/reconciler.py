@@ -18,7 +18,7 @@ from sqlalchemy.orm import sessionmaker
 
 from .. import db
 from . import repository
-from .metrics import log_event
+from .metrics import inc_counter, log_event
 
 
 def _remove_orphan_allocations(work_root: Path, attempt_ids: tuple[uuid.UUID, ...]) -> list[str]:
@@ -69,6 +69,8 @@ def reconcile_once(session_factory: sessionmaker, work_root: Path | None = None)
         # of accumulating in the control-plane database (review finding #2).
         purged = repository.purge_expired_worker_artifacts(session)
     summary = replace(summary, worker_artifacts_purged=purged)
+    if purged:
+        inc_counter("aieb_reconciler_worker_artifacts_purged_total", purged)
     if summary.resumed or summary.replaced or summary.exhausted or summary.advanced or summary.requeued or purged:
         log_event(
             "reconciler.summary", resumed=summary.resumed, replaced=summary.replaced, exhausted=summary.exhausted,

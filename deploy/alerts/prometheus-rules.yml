@@ -2,10 +2,16 @@
 #
 # This is CONFIGURATION AS CODE ONLY - it is not deployed to any Prometheus/Alertmanager
 # instance, because no monitoring infrastructure exists in this environment (no cloud
-# budget/authorization; see ADR-12, DECISIONS.md "Official VM provider | Deferred"). It assumes
-# `aieb_api`/`aieb_worker` expose the named metrics via a Prometheus exporter - that exporter
-# does not exist yet either; this file documents the alerting INTENT a real deployment must
-# wire up, not a working monitoring stack.
+# budget/authorization; see ADR-12, DECISIONS.md "Official VM provider | Deferred"). Every
+# metric name below IS now really exported: `aieb_api` exposes them via a real, working
+# `GET /metrics` Prometheus text-exposition-format (0.0.4) endpoint (see
+# services/api/src/aieb_api/routes/metrics.py and worker/metrics.py; requires the same
+# authenticated operator/reviewer/administrator role every other operator route already
+# requires - it is not a public endpoint). What still does NOT exist is any deployed
+# Prometheus server, Alertmanager instance, or paging pipeline - nothing here is currently
+# scraping that endpoint or evaluating these rules for real. This file documents the
+# alerting INTENT, expressed against real metric names a real deployment can wire up,
+# not a working monitoring stack.
 groups:
   - name: aieb-operational-targets
     rules:

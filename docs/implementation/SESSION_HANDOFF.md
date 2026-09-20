@@ -807,3 +807,102 @@ The website production build succeeded and Vitest passed 30 tests. Headless Micr
 - ENG-016 remains IN_PROGRESS pending review of the follow-up. Public run selection is pinned to an immutable manifest; Run Evidence exposes trace/actions, usage, configuration, artifacts, and invalid/superseded/partial states; candidate display payloads and versioned task ticket text are integrity-bound; and the task bundle includes its ticket. Real Edge verification covers all 13 routes at 1440px and 390px, with matching `innerWidth`/`visualViewport.width`, no horizontal page overflow, real API requests, and zero axe violations.
 - The initial commit and push for this review sequence is `e1a9e9b`; the verified implementation changes after that baseline are still uncommitted for review.
 - ENG-012 remains blocked on provider/model authorization, credentials, and a spend cap; independent task reviews remain a precondition for an admitted-only ENG-013 release manifest.
+
+## ENG-020 Gap 5 - Kill-switch operator API/CLI (COMPLETE)
+
+Gap 5 implemented the operator-facing kill-switch control interface that was missing despite the
+repository-level functions existing. Added three files and modified two:
+
+- `services/api/src/aieb_api/routes/kill_switch.py` - new router with:
+  - `GET /v1/kill-switch` (read-only; operator/reviewer/administrator roles)
+  - `POST /v1/kill-switch/activate` (administrator role; requires `reason` body; 409 conflict if already active; idempotency-key protected via `check_or_reserve`/`finalize` matching the campaigns.py pattern)
+  - `POST /v1/kill-switch/deactivate` (administrator role; idempotent no-op when already inactive; a required `Idempotency-Key` even though its body is empty)
+  - Reads the `KillSwitchRow` singleton (id=1) directly via the existing `repository.activate_kill_switch` / `deactivate_kill_switch` / `is_kill_switch_active` functions (which hold the FOR UPDATE singleton lock)
+  - `_status_response` clears `reason`/`activated_at` from the response when inactive (audit fields persist on the row but are not surfaced)
+- `services/api/src/aieb_api/app.py` - registered the new router via existing `include_router` import pattern
+- `scripts/kill_switch.py` - operator CLI mirroring `scripts/fence_advance.py`: `--check` (read-only, exit 3 when active, 0 when inactive), `activate` (requires `--reason`), `deactivate`; reports `current_user` for audit visibility; `--by-user` is informational only (not authentication)
+- `services/api/src/aieb_api/worker/repository.py` - `activate_kill_switch` and `deactivate_kill_switch` now accept `commit: bool = True` (mirroring `advance_fence_epoch_with_barrier`'s pattern); `activate_kill_switch` raises `ValueError` if already active (atomic check under FOR UPDATE lock, no unlocked pre-read); `deactivate_kill_switch` returns `bool` (False = was already inactive, no-op); `cancel_campaign` also gained `commit` parameter
+- `services/api/src/aieb_api/schemas.py` - `KillSwitchRequest.reason` now uses `Field(min_length=1)` + `field_validator` to reject empty/whitespace-only strings
+- `tests/test_api_service.py` - added 16 API tests (original 13 + 3 new for empty-reason rejection, idempotency-key-required on activate, idempotency-key-required on deactivate); also updated `setUp` to reseed `kill_switch` and `system_fence` singleton rows (the TRUNCATE ... CASCADE reset removed migration-seeded singletons); switched `KillSwitchRow` import from `..repository` to `..models`
+
+### Post-review fixes applied
+
+1. **Transaction atomicity (API-01)**: `activate_kill_switch`/`deactivate_kill_switch` now support `commit=False`; the route uses this so `finalize()` commits the state transition and idempotency record in one transaction. Previously the repository committed before `finalize()`, creating an unrecoverable window where a crash between the commit and `finalize()` left the switch active without a replay handle.
+2. **Idempotency key required on deactivate**: both mutating routes now require `Idempotency-Key` via `Header(alias="Idempotency-Key")` (no default, returns 422 if missing). Previously deactivate made it optional.
+3. **Empty reason rejection**: `KillSwitchRequest.reason` uses `field_validator` to reject blank/whitespace-only strings.
+4. **CLI race + invalid-user crash**: CLI relies on the repository's atomic FOR UPDATE check (no separate unlocked pre-read); `--by-user` is validated against `users` table before mutation; empty/whitespace reason rejected.
+
+Final independent closure: concurrent activation with the same new idempotency key is now a
+200 replay, not a false 409 after the winner releases the singleton lock. Both the API status
+route and CLI `--check` fail closed when the migration-seeded singleton is missing. The CLI
+accepts `--by-user` only for activation, where it is persisted; it no longer suggests that a
+deactivation actor is audited when no such field exists. OpenAPI and generated TypeScript were
+regenerated after route registration.
+
+Verification: 16/16 kill-switch API tests pass against PostgreSQL, including the concurrent
+same-key and missing-singleton negative controls. OpenAPI/client consistency and `git diff --check`
+pass. The full API/worker suite must be rerun before committing this working-tree change.
+
+## ENG-020 Gap 6 - Prometheus metrics exporter (COMPLETE, 2026-09-21)
+
+Gap 6 closed the last open ENG-020 piece: `worker/metrics.py` and `deploy/alerts/prometheus-rules.yml`
+both explicitly said no exporter existed. One now does, hand-rolled (no new dependency - see below).
+
+- `services/api/src/aieb_api/worker/metrics.py` - kept `log_event`/`counters`/`snapshot()` unchanged
+  (still imported by `worker/reconciler.py` and `worker/loop.py`) and added a small in-process
+  gauge/counter registry (`set_gauge`, `replace_gauge_family`, `inc_counter`) plus
+  `render_prometheus_text()`, a hand-rolled Prometheus text-exposition-format (0.0.4) writer
+  (`# HELP`/`# TYPE`/`name{labels} value` lines). `prometheus_client` is NOT installed in the venv
+  and is NOT added as a dependency anywhere (no network access to install packages; a real dependency
+  change needs separate sign-off) - the exposition format is simple enough to write directly. The
+  module docstring is corrected: an exporter now exists, but it is explicitly IN-PROCESS and
+  PULL-BASED for whichever process imports it, not a deployed monitoring stack - no Prometheus
+  server, Alertmanager instance, or paging pipeline is deployed anywhere in this environment.
+- `services/api/src/aieb_api/worker/metrics_queries.py` (new) - read-only functions computing the
+  gauges that MUST reflect true current database state fresh at scrape time rather than stale
+  in-process history: `kill_switch_active` (reuses `repository.is_kill_switch_active`'s fail-closed
+  behavior), `campaign_consecutive_infrastructure_failures` (one series per non-terminal campaign),
+  `worker_heartbeat_ages` (one series per currently-leased work item; heartbeat age is reconstructed
+  as `now - (lease_expiry - DEFAULT_LEASE_SECONDS)` since `work_item` stores no separate last-
+  heartbeat timestamp - documented as an approximation, exact under this codebase's actual
+  lease-seconds usage), and `active_budget_reservation_ages` (one series per `status='active'`
+  reservation).
+- `services/api/src/aieb_api/routes/metrics.py` (new) - `GET /metrics`, gated behind the SAME
+  `require_role("operator", "reviewer", "administrator")` dependency `kill_switch.py`'s GET route
+  already uses (not a bespoke auth scheme), calls the query functions above to refresh the DB-backed
+  gauges via `replace_gauge_family()`, then returns `render_prometheus_text()` with
+  `text/plain; version=0.0.4; charset=utf-8`. Registered in `app.py`.
+- `services/api/src/aieb_api/worker/repository.py` - `inc_counter("aieb_attempt_infrastructure_invalid_total")`
+  added at both `attempt.terminal_status = "infrastructure_invalid"` sites inside
+  `reconcile_expired_leases` (the exhausted-engineering and exhausted-verification/regrade paths).
+- `services/api/src/aieb_api/worker/reconciler.py` - `inc_counter("aieb_reconciler_worker_artifacts_purged_total", purged)`
+  added in `reconcile_once`, incrementing by the real purged count, not a flat +1.
+- `deploy/alerts/prometheus-rules.yml` - header comment corrected: the exporter it assumed does not
+  exist now does (`GET /metrics`, authenticated); still explicitly no deployed Prometheus server,
+  Alertmanager instance, or paging pipeline anywhere.
+- `docs/implementation/evidence/ENG-020/operations-review.md` and `runbooks.md` - new sections
+  documenting how to scrape `/metrics` (auth requirement, content type), what each of the six
+  metrics means, and how each maps to its alert rule and runbook anchor.
+- `tests/test_metrics.py` (new) - against the real test PostgreSQL instance: `/metrics` requires
+  authentication (401) and an authorized role (403 otherwise; 200 for operator/reviewer/
+  administrator) with valid Prometheus text and the right content type; a regression test parses
+  every `expr:` field out of `deploy/alerts/prometheus-rules.yml`, extracts the bare
+  `aieb_*` metric identifiers, and asserts each one is actually present in a real `/metrics` scrape;
+  and functional tests prove the instrumentation is real rather than decorative - activating/
+  deactivating the kill switch flips `aieb_kill_switch_active` in a scrape, driving
+  `record_infrastructure_outcome` changes the scraped per-campaign gauge (and a non-infrastructure
+  outcome resets it to 0), running `reconcile_expired_leases` against a manually-expired engineering
+  lease increments `aieb_attempt_infrastructure_invalid_total` by exactly one, and running the
+  reconciler after seeding an expired staging blob increments
+  `aieb_reconciler_worker_artifacts_purged_total` by the purged count. Also added smoke coverage for
+  the budget-reservation-age and worker-heartbeat-age gauges.
+
+Verification: `tests/test_metrics.py` 10/10 passed (9 subtests). Full regression re-run clean:
+`tests/test_api_service.py` 101/101 passed (21 subtests), `tests/test_worker_leasing.py` 47/47
+passed - no regressions from the new route, the two repository call sites, or the reconciler change.
+No new dependency was added (`prometheus_client` remains absent from `services/api/pyproject.toml`
+and the venv). No deployed Prometheus/Alertmanager instance or paging pipeline is claimed anywhere
+in code or docs - only a real, working in-app `GET /metrics` exporter. ENG-020 gaps 4, 5, and 6 are
+now all COMPLETE; the ticket's remaining open items are the previously-disclosed external ones
+(real staging/production deployment, real OIDC, live-smoke authorization - all blocked on cloud
+authorization/budget, unrelated to this gap).

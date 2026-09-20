@@ -11,7 +11,7 @@ from typing import Generic, Literal, TypeVar, Union
 from uuid import UUID
 
 from aieb_core.models import ApplicationProfile, BudgetProfile, BudgetProfileV2, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ItemT = TypeVar("ItemT")
 
@@ -866,7 +866,14 @@ class ResumeCampaignRequest(BaseModel):
 class KillSwitchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    reason: str
+    reason: str = Field(min_length=1, description="non-empty audit reason for activating the kill switch")
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("reason must be a non-empty string")
+        return v
 
 
 class KillSwitchStatus(BaseModel):

@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import auth
 from .errors import ApiError, api_error_handler, http_exception_handler
-from .routes import attempts, authorized, campaigns, corrections, identity, invalidity, publications, registry, results
+from .routes import attempts, authorized, campaigns, corrections, identity, invalidity, kill_switch, metrics, publications, registry, results
 
 # The public website (apps/web) is a browser SPA on its own origin
 # (localhost:5173 in local dev); without CORS a browser's own preflight
@@ -68,6 +68,8 @@ def create_app() -> FastAPI:
     app.include_router(invalidity.router)
     app.include_router(identity.router)
     app.include_router(attempts.router)
+    app.include_router(kill_switch.router)
+    app.include_router(metrics.router)
 
     return app
 

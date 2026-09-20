@@ -875,6 +875,46 @@
         "title": "CampaignSummary",
         "type": "object"
       },
+      "CandidateArtifactResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt_id": {
+            "title": "Attempt Id",
+            "type": "string"
+          },
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "stored_candidate": {
+            "additionalProperties": true,
+            "title": "Stored Candidate",
+            "type": "object"
+          },
+          "stored_candidate_digest": {
+            "title": "Stored Candidate Digest",
+            "type": "string"
+          },
+          "tree_digest": {
+            "title": "Tree Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempt_id",
+          "candidate_id",
+          "tree_digest",
+          "manifest_digest",
+          "stored_candidate_digest",
+          "stored_candidate"
+        ],
+        "title": "CandidateArtifactResponse",
+        "type": "object"
+      },
       "Category": {
         "enum": [
           "rag",
@@ -1233,6 +1273,64 @@
           "limitations"
         ],
         "title": "CoverageDisclosure",
+        "type": "object"
+      },
+      "CredentialVerifyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_role": {
+            "enum": [
+              "candidate",
+              "verifier"
+            ],
+            "title": "Actor Role",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor_role",
+          "token"
+        ],
+        "title": "CredentialVerifyRequest",
+        "type": "object"
+      },
+      "CredentialVerifyResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "actor_role": {
+            "enum": [
+              "candidate",
+              "verifier"
+            ],
+            "title": "Actor Role",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "valid": {
+            "title": "Valid",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "valid",
+          "actor_role",
+          "expires_at"
+        ],
+        "title": "CredentialVerifyResponse",
         "type": "object"
       },
       "CurrentIdentity": {
@@ -2034,6 +2132,68 @@
           "created_at"
         ],
         "title": "InvalidityReviewSummary",
+        "type": "object"
+      },
+      "KillSwitchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "description": "non-empty audit reason for activating the kill switch",
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "KillSwitchRequest",
+        "type": "object"
+      },
+      "KillSwitchStatus": {
+        "properties": {
+          "activated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activated At"
+          },
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "campaigns_teardown_requested": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaigns Teardown Requested"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "title": "KillSwitchStatus",
         "type": "object"
       },
       "MatrixPreview": {
@@ -4194,6 +4354,118 @@
         ]
       }
     },
+    "/v1/attempts/{attempt_id}/candidate": {
+      "get": {
+        "description": "Credential-authorized, VERIFIER-ROLE capability (codex-audit finding 1/3): return the\npersisted candidate artifact for THIS attempt - including the FULL stored_candidate\npayload the verification phase actually consumes, not just digests - to a process holding\na valid VERIFIER-role credential for exactly that attempt. Role-differentiated (second\nreview round): a candidate-role credential is 403 here - the verifier is the reader of the\npersisted candidate, the candidate is its producer. This is the actual resource a scoped\nidentity can reach: verification consumes this same capability through\nload_stored_candidate_authorized, and a stolen verifier secret is worthless outside its\none attempt. 404 when no candidate is yet persisted; 401 when no valid credential\naccompanies the request; 403 when the credential is valid but not verifier-role.",
+        "operationId": "get_attempt_candidate_endpoint_v1_attempts__attempt_id__candidate_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateArtifactResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Attempt Candidate Endpoint",
+        "tags": [
+          "attempts"
+        ]
+      }
+    },
+    "/v1/attempts/{attempt_id}/credentials/verify": {
+      "post": {
+        "description": "Validate a presented scoped credential. `valid` is a boolean so the response leaks\nnothing about WHY it failed (no row / revoked / expired / wrong token / wrong role).\nThe expiry is returned ONLY on success: on a failed validation it is None, so a caller\nprobing with an invalid token learns nothing about the roll's lifetime (codex-audit\nfinding 5). Per-role status details are available to evidence tooling via\nattempt_credential_status.",
+        "operationId": "verify_attempt_credential_endpoint_v1_attempts__attempt_id__credentials_verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "attempt_id",
+            "required": true,
+            "schema": {
+              "title": "Attempt Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialVerifyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Attempt Credential Endpoint",
+        "tags": [
+          "attempts"
+        ]
+      }
+    },
     "/v1/campaigns": {
       "post": {
         "operationId": "create_campaign_v1_campaigns_post",
@@ -5480,6 +5752,141 @@
         "summary": "Get Entrant Revision",
         "tags": [
           "registry"
+        ]
+      }
+    },
+    "/v1/kill-switch": {
+      "get": {
+        "description": "Check whether the platform-wide kill switch is active.\n\nAuthenticated: any operator/reviewer/administrator may read the global\ndispatch-control state. The response is the singleton kill_switch row's\ncurrent flags - a read, never a mutation.",
+        "operationId": "get_kill_switch_status_v1_kill_switch_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Kill Switch Status",
+        "tags": [
+          "kill_switch"
+        ]
+      }
+    },
+    "/v1/kill-switch/activate": {
+      "post": {
+        "description": "ENG-020 (spec sections 39/48): activate the global kill switch, stopping\nALL new dispatch platform-wide and requesting bounded teardown of active\nwork (cancelling every non-terminal campaign through the existing,\nalready-tested cancellation machinery).\n\nRequires the `administrator` role and an `Idempotency-Key` header. The\nrepository locks the singleton row FOR UPDATE, stages the state\ntransition + campaign cancellations (non-committing), and `finalize()`\ncommits them together with the idempotency record in one transaction -\nconcurrent calls are serialized by PostgreSQL's row lock, and a crash\nbetween the state change and the idempotency record cannot leave the\nkill switch active without a replay handle.",
+        "operationId": "activate_kill_switch_v1_kill_switch_activate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Kill Switch",
+        "tags": [
+          "kill_switch"
+        ]
+      }
+    },
+    "/v1/kill-switch/deactivate": {
+      "post": {
+        "description": "ENG-020 (spec sections 39/48): deactivate the global kill switch, clearing\nthe flag only.\n\nThis does NOT resume any campaign the kill switch drove to\n`cancelling`/`cancelled`, and does NOT clear any campaign's own\n`auto_paused` flag - both are separate, deliberate operator decisions\n(see the provider-outage runbook in runbooks.md).\n\nRequires the `administrator` role and an `Idempotency-Key` header. The\nIdempotency-Key is REQUIRED for every mutation, including the idempotent\nno-op when the switch is already inactive, so that all mutate paths are\nreplay-safe. The repository stages the deactivation (non-committing);\n`finalize()` commits it together with the idempotency record.",
+        "operationId": "deactivate_kill_switch_v1_kill_switch_deactivate_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/KillSwitchRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Kill Switch",
+        "tags": [
+          "kill_switch"
         ]
       }
     },

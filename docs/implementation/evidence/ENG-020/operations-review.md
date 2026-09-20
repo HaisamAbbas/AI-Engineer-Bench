@@ -481,6 +481,74 @@ SHARE atomicity test), credentials 15/15, and the backup/restore drill 5/5 throu
   the exact discovery-run count (this document is written before that final run completes, to
   keep the two artifacts in sync rather than back-filling a number after the fact).
 
+## Gap 6 closure: the Prometheus metrics exporter (spec section 39)
+
+`worker/metrics.py` and `deploy/alerts/prometheus-rules.yml` both used to say, explicitly, that no
+exporter existed. One now does - a real, working, hand-rolled Prometheus text-exposition-format
+(0.0.4) writer, reachable via an authenticated `GET /metrics`. What still does NOT exist, and is
+NOT claimed anywhere in code or docs: any deployed Prometheus server, Alertmanager instance, or
+paging pipeline. This section documents the exporter that now exists in this application, not a
+monitoring stack.
+
+### Why hand-rolled, not `prometheus_client`
+`prometheus_client` is not a declared dependency of `services/api/pyproject.toml` and is not
+installed in the project venv; this environment has no network access to install packages, and a
+real dependency addition needs separate sign-off outside this ticket's scope. The exposition
+format itself is simple (`# HELP`/`# TYPE` lines, then `metric_name{label="value"} value` lines
+per series) and is implemented directly in `worker/metrics.py::render_prometheus_text()`.
+
+### What is a gauge vs. a counter, and why
+- **Gauges computed FRESH FROM THE DATABASE at every scrape** (`worker/metrics_queries.py`, called
+  by `routes/metrics.py` immediately before rendering, loaded via `replace_gauge_family()`):
+  `aieb_kill_switch_active`, `aieb_campaign_consecutive_infrastructure_failures`,
+  `aieb_worker_heartbeat_age_seconds`, `aieb_budget_reservation_age_seconds`. These MUST reflect
+  true current state - a freshly started API process must report the kill switch's real value, not
+  an empty in-process counter waiting for events to replay into it.
+- **Counters incremented in-process at their real call sites**, the same pattern `log_event`'s own
+  `counters` already used: `aieb_reconciler_worker_artifacts_purged_total` (`reconciler.py`,
+  incremented by the actual purged count, not a flat +1) and
+  `aieb_attempt_infrastructure_invalid_total` (`repository.py`, incremented at both
+  `terminal_status = "infrastructure_invalid"` sites inside `reconcile_expired_leases`). Like any
+  in-process counter, these reset to zero on process restart - an accurate description of what an
+  in-process exporter with no deployed time-series database behind it actually is, not a defect
+  papered over with persistence this ticket does not add.
+
+### How to scrape it
+`GET /metrics` on the API process, with the same bearer-token authentication and
+operator/reviewer/administrator role every other operator-facing route in this app already
+requires (`require_role("operator", "reviewer", "administrator")` - the identical gate
+`kill_switch.py`'s GET route uses, not a bespoke scheme). Returns
+`Content-Type: text/plain; version=0.0.4; charset=utf-8` with the Prometheus 0.0.4 exposition
+format. There is no unauthenticated variant - this is deliberately NOT a public endpoint, since the
+metrics it exposes (per-campaign infrastructure failure counts, worker identities, reservation
+ages) are the same class of operational detail spec section 3 already restricts to those roles.
+
+### Metric-to-alert-to-runbook mapping (`deploy/alerts/prometheus-rules.yml`)
+| Metric | Alert | Runbook anchor |
+| --- | --- | --- |
+| `aieb_worker_heartbeat_age_seconds` | `WorkerHeartbeatLossExceedsTarget` (>90s) | `runbooks.md#worker-disappears` |
+| `aieb_campaign_consecutive_infrastructure_failures` | `CampaignConsecutiveInfrastructureFailures` (>=3) | `runbooks.md#provider-outage` |
+| `aieb_budget_reservation_age_seconds{status="active"}` | `UnresolvedBudgetReservationAge` (>24h) | `runbooks.md#spend-exceeds-reservation` |
+| `aieb_reconciler_worker_artifacts_purged_total` | `OrphanWorkerArtifactsAccumulating` (rate) | `runbooks.md#worker-disappears` |
+| `aieb_kill_switch_active` | `KillSwitchActive` (==1) | `runbooks.md#spend-exceeds-reservation` |
+| `aieb_attempt_infrastructure_invalid_total` | `SetupFailureRateElevated` (rate) | `runbooks.md#provider-outage` |
+
+### Verification
+`tests/test_metrics.py`, against the real test PostgreSQL instance (10/10 passed, 9 subtests):
+`/metrics` requires authentication (401) and an authorized role (403 for an unauthorized one, 200
+for operator/reviewer/administrator); the response is valid Prometheus text with the correct
+content type; a regression test parses every `expr:` field out of `prometheus-rules.yml`, extracts
+the bare `aieb_*` metric names, and asserts each one is genuinely present in a real scrape; and
+functional tests prove each gauge/counter tracks real state rather than being decorative -
+activating/deactivating the kill switch flips `aieb_kill_switch_active`, driving
+`record_infrastructure_outcome` changes the per-campaign gauge (and a non-infrastructure outcome
+resets it), a manually-expired engineering lease swept by `reconcile_expired_leases` increments
+`aieb_attempt_infrastructure_invalid_total` by exactly one, and the reconciler purging an expired
+staging blob increments `aieb_reconciler_worker_artifacts_purged_total` by the purged count. Full
+regression re-run clean: `tests/test_api_service.py` 101/101 passed (21 subtests),
+`tests/test_worker_leasing.py` 47/47 passed - the new route, the two repository call sites, and the
+reconciler change introduced no regressions. No new dependency was added.
+
 ## Remaining external acceptance (unchanged, disclosed)
 
 - Real staging/production deployment, real deployed OIDC/JWKS, and a real live smoke test
@@ -488,9 +556,12 @@ SHARE atomicity test), credentials 15/15, and the backup/restore drill 5/5 throu
   by this work.
 - Current-tree remote CI and independent review of this closure remain open, matching every
   other ticket's acceptance policy in this repository.
-- Object storage/observability deployment (Prometheus, alerting) is documented in intent
-  (spec section 39's targets) but not deployed - no monitoring infrastructure exists to deploy
-  it to.
+- Object storage/observability DEPLOYMENT (an actual Prometheus server, Alertmanager instance, or
+  paging pipeline) remains undeployed - no monitoring infrastructure exists to deploy it to. This
+  is now distinct from the exporter itself: a real, working `GET /metrics` Prometheus
+  text-exposition-format endpoint exists in this application (see "Gap 6 closure" above) and every
+  metric name `deploy/alerts/prometheus-rules.yml`'s alert rules reference is genuinely exported -
+  nothing is currently scraping it or evaluating those rules for real.
 
 ## Re-review round 3 - ACCEPTED (Gap 4 recorded COMPLETE)
 

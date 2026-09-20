@@ -49,6 +49,7 @@ from ..models import (
     WorkerArtifactReferenceRow,
 )
 from ..evidence_integrity import evidence_digest
+from .metrics import inc_counter
 
 DEFAULT_LEASE_SECONDS = 60
 
@@ -945,6 +946,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
             item.state = "failed"
             attempt.phase = "terminal"
             attempt.terminal_status = "infrastructure_invalid"
+            inc_counter("aieb_attempt_infrastructure_invalid_total")
             orphaned.append(attempt.id)
             attempt_count = session.execute(select(func.count()).select_from(AttemptRow).where(AttemptRow.trial_id == trial.id)).scalar_one()
             if attempt_count - 1 < max_replacements:
@@ -985,6 +987,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
         else:
             attempt.phase = "terminal"
             attempt.terminal_status = "infrastructure_invalid"
+            inc_counter("aieb_attempt_infrastructure_invalid_total")
             exhausted += 1
     session.commit()
     return ReconciliationSummary(
@@ -994,18 +997,33 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
 
 
 def is_kill_switch_active(session: Session) -> bool:
+    """Fails closed: a missing singleton row (id=1) is treated as active (blocks
+    dispatch) rather than inactive, matching the fail-closed behavior of the
+    status route and the activate/deactivate paths."""
     row = session.get(KillSwitchRow, 1)
-    return bool(row is not None and row.active)
+    return row is None or row.active
 
 
-def activate_kill_switch(session: Session, *, activated_by_user_id: uuid.UUID | None, reason: str) -> int:
+def activate_kill_switch(session: Session, *, activated_by_user_id: uuid.UUID | None, reason: str, commit: bool = True) -> int:
     """ENG-020 (spec sections 39/48): stop ALL new dispatch immediately and request bounded
     teardown of active work by cancelling every non-terminal campaign - reusing the existing,
     already-tested cancellation/drain machinery (in-flight work finishes or is cooperatively
     interrupted, then reconciled) rather than a second, novel teardown mechanism. Distinct
     from per-campaign auto-pause: this is global and not tied to any one campaign's health.
-    Returns the number of campaigns whose teardown was requested by this call."""
-    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+    Returns the number of campaigns whose teardown was requested by this call.
+
+    Raises ValueError if the switch is already active - the check and the state
+    transition are atomic under the singleton row's FOR UPDATE lock, so concurrent
+    callers are serialized by PostgreSQL rather than by application-level timing.
+
+    When `commit=False`, the kill_switch row and all campaign cancellations are staged (flushed)
+    but NOT committed - the caller owns the outer transaction so the state transition can be
+    committed atomically with an idempotency record (the route's API-01 transaction rule)."""
+    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError("kill_switch singleton row (id=1) is missing; run migrations before changing the kill switch")
+    if row.active:
+        raise ValueError("the kill switch is already active")
     row.active = True
     row.reason = reason
     row.activated_by_user_id = activated_by_user_id
@@ -1014,18 +1032,45 @@ def activate_kill_switch(session: Session, *, activated_by_user_id: uuid.UUID | 
     campaign_ids = session.execute(
         select(CampaignRow.id).where(CampaignRow.state.in_(("frozen", "running", "paused")))
     ).scalars().all()
-    requested = sum(1 for campaign_id in campaign_ids if cancel_campaign(session, campaign_id))
-    session.commit()
+    # commit=False here regardless of the outer `commit`: committing per-campaign would
+    # release the FOR UPDATE lock taken above before all campaigns are cancelled, letting
+    # a concurrent deactivate race in mid-teardown. The single commit/flush below covers
+    # the row activation and every cancellation atomically.
+    requested = sum(1 for campaign_id in campaign_ids if cancel_campaign(session, campaign_id, commit=False))
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return requested
 
 
-def deactivate_kill_switch(session: Session) -> None:
+def deactivate_kill_switch(session: Session, commit: bool = True) -> bool:
     """Clears the flag only - it does NOT resume any campaign the kill switch drove to
     'cancelling'/'cancelled', and it does NOT clear any campaign's own `auto_paused` flag.
-    Both are separate, deliberate operator decisions (spec sections 39/48)."""
-    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+    Both are separate, deliberate operator decisions (spec sections 39/48).
+
+    Returns True if the switch was active and is now deactivated, False if it was
+    already inactive (idempotent no-op). The check and transition are atomic under
+    the singleton row's FOR UPDATE lock.
+
+    When `commit=False`, the kill_switch row is staged (flushed) but NOT committed - the
+    caller owns the outer transaction so the state transition can be committed atomically
+    with an idempotency record (the route's API-01 transaction rule)."""
+    row = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError("kill_switch singleton row (id=1) is missing; run migrations before changing the kill switch")
+    if not row.active:
+        if commit:
+            session.commit()
+        else:
+            session.flush()
+        return False
     row.active = False
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return True
 
 
 def _hash_token(token: str) -> str:
@@ -1266,7 +1311,7 @@ def record_infrastructure_outcome(session: Session, campaign_id: uuid.UUID, exec
     return paused
 
 
-def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
+def cancel_campaign(session: Session, campaign_id: uuid.UUID, commit: bool = True) -> bool:
     """Stop new dispatch. Already-leased work items are left to finish or expire
     naturally; teardown_orphans() cleans up anything left behind by a killed worker.
 
@@ -1281,7 +1326,10 @@ def cancel_campaign(session: Session, campaign_id: uuid.UUID) -> bool:
     result = session.execute(
         update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused"))).values(state="cancelling")
     )
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return result.rowcount == 1
 
 
