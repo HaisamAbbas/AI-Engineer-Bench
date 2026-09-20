@@ -1013,3 +1013,78 @@ assertions pass on a host with this restriction - that still needs an environmen
 process's own freshly created directories behave normally, which this repo can't grant.
 
 **Not touched**: gaps 1, 2, 4, 5, 6. Status remains **ENG-021 IN_PROGRESS / ENG-022 BLOCKED**.
+
+## ENG-023 review follow-up: reference loop implemented and proven, not just planned (2026-09-21)
+
+A prior session left ENG-023 as planning-only. An independent review correctly rejected
+that: `aieb_runner.model_loop:ModelTrackReferenceLoop` did not exist, did not import,
+and the "no silent fallback" contract was documented, not executable. This session built
+the actual deliverable.
+
+**New code**:
+- `packages/aieb-runner/src/aieb_runner/model_providers/` — `base.py` (provider contract
+  + `ProviderError` attribution hierarchy: `TransportError`/`RateLimitError` retryable,
+  `AuthenticationError`/`InvalidRequestError` not), `fake.py`
+  (`FakeProviderAdapter`, deterministic, zero-network, with a small process-wide registry
+  so a same-process caller can hand a Harbor-constructed instance a scripted script),
+  `openai_compatible.py` (one real stdlib-`urllib`-only adapter; no new dependency added
+  to `aieb-runner`; credential read from an env var at call time only, never written to
+  a file or interpolated into a shell command).
+- `packages/aieb-runner/src/aieb_runner/model_loop.py` — `ModelTrackReferenceLoop`, a
+  real `harbor.agents.installed.base.BaseInstalledAgent` subclass: frozen system prompt
+  and tool schemas (list_files/read_file/search/patch/run_command/inspect_last_output/
+  submit), bounded per-step retries for both malformed tool calls and provider errors,
+  deterministic context truncation past `MAX_CONTEXT_CHARS`, a self-enforced wall-clock
+  deadline, and a `try/finally` that copies `/workspace` into `/workspace/submission`
+  plus writes a structured `model_track_summary.json` on every stopping path (submit,
+  step/retry/deadline exhaustion, unrecoverable provider error) — so an errored trial
+  still yields a scoreable candidate. Requested/reported model identity and coverage
+  (`estimated_time_limited` vs `full_match`) are recorded through the real
+  `aieb_runner.accounting.UsageLedger`, not a new parallel mechanism.
+- `tests/test_eng023_model_loop.py` — 19 tests, all green, no Docker/network/credentials
+  needed (`_FakeEnvironment` shells out to a real local bash so the loop's actual
+  generated find/head/grep/base64/cp command strings are genuinely exercised). Command:
+  `D:\AI-Engineer-Bench\.venv\Scripts\python.exe -m pytest tests/test_eng023_model_loop.py -q`
+  → `19 passed`.
+- `scripts/run_eng023_model_loop_spike.py` + `tests/fixtures/eng023_model_loop/task` — a
+  REAL, executed (not simulated) Harbor Docker integration run dispatching
+  `aieb_runner.model_loop:ModelTrackReferenceLoop` via `ExecutionSpec.agent_import_path`,
+  provider forced to a scripted `FakeProviderAdapter` (zero network, zero credentials).
+  Result, reproduced on two separate runs: `state: "completed"`, `reward: 1.0`,
+  `model_track_summary.submitted: true`, candidate contains
+  `hello-from-model-track.txt` and `model_track_summary.json`, `cleanup_clean: true`.
+  Full captured JSON is in `docs/implementation/evidence/ENG-023/README.md`.
+
+  A NEW fixture was needed rather than reusing `tests/fixtures/eng001_harbor/task`: that
+  fixture's "main depends_on application, gated by an HTTP healthcheck" topology fails
+  on this dev host for a reason unrelated to this work — `HarborBackend`'s deny-by-default
+  egress guard (`EgressGuardProxy`) routes ALL container egress through a proxy process
+  on the HOST, and "application" is a Compose-internal DNS name that only resolves
+  inside the compose network's embedded DNS, never from the host
+  (`socket.create_connection(("application", 8080))` from the host raises `gaierror`,
+  confirmed directly). Reproduced identically against the pre-existing, unrelated
+  `spike_agent` used by ENG-001 itself (ran it fresh, same failure) — this is a real,
+  pre-existing environment limitation on this host, not a regression introduced here,
+  and not something to special-case around in the model loop. Since the model track
+  needs no network by default, the new fixture is single-service and
+  `network_mode = "no-network"` throughout, sidestepping the unrelated bug entirely.
+
+- `examples/model-track-campaign.json` — fixed the broken `agent_implementation`
+  (`aieb-runner.model_loop:...` with a hyphen, not importable) to the correct, real
+  `aieb_runner.model_loop:ModelTrackReferenceLoop`, and replaced `prompt_digest`/
+  `tools_digest` with real sha256 digests of the loop's frozen `SYSTEM_PROMPT`/
+  `TOOL_SCHEMAS` constants (same method `scripts/compute_task_digests.py` uses
+  elsewhere). `state: "prepared-not-authorized"` and `execution_blocker` untouched.
+
+**Explicitly NOT done, on purpose**:
+- `OpenAICompatibleAdapter` has never been called against a real, live paid provider —
+  unit-tested only, against its own HTTP-status-mapping/credential-handling behavior.
+- ENG-024's live-campaign authorization gate is unchanged: no provider credentials, no
+  approved spend cap exist in this environment.
+- ENG-001's P0 precondition is unchanged and still `BLOCKED` per `STATUS.md` (no
+  provider/model authorization) — this session makes ENG-023's CODE real and tested, it
+  does not and cannot satisfy that separate precondition.
+
+Status: **ENG-023 IN_PROGRESS** (code real and tested; P0-gated live readiness
+unchanged), **ENG-024 BLOCKED** (manifest defect fixed; authorization gate unchanged),
+**ENG-001 BLOCKED** (untouched).

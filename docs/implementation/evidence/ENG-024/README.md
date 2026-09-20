@@ -81,3 +81,32 @@ The manifest is prepared only under existing explicit spend authorization. If
 blocked (no provider/model authorization, no approved cap), it carries
 `state: "prepared-not-authorized"` with an explicit `execution_blocker`,
 exactly mirroring `examples/development-pilot-18.json`.
+
+## Review follow-up (2026-09-21): manifest defect fixed, gate unchanged
+
+An independent review flagged that `examples/model-track-campaign.json` pointed its
+`agent_import_path`/`agent_implementation` at a module that did not exist
+(`aieb_runner.model_loop:ModelTrackReferenceLoop`), and that some digests looked like
+placeholders. ENG-023 (see `docs/implementation/evidence/ENG-023/README.md`) now makes
+that module real, tested code with an executed real-Docker proof. This entry records
+only the corresponding manifest fix — it does **not** change this ticket's own gate.
+
+- Fixed `agent_implementation` (it read `aieb-runner.model_loop:...` with a hyphen,
+  which is not a valid Python module path) to the correct, real, importable
+  `aieb_runner.model_loop:ModelTrackReferenceLoop` — the same value
+  `agent_import_path` already had.
+- Replaced `prompt_digest`/`tools_digest` with real sha256 digests of
+  `model_loop.py`'s frozen `SYSTEM_PROMPT` string and `TOOL_SCHEMAS` tuple
+  (`json.dumps(TOOL_SCHEMAS, sort_keys=True)`), computed the same way
+  `scripts/compute_task_digests.py` hashes other real on-disk content elsewhere in this
+  repo — not invented, not placeholders.
+- Everything else in the manifest is unchanged, including `state:
+  "prepared-not-authorized"` and its `execution_blocker` field, verbatim.
+
+**Unchanged, and must stay unchanged**: this manifest has never been executed against a
+real provider, and is not being executed now. Provider credentials and an approved
+spend cap still do not exist in this environment. `STATUS.md`'s ENG-001 row is still
+`BLOCKED` for the same reason it always was (no provider/model authorization) — that is
+a separate precondition from "does the model-track loop's code exist and work," which
+ENG-023's real Harbor Docker run now answers yes to. Fixing the manifest's broken
+entrypoint reference is a defect fix, not a readiness claim for a live campaign.

@@ -1103,6 +1103,60 @@ A codebase verification pass confirmed that most fields the original plan propos
 - Tracks = section 2, not §2.2
 - Budget and campaign planning = section 19, not §37
 
+### Review follow-up (2026-09-21): the reference loop is now real, tested code
+
+An independent review correctly rejected the phase-1/phase-2 plan above as
+UNIMPLEMENTED: `aieb_runner.model_loop:ModelTrackReferenceLoop` did not exist, did not
+import, and "no silent fallback" was documented behavior, not executable code. That gap
+is now closed with real code, not another planning pass:
+
+- `packages/aieb-runner/src/aieb_runner/model_providers/` (`base.py` — `ProviderAdapter`
+  protocol, `ProviderMessage`/`ToolCall`/`ProviderResponse`, and a `ProviderError`
+  hierarchy with named retryable/non-retryable subclasses; `fake.py` —
+  `FakeProviderAdapter`, the deterministic zero-network double used by every test and by
+  the real Docker smoke test; `openai_compatible.py` — one real stdlib-`urllib`-only
+  adapter, no new dependency added).
+- `packages/aieb-runner/src/aieb_runner/model_loop.py` —
+  `ModelTrackReferenceLoop(BaseInstalledAgent)`: frozen system prompt/tool schemas
+  (list_files, read_file, search, patch, run_command, inspect_last_output, submit),
+  bounded retries, deterministic context truncation, a self-enforced wall-clock
+  deadline, and a `try/finally` that copies whatever exists into
+  `/workspace/submission` plus a structured `model_track_summary.json` on every stopping
+  path — including an unrecoverable provider error — so a failed trial still yields a
+  scoreable candidate.
+- `tests/test_eng023_model_loop.py`: 19 tests, all green, covering every item the
+  review's "missing ENG-023 requirements" list named (tool-schema/malformed-call
+  validation, context truncation, deadline behavior, provider error attribution,
+  credential protection, complete candidate collection, no-silent-fallback).
+- `scripts/run_eng023_model_loop_spike.py`: a REAL executed Harbor Docker run (not
+  simulated) dispatching `aieb_runner.model_loop:ModelTrackReferenceLoop` via
+  `ExecutionSpec.agent_import_path`, with the provider forced to a scripted
+  `FakeProviderAdapter` (zero network, zero credentials). It uses a NEW minimal fixture,
+  `tests/fixtures/eng023_model_loop/task`, instead of reusing
+  `tests/fixtures/eng001_harbor/task` — that fixture's "main depends_on application,
+  gated by an HTTP healthcheck" topology was found, by direct reproduction against the
+  pre-existing unrelated `spike_agent`, to fail on this dev host for an unrelated reason
+  (`HarborBackend`'s egress guard proxy runs on the HOST and cannot resolve
+  Compose-internal service DNS names like "application"; confirmed via
+  `socket.create_connection(("application", 8080))` raising `gaierror` from the host).
+  Since the model-track loop needs no network by default, the new single-service,
+  no-network fixture avoids that unrelated bug rather than routing around it. Real
+  captured result: `state: "completed"`, `reward: 1.0`, `model_track_summary.submitted:
+  true`, reproduced on two separate runs — see
+  `docs/implementation/evidence/ENG-023/README.md` for the full output.
+- `examples/model-track-campaign.json`: fixed the broken `agent_implementation` entry
+  (had a hyphenated, non-importable module path) and replaced `prompt_digest`/
+  `tools_digest` with real sha256 digests of the loop's frozen prompt/tool-schema
+  constants, computed the same way `scripts/compute_task_digests.py` hashes other real
+  content in this repo. `state: "prepared-not-authorized"` and `execution_blocker` are
+  untouched.
+
+**Explicitly not claimed**: `OpenAICompatibleAdapter` has never been called against a
+real live provider (unit-tested only). ENG-024's live-campaign authorization gate is
+unchanged — no credentials, no approved spend cap exist in this environment. ENG-001's
+P0 precondition is unchanged and still `BLOCKED` in `STATUS.md`; this work makes
+ENG-023's CODE real and tested, it does not satisfy P0.
+
 ### Phase 3: Acceptance tests
 
 1. **Verifier-isolation boundary test** — the existing test suite already
