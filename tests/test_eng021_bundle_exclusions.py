@@ -13,7 +13,9 @@ Run: python -m unittest tests.test_eng021_bundle_exclusions -v
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import stat
 import sys
 import tarfile
 import tempfile
@@ -27,13 +29,35 @@ if str(ROOT) not in sys.path:
 from scripts.build_release_bundle import build_bundle  # noqa: E402
 
 
+def _rmtree_windows_safe(path: str) -> None:
+    """Remove a tree, tolerating Windows' occasional PermissionError on rmtree.
+
+    On Windows, a file copied via shutil.copy2 can inherit a read-only bit
+    from its source, and antivirus/indexer processes can transiently hold a
+    handle open on a just-written file; both cause shutil.rmtree to raise
+    PermissionError ([WinError 5]) on that path. This is the standard
+    mitigation (clear the read-only bit and retry the failed operation)
+    rather than silently swallowing the error with ignore_errors=True, which
+    would hide a real leak instead of just tolerating a known OS quirk.
+    """
+
+    def _on_error(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
 class BundleExclusionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.mkdtemp()
         self.output = Path(self.tmp) / "bundle-out"
 
     def tearDown(self) -> None:
-        shutil.rmtree(self.tmp, ignore_errors=True)
+        _rmtree_windows_safe(self.tmp)
 
     def test_bundle_contains_no_maintainer_tests(self) -> None:
         build_bundle(self.output)

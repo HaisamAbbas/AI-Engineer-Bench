@@ -20,7 +20,7 @@ running the production scripts against the actual repository state.
 | `family-split-analysis.json` | Family clustering: 3 base types × 4 families = 12 tasks |
 | `prerequisites-audit.json` | Evidence presence report surfacing all gaps as open items |
 | `evaluator-review.json` | Automated evaluator safety review (12/12 pass) |
-| `provenance-overlap-review.json` | Provenance + token overlap check (12/12 pass) |
+| `provenance-overlap-review.json` | Provenance/dev-data-token/label-compliance checks: 12/12 pass. Token **overlap check: NOT ASSESSED** for any task — no `--holdout-dir` was provided because no genuine held-out fixture set exists yet (see `holdout_overlap_assessed: false` and `overlap_review_status` in the file). Do not read this file's "12/12 pass" as an overlap-clean result. |
 | `release-process-runbook.md` | Release process documentation |
 | `campaign-execution-guide.md` | Campaign execution guide |
 | `reviewer-checklist.md` | Independent reviewer checklist |

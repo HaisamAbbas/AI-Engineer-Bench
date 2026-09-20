@@ -1,5 +1,7 @@
 {
   "failed": 0,
+  "holdout_overlap_assessed": false,
+  "overlap_review_status": "NOT ASSESSED for any task - no --holdout-dir was provided. No genuine held-out fixture directory exists in this repository yet (curate_holdout.py refuses to write under the repository root and has not been run to produce a persisted holdout set outside it). The per-task 'PASS' status below reflects only the provenance, dev-data-token, and label-compliance checks; it does NOT mean overlap was checked, and must not be read as '12/12 overlap pass'.",
   "passed": 12,
   "results": [
     {

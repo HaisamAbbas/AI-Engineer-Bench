@@ -18,12 +18,34 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
+import stat
 import sys
 import tarfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _rmtree_windows_safe(path: Path) -> None:
+    """Remove a tree, tolerating Windows' occasional PermissionError on rmtree.
+
+    See tests/test_eng021_bundle_exclusions.py's copy of this helper for the
+    rationale: a copied file can inherit a read-only bit, or a file can be
+    transiently locked by an indexer/antivirus, and shutil.rmtree raises
+    PermissionError ([WinError 5]) on that one path. Clear the bit and retry
+    instead of silently ignoring all errors.
+    """
+
+    def _on_error(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_error)
 
 
 def _hash_file(path: Path) -> str:
@@ -117,7 +139,7 @@ def build_bundle(output_dir: Path) -> dict:
     """Build the complete release candidate bundle."""
     bundle_root = output_dir / "release-candidate-bundle"
     if bundle_root.exists():
-        shutil.rmtree(bundle_root)
+        _rmtree_windows_safe(bundle_root)
     bundle_root.mkdir(parents=True)
 
     catalog = _load_catalog()

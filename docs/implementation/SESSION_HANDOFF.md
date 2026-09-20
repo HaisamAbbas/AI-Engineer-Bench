@@ -906,3 +906,52 @@ in code or docs - only a real, working in-app `GET /metrics` exporter. ENG-020 g
 now all COMPLETE; the ticket's remaining open items are the previously-disclosed external ones
 (real staging/production deployment, real OIDC, live-smoke authorization - all blocked on cloud
 authorization/budget, unrelated to this gap).
+
+## ENG-021 review follow-up (COMPLETE for the fixable subset, 2026-09-21)
+
+A review of the ENG-021 preparation package (holdout tooling, provenance/overlap review, campaign
+proposal, prerequisite audit, release bundle) confirmed it correctly stays BLOCKED rather than
+claiming release readiness, and flagged 8 gaps. Triaged: 3 were real software/docs defects and are
+fixed; 5 require a genuine human/infrastructure/content step and are NOT closed (see STATUS.md's
+"ENG-021 review follow-up" section for the full writeup; this section is the session-continuation
+summary of the same work).
+
+- **Overlap-review wording (gap 3)**: `provenance-overlap-review.json`'s "12/12 pass" was accurate
+  for the provenance/dev-data-token/label-compliance checks but silently absorbed a SKIPPED
+  overlap check into the same per-task "PASS" verdict, and `README.md` described the file as a
+  flat "token overlap check (12/12 pass)" — misleading, since no `--holdout-dir` exists to check
+  against (no genuine holdout set has ever been generated; `curate_holdout.py` refuses to write
+  under the repo root, by design, and has not been run to an outside directory). Fixed
+  `scripts/provenance_overlap_review.py::review_all()` to add top-level `holdout_overlap_assessed`
+  (false when no `--holdout-dir`) and `overlap_review_status` fields that say plainly "NOT ASSESSED
+  ... no genuine held-out fixture directory exists yet". Regenerated
+  `docs/implementation/evidence/ENG-021/provenance-overlap-review.json` by actually re-running the
+  script (not hand-edited) and corrected `README.md`'s table row to stop implying overlap passed.
+- **Cost conflict (gap 7)**: `official-campaign-proposal.json` says $194.40 max-with-reserve;
+  `campaign-execution-guide.md` said ~$46.94. Traced both to their source: the proposal's number is
+  script-generated (`scripts/generate_campaign_proposal.py::compute_cost_reservation()`) over the
+  540-trial replacement-inclusive basis (180 base × (1+2 replacements)); $0.30/trial × 540 = $162.00
+  reservation × 1.20 margin = $194.40. The guide's $39.12/$46.94 figures don't reconcile against
+  that function under any combination of inputs found (180-trial no-replacement basis would be
+  $54.00/$64.80, not $39.12/$46.94 either) - they were simply stale/wrong. Corrected the guide's
+  Cost Accounting section to the authoritative $162.00/$194.40 figures with the computation spelled
+  out inline, so the two documents can't silently drift again.
+- **Bundle test failures (gap 8)**: could NOT reproduce "6 bundle tests failed on Windows
+  temp-directory permission errors" - ran `tests/test_eng021_bundle_exclusions.py` and the full
+  ENG-021 suite (23 tests) three times each via both `unittest` and `pytest` on this Windows
+  machine; every run was clean (6/6 and 23/23), no `PermissionError` observed. Applied the
+  standard Windows-safe `shutil.rmtree` pattern (clear read-only bit, retry via `onerror`) to both
+  the test's `tearDown` and `build_release_bundle.py`'s own pre-build cleanup anyway, since it's a
+  well-known real fix for exactly this class of error (inherited read-only bits from
+  `shutil.copy2`, transient antivirus/indexer locks) and costs nothing if the original failure
+  never recurs here - but the original failure's precise cause was NOT independently confirmed,
+  and this entry says so rather than claiming a diagnosed root cause.
+- **Not touched, still genuinely blocked**: gap 1 (no genuine held-out family - needs real distinct
+  application packages, not relabeled variants), gap 2 (reviewer-checklist.md is still 100%
+  unchecked - needs real independent human reviewers), gap 4 (sample-size table is still
+  assumption-based - needs a real authorized ENG-012 pilot run), gap 5 (proposal still discloses
+  only 3 of 6 expected base project types - needs real additional distinct projects), gap 6 (no
+  authorization or real campaign occurred, confirmed - needs real provider credentials, spend
+  approval, ENG-019/ENG-020 completion, and live-smoke authorization). None of these were
+  fabricated, self-approved, or worked around. Status remains **ENG-021 IN_PROGRESS / ENG-022
+  BLOCKED**.

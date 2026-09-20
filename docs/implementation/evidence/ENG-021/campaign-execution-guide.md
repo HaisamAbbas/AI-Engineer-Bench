@@ -64,10 +64,15 @@ Ordering: For each repetition, cycle entrants across tasks (spec section 19).
 
 ## Cost Accounting
 
-- **Per-role budgets**: engineer ($0.15), dev_app ($0.02), verifier_app ($0.02), verifier_judge ($0.01)
+- **Per-role budgets**: engineer ($0.15), dev_app ($0.02), verifier_app ($0.02), verifier_judge ($0.01) — $0.20/trial combined role cost
 - **Environment upper bound**: $0.10 per trial
-- **Total reservation (estimated)**: ~$39.12 (with 20% margin: ~$46.94)
+- **Per-trial cost basis**: $0.20 role cost + $0.10 environment cost = $0.30 per planned trial attempt
+- **Planned trial count for reservation purposes**: 540 (180 base trials × (1 + `max_replacements`=2), i.e. the worst case where every cell is replaced up to the policy limit — this is the basis the reservation must cover, not the 180 base trials)
+- **Total reservation (estimated)**: **$162.00** (= $108.00 total role cost + $54.00 total environment cost, both computed over the 540-trial replacement-inclusive basis — see `official-campaign-proposal.json`'s `cost_reservation.grand_total_reservation_usd`, which is the authoritative, script-generated figure)
+- **Total reservation with 20% margin**: **$194.40** (`cost_reservation.grand_total_with_reserve_usd`)
 - **Enforcement**: `estimated_time_limited` — NOT hard-enforced (no provider reservation integration)
+
+**Correction (2026-09-21)**: an earlier draft of this section stated "~$39.12 (with 20% margin: ~$46.94)". That figure could not be reconciled against `official-campaign-proposal.json`'s `cost_reservation` block or against `scripts/generate_campaign_proposal.py::compute_cost_reservation()`, which is the single source of truth for this number and computes it over the 540-trial replacement-inclusive basis. The stale $39.12/$46.94 figures are corrected above to match the authoritative, script-generated $162.00/$194.40. If a smaller "no-replacements" planning figure is ever wanted, it is $54.00 (180 trials × $0.30/trial, i.e. `total_trials`, not `total_trials_including_replacements`) plus 20% margin = $64.80 — but the frozen proposal's cost RESERVATION intentionally sizes for the worst-case replacement count, not the base trial count, so $162.00/$194.40 remain the numbers to use for budget/authorization purposes.
 
 ## Infrastructure-Invalid Policy
 

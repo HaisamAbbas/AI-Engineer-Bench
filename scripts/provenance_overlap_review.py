@@ -191,12 +191,41 @@ def review_all(holdout_dir: Path | None) -> dict:
     results = []
     for task_id, _task_dir in _get_task_dirs():
         results.append(review_task(task_id, holdout_dir))
+    overlap_skipped = sum(
+        1
+        for r in results
+        for f in r["findings"]
+        if f["check"] == "holdout-overlap" and f["status"] == "SKIP"
+    )
+    holdout_overlap_assessed = overlap_skipped == 0
+    if holdout_dir is None:
+        overlap_review_status = (
+            "NOT ASSESSED for any task - no --holdout-dir was provided. No genuine held-out "
+            "fixture directory exists in this repository yet (curate_holdout.py refuses to write "
+            "under the repository root and has not been run to produce a persisted holdout set "
+            "outside it). The per-task 'PASS' status below reflects only the provenance, "
+            "dev-data-token, and label-compliance checks; it does NOT mean overlap was checked, "
+            "and must not be read as '12/12 overlap pass'."
+        )
+    elif overlap_skipped:
+        overlap_review_status = (
+            f"PARTIALLY ASSESSED - overlap check ran but was skipped for {overlap_skipped} of "
+            f"{len(results)} task(s) (see each task's holdout-overlap finding for why)."
+        )
+    else:
+        overlap_review_status = (
+            f"ASSESSED for all {len(results)} tasks against --holdout-dir={holdout_dir}. "
+            "Absence of token overlap is a necessary, not sufficient, contamination signal "
+            "(spec section 22); it does not by itself certify contamination-freedom."
+        )
     summary = {
         "schema_version": "aieb.provenance-review/v1",
         "total_tasks": len(results),
         "passed": sum(1 for r in results if r["status"] == "PASS"),
         "failed": sum(1 for r in results if r["status"] == "FAIL"),
         "warnings": sum(1 for r in results if r["status"] == "WARN"),
+        "holdout_overlap_assessed": holdout_overlap_assessed,
+        "overlap_review_status": overlap_review_status,
         "results": results,
         "verdict_note": "Automated evidence report. Per spec section 22 and the prompt, private examples on public tasks are NOT labeled contamination-free regardless of overlap findings.",
     }
