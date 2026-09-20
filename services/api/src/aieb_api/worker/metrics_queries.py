@@ -16,13 +16,12 @@ SELECTs.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import BudgetReservationRow, CampaignRow, WorkItemRow
-from . import repository
+from ..models import BudgetReservationRow, CampaignRow, KillSwitchRow, MetricCounterRow, WorkItemRow
 
 # Non-terminal campaign states (spec section 39): a campaign that has reached one of
 # the CampaignRow.state check constraint's terminal values no longer needs its
@@ -31,10 +30,14 @@ _NON_TERMINAL_CAMPAIGN_STATES = ("draft", "frozen", "running", "paused", "cancel
 
 
 def kill_switch_active(session: Session) -> int:
-    """1 if the global kill switch is active, 0 otherwise - reuses
-    `repository.is_kill_switch_active`'s fail-closed behavior (a missing singleton row
-    is treated as active) so the metric can never under-report an unsafe state."""
-    return 1 if repository.is_kill_switch_active(session) else 0
+    """1 if active; missing control state is reported as active (fail closed)."""
+    row = session.get(KillSwitchRow, 1)
+    return 1 if row is None or row.active else 0
+
+
+def persistent_counter(session: Session, name: str) -> float:
+    row = session.get(MetricCounterRow, name)
+    return float(row.value) if row is not None else 0.0
 
 
 def campaign_consecutive_infrastructure_failures(session: Session) -> list[tuple[dict[str, str], float]]:
@@ -50,25 +53,15 @@ def campaign_consecutive_infrastructure_failures(session: Session) -> list[tuple
 
 def worker_heartbeat_ages(session: Session, *, now: datetime | None = None) -> list[tuple[dict[str, str], float]]:
     """One label-series per currently-leased work item: `{work_item_id, worker_id,
-    work_type}` -> seconds since its last heartbeat.
-
-    `work_item` stores no separate "last heartbeat" timestamp - only `lease_expiry`,
-    which every heartbeat (and the initial claim) sets to `now + lease_seconds`
-    (`repository.DEFAULT_LEASE_SECONDS` everywhere in this codebase; no caller
-    overrides it with a different value in production paths). The last heartbeat time
-    is therefore reconstructed as `lease_expiry - DEFAULT_LEASE_SECONDS`, and age is
-    `now - that`. This is an approximation that is exact whenever heartbeats use the
-    default lease duration (true today), and is documented here rather than silently
-    assumed - it is not a real recorded heartbeat timestamp."""
+    work_type}` -> seconds since its exact persisted heartbeat timestamp."""
     current_time = now if now is not None else datetime.now(timezone.utc)
     rows = session.execute(
-        select(WorkItemRow.id, WorkItemRow.worker_id, WorkItemRow.type, WorkItemRow.lease_expiry).where(
-            WorkItemRow.state == "leased", WorkItemRow.worker_id.isnot(None), WorkItemRow.lease_expiry.isnot(None)
+        select(WorkItemRow.id, WorkItemRow.worker_id, WorkItemRow.type, WorkItemRow.last_heartbeat_at).where(
+            WorkItemRow.state == "leased", WorkItemRow.worker_id.isnot(None), WorkItemRow.last_heartbeat_at.isnot(None)
         )
     ).all()
     series = []
-    for work_item_id, worker_id, work_type, lease_expiry in rows:
-        last_heartbeat_at = lease_expiry - timedelta(seconds=repository.DEFAULT_LEASE_SECONDS)
+    for work_item_id, worker_id, work_type, last_heartbeat_at in rows:
         age_seconds = max(0.0, (current_time - last_heartbeat_at).total_seconds())
         series.append(
             (

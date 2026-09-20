@@ -860,13 +860,12 @@ both explicitly said no exporter existed. One now does, hand-rolled (no new depe
   server, Alertmanager instance, or paging pipeline is deployed anywhere in this environment.
 - `services/api/src/aieb_api/worker/metrics_queries.py` (new) - read-only functions computing the
   gauges that MUST reflect true current database state fresh at scrape time rather than stale
-  in-process history: `kill_switch_active` (reuses `repository.is_kill_switch_active`'s fail-closed
-  behavior), `campaign_consecutive_infrastructure_failures` (one series per non-terminal campaign),
-  `worker_heartbeat_ages` (one series per currently-leased work item; heartbeat age is reconstructed
-  as `now - (lease_expiry - DEFAULT_LEASE_SECONDS)` since `work_item` stores no separate last-
-  heartbeat timestamp - documented as an approximation, exact under this codebase's actual
-  lease-seconds usage), and `active_budget_reservation_ages` (one series per `status='active'`
-  reservation).
+  in-process history: `kill_switch_active` (missing control rows fail closed),
+  `campaign_consecutive_infrastructure_failures` (one series per non-terminal campaign),
+  `worker_heartbeat_ages` (one series per currently-leased work item from the exact persisted
+  `last_heartbeat_at` timestamp), and `active_budget_reservation_ages` (one series per
+  `status='active'` reservation). Worker-originated counters are persisted in shared PostgreSQL
+  and loaded by the API scrape, so they are visible across processes and API restarts.
 - `services/api/src/aieb_api/routes/metrics.py` (new) - `GET /metrics`, gated behind the SAME
   `require_role("operator", "reviewer", "administrator")` dependency `kill_switch.py`'s GET route
   already uses (not a bespoke auth scheme), calls the query functions above to refresh the DB-backed
@@ -897,7 +896,8 @@ both explicitly said no exporter existed. One now does, hand-rolled (no new depe
   `aieb_reconciler_worker_artifacts_purged_total` by the purged count. Also added smoke coverage for
   the budget-reservation-age and worker-heartbeat-age gauges.
 
-Verification: `tests/test_metrics.py` 10/10 passed (9 subtests). Full regression re-run clean:
+Verification: `tests/test_metrics.py` 12/12 passed (9 subtests), including missing-singleton
+fail-closed and cross-process durable-counter regressions. Full regression re-run clean:
 `tests/test_api_service.py` 101/101 passed (21 subtests), `tests/test_worker_leasing.py` 47/47
 passed - no regressions from the new route, the two repository call sites, or the reconciler change.
 No new dependency was added (`prometheus_client` remains absent from `services/api/pyproject.toml`

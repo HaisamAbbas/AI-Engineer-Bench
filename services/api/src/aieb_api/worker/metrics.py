@@ -27,10 +27,10 @@ Two kinds of metric live here, matching how each is semantically correct to prod
   at scrape time, and the scrape route (`routes/metrics.py`) calls
   `replace_gauge_family()` to load each one into this registry immediately before
   rendering.
-- Counters that are naturally monotonic running totals since process start
-  (`aieb_reconciler_worker_artifacts_purged_total`, `aieb_attempt_infrastructure_invalid_total`)
-  are incremented in-process at their real call sites via `inc_counter()`, the same
-  pattern `log_event`'s own `counters` already used.
+- Counters that originate in worker processes (`aieb_reconciler_worker_artifacts_purged_total`,
+  `aieb_attempt_infrastructure_invalid_total`) are persisted in the shared PostgreSQL
+  `metric_counter` table at their real call sites; the API loads those durable totals at scrape
+  time. The in-process registry remains a local diagnostic mirror only.
 
 `log_event`/`counters`/`snapshot()` are unchanged and still imported by
 `worker/reconciler.py` and `worker/loop.py` - every event still carries the IDs section
@@ -124,16 +124,18 @@ def replace_gauge_family(name: str, series: list[tuple[dict[str, str], float]]) 
 
 
 def inc_counter(name: str, amount: float = 1, **labels: str) -> None:
-    """Increment one label-series of an in-process running counter. Used at real call
-    sites (reconciler purge count, infrastructure-invalid finalize) exactly like
-    `log_event`'s own `counters`, and - like that counter - resets to zero on process
-    restart; that is an accurate description of an in-process counter, not a defect to
-    paper over with persistence this ticket does not add."""
+    """Increment the local diagnostic mirror. Worker call sites also persist the
+    durable total through ``repository.record_metric_counter`` in their transaction."""
     if amount < 0:
         raise ValueError("counters may only increase")
     key = _label_key(labels)
     family = _metric_counters.setdefault(name, {})
     family[key] = family.get(key, 0.0) + amount
+
+
+def replace_counter_family(name: str, value: float) -> None:
+    """Load a durable cross-process counter into the scrape registry."""
+    _metric_counters[name] = {(): float(value)}
 
 
 def _format_value(value: float) -> str:

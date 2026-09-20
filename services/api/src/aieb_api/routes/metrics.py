@@ -49,4 +49,12 @@ def get_metrics(
     metrics.replace_gauge_family(
         "aieb_budget_reservation_age_seconds", metrics_queries.active_budget_reservation_ages(session)
     )
+    metrics.replace_counter_family(
+        "aieb_reconciler_worker_artifacts_purged_total",
+        metrics_queries.persistent_counter(session, "aieb_reconciler_worker_artifacts_purged_total"),
+    )
+    metrics.replace_counter_family(
+        "aieb_attempt_infrastructure_invalid_total",
+        metrics_queries.persistent_counter(session, "aieb_attempt_infrastructure_invalid_total"),
+    )
     return Response(content=metrics.render_prometheus_text(), media_type=PROMETHEUS_CONTENT_TYPE)

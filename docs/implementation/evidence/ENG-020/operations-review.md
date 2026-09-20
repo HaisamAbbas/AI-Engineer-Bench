@@ -504,14 +504,10 @@ per series) and is implemented directly in `worker/metrics.py::render_prometheus
   `aieb_worker_heartbeat_age_seconds`, `aieb_budget_reservation_age_seconds`. These MUST reflect
   true current state - a freshly started API process must report the kill switch's real value, not
   an empty in-process counter waiting for events to replay into it.
-- **Counters incremented in-process at their real call sites**, the same pattern `log_event`'s own
-  `counters` already used: `aieb_reconciler_worker_artifacts_purged_total` (`reconciler.py`,
-  incremented by the actual purged count, not a flat +1) and
-  `aieb_attempt_infrastructure_invalid_total` (`repository.py`, incremented at both
-  `terminal_status = "infrastructure_invalid"` sites inside `reconcile_expired_leases`). Like any
-  in-process counter, these reset to zero on process restart - an accurate description of what an
-  in-process exporter with no deployed time-series database behind it actually is, not a defect
-  papered over with persistence this ticket does not add.
+- **Counters persisted in shared PostgreSQL at their real worker call sites**: the
+  `metric_counter` table receives `aieb_reconciler_worker_artifacts_purged_total` and
+  `aieb_attempt_infrastructure_invalid_total`, so the API scrape sees worker-process events and
+  durable values survive API restarts. The in-process registry remains a diagnostic mirror.
 
 ### How to scrape it
 `GET /metrics` on the API process, with the same bearer-token authentication and
@@ -534,7 +530,7 @@ ages) are the same class of operational detail spec section 3 already restricts 
 | `aieb_attempt_infrastructure_invalid_total` | `SetupFailureRateElevated` (rate) | `runbooks.md#provider-outage` |
 
 ### Verification
-`tests/test_metrics.py`, against the real test PostgreSQL instance (10/10 passed, 9 subtests):
+`tests/test_metrics.py`, against the real test PostgreSQL instance (12/12 passed, 9 subtests):
 `/metrics` requires authentication (401) and an authorized role (403 for an unauthorized one, 200
 for operator/reviewer/administrator); the response is valid Prometheus text with the correct
 content type; a regression test parses every `expr:` field out of `prometheus-rules.yml`, extracts

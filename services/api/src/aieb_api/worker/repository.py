@@ -28,6 +28,7 @@ from typing import Sequence
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
 from sqlalchemy import and_, exists, func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -40,6 +41,7 @@ from ..models import (
     EntrantRevisionRow,
     EvaluationRow,
     KillSwitchRow,
+    MetricCounterRow,
     SystemFenceRow,
     TaskRevisionRow,
     TrialRow,
@@ -52,6 +54,18 @@ from ..evidence_integrity import evidence_digest
 from .metrics import inc_counter
 
 DEFAULT_LEASE_SECONDS = 60
+
+
+def record_metric_counter(session: Session, name: str, amount: int = 1) -> None:
+    """Atomically persist a worker/API-wide monotonic observability counter."""
+    if amount < 0:
+        raise ValueError("metric counters may only increase")
+    statement = pg_insert(MetricCounterRow).values(name=name, value=amount)
+    statement = statement.on_conflict_do_update(
+        index_elements=[MetricCounterRow.name],
+        set_={"value": MetricCounterRow.value + amount, "updated_at": func.now()},
+    )
+    session.execute(statement)
 
 # ENG-020 auto-pause (spec sections 39/48): distinct from the global kill switch below.
 AUTO_PAUSE_INFRASTRUCTURE_FAILURE_THRESHOLD = 3
@@ -371,14 +385,15 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
     if work_type is not None:
         query = query.where(WorkItemRow.type == work_type)
     candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
-    lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    heartbeat_at = datetime.now(timezone.utc)
+    lease_expiry = heartbeat_at + timedelta(seconds=lease_seconds)
     lease_fence_epoch = current_fence_epoch(session, share_lock=True)
     leased = session.execute(
         update(WorkItemRow)
         .where(WorkItemRow.id == candidate.c.id)
         .values(
             state="leased", worker_id=worker_id, generation=WorkItemRow.generation + 1,
-            lease_expiry=lease_expiry, lease_epoch=lease_fence_epoch,
+            lease_expiry=lease_expiry, last_heartbeat_at=heartbeat_at, lease_epoch=lease_fence_epoch,
         )
         .returning(WorkItemRow)
     ).scalar_one_or_none()
@@ -401,11 +416,12 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
 def heartbeat(session: Session, *, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> bool:
     """Extend the lease. Returns False if this worker/generation has been fenced out -
     the caller must abort immediately rather than continue engineering."""
-    lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    heartbeat_at = datetime.now(timezone.utc)
+    lease_expiry = heartbeat_at + timedelta(seconds=lease_seconds)
     result = session.execute(
         update(WorkItemRow)
         .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
-        .values(lease_expiry=lease_expiry)
+        .values(lease_expiry=lease_expiry, last_heartbeat_at=heartbeat_at)
     )
     session.commit()
     return result.rowcount == 1
@@ -446,11 +462,12 @@ def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id:
     SELECT ... FOR UPDATE SKIP LOCKED contends for, so the two correctly
     serialize: whichever transaction locks the row first commits its
     decision before the other's WHERE clause is even (re-)evaluated."""
-    lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    heartbeat_at = datetime.now(timezone.utc)
+    lease_expiry = heartbeat_at + timedelta(seconds=lease_seconds)
     fenced = session.execute(
         update(WorkItemRow)
         .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
-        .values(lease_expiry=lease_expiry)
+        .values(lease_expiry=lease_expiry, last_heartbeat_at=heartbeat_at)
         .returning(WorkItemRow.id)
     ).scalar_one_or_none()
     return fenced is not None
@@ -820,6 +837,8 @@ def purge_expired_worker_artifacts(session: Session, *, now: datetime | None = N
         session.flush()
         session.delete(blob)
         removed += 1
+    if removed:
+        record_metric_counter(session, "aieb_reconciler_worker_artifacts_purged_total", removed)
     session.commit()
     return removed
 
@@ -947,6 +966,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
             attempt.phase = "terminal"
             attempt.terminal_status = "infrastructure_invalid"
             inc_counter("aieb_attempt_infrastructure_invalid_total")
+            record_metric_counter(session, "aieb_attempt_infrastructure_invalid_total")
             orphaned.append(attempt.id)
             attempt_count = session.execute(select(func.count()).select_from(AttemptRow).where(AttemptRow.trial_id == trial.id)).scalar_one()
             if attempt_count - 1 < max_replacements:
@@ -988,6 +1008,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
             attempt.phase = "terminal"
             attempt.terminal_status = "infrastructure_invalid"
             inc_counter("aieb_attempt_infrastructure_invalid_total")
+            record_metric_counter(session, "aieb_attempt_infrastructure_invalid_total")
             exhausted += 1
     session.commit()
     return ReconciliationSummary(

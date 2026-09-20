@@ -13,6 +13,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     CheckConstraint,
+    BigInteger,
     DateTime,
     ForeignKey,
     Index,
@@ -290,6 +291,10 @@ class WorkItemRow(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="ready")
     worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Exact timestamp of the claim/last heartbeat. Used by the operational
+    # exporter; deriving this from lease_expiry is wrong when lease duration is
+    # configured per worker.
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # ENG-020 restore-drill fencing (gap 4): the system fence epoch under which this lease was
     # claimed. Every fenced lease operation requires `lease_epoch == current_fence_epoch()`, so
@@ -760,6 +765,21 @@ class SystemFenceRow(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_system_fence_singleton"),
     )
+
+
+class MetricCounterRow(Base):
+    """Durable counters shared by API and worker processes.
+
+    The metrics endpoint is served by the API process, while reconciliation and
+    lease recovery run in separate workers. Persisting these monotonic totals
+    prevents a scrape from silently reporting the API process's local zero.
+    """
+
+    __tablename__ = "metric_counter"
+
+    name: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
 class AttemptCredentialRow(Base):

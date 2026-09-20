@@ -4309,6 +4309,26 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/metrics": {
+      "get": {
+        "description": "Scrape endpoint: computes every DB-backed gauge fresh (kill switch state,\nper-campaign consecutive infrastructure failures, worker heartbeat ages, active\nbudget reservation ages) and renders it alongside the in-process running counters\n(`aieb_reconciler_worker_artifacts_purged_total`,\n`aieb_attempt_infrastructure_invalid_total`) as Prometheus exposition-format text.",
+        "operationId": "get_metrics_metrics_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Metrics",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
     "/v1/artifacts/{artifact_ref_id}/download": {
       "get": {
         "operationId": "download_artifact_v1_artifacts__artifact_ref_id__download_get",

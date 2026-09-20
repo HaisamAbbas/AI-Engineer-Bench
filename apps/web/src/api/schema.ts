@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Metrics
+         * @description Scrape endpoint: computes every DB-backed gauge fresh (kill switch state,
+         *     per-campaign consecutive infrastructure failures, worker heartbeat ages, active
+         *     budget reservation ages) and renders it alongside the in-process running counters
+         *     (`aieb_reconciler_worker_artifacts_purged_total`,
+         *     `aieb_attempt_infrastructure_invalid_total`) as Prometheus exposition-format text.
+         */
+        get: operations["get_metrics_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/artifacts/{artifact_ref_id}/download": {
         parameters: {
             query?: never;
@@ -2618,6 +2642,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_metrics_metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     download_artifact_v1_artifacts__artifact_ref_id__download_get: {
         parameters: {
             query?: never;

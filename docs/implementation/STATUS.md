@@ -136,7 +136,7 @@ state; the two running-total counters are incremented at their real call sites
 `reconciler.py`'s purge count). `deploy/alerts/prometheus-rules.yml`'s header is corrected: the
 exporter it assumed did not exist now does, in this repository, reachable via `GET /metrics` - no
 Prometheus server, Alertmanager instance, or paging pipeline is deployed anywhere, and that
-remains explicitly out of scope. `tests/test_metrics.py` (10/10 passed, 9 subtests) covers the
+ remains explicitly out of scope. `tests/test_metrics.py` (12/12 passed, 9 subtests) covers the
 auth gate, response shape/content-type, a regression test that every alert rule's metric name is
 present in a real scrape, and functional proof that the instrumentation reflects real state
 changes rather than being decorative. Full regression re-run clean:
@@ -144,3 +144,9 @@ changes rather than being decorative. Full regression re-run clean:
 open ENG-020 gap; real OIDC, cloud deployment, and live-smoke authorization remain blocked on
 cloud authorization/budget, as previously disclosed, and independent review of this closure
 remains open per this repository's standing acceptance policy.
+
+Post-closure corrections: `tests/test_metrics.py` is now 12/12 with regressions for missing
+kill-switch state and cross-process durable counters. Worker counters persist in the shared
+PostgreSQL `metric_counter` table, and exact `work_item.last_heartbeat_at` timestamps are written
+on claim and heartbeat. Migration `c7d8e9f0a1b2` merges the existing migration heads and passed a
+downgrade/upgrade round-trip.

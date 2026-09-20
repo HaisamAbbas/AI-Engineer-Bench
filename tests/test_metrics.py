@@ -158,13 +158,14 @@ class MetricsExporterTests(unittest.TestCase):
             attempt = api_models.AttemptRow(trial_id=trial.id, number=1, phase="engineering", lease_generation=1)
             session.add(attempt)
             session.flush()
+            heartbeat_at = datetime.now(timezone.utc)
             lease_expiry = (
                 datetime.now(timezone.utc) - timedelta(seconds=5)
                 if expired else datetime.now(timezone.utc) + timedelta(seconds=60)
             )
             work_item = api_models.WorkItemRow(
                 attempt_id=attempt.id, type="engineering", state="leased", worker_id="metrics-worker",
-                lease_expiry=lease_expiry, generation=1, lease_epoch=0,
+                lease_expiry=lease_expiry, last_heartbeat_at=heartbeat_at, generation=1, lease_epoch=0,
             )
             session.add(work_item)
             session.commit()
@@ -236,6 +237,23 @@ class MetricsExporterTests(unittest.TestCase):
         with self.session_factory() as session:
             repository.deactivate_kill_switch(session)
         self.assertEqual(_gauge_value(self._scrape()), "0")
+
+    def test_kill_switch_metric_fails_closed_when_control_row_is_missing(self) -> None:
+        with self.session_factory() as session:
+            session.execute(text("DELETE FROM kill_switch WHERE id = 1"))
+            session.commit()
+        body = self._scrape()
+        self.assertIsNotNone(re.search(r"^aieb_kill_switch_active\s+1$", body, flags=re.MULTILINE), body)
+
+    def test_worker_counter_is_read_from_shared_database(self) -> None:
+        with self.session_factory() as session:
+            repository.record_metric_counter(session, "aieb_attempt_infrastructure_invalid_total", 7)
+            session.commit()
+        # Deliberately clear the in-process mirror: the API must still expose
+        # the worker's durable value from PostgreSQL.
+        metrics._metric_counters.clear()
+        body = self._scrape()
+        self.assertIsNotNone(re.search(r"^aieb_attempt_infrastructure_invalid_total\s+7$", body, flags=re.MULTILINE), body)
 
     def test_campaign_consecutive_infrastructure_failures_gauge_tracks_repository_state(self) -> None:
         campaign_id = self._seed_campaign(state="running")
