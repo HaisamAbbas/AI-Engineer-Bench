@@ -77,25 +77,41 @@ the current epoch, and the reconciler sweeps stale-epoch leases even when in-win
 review's findings 1 and 2 were fixed and pushed in `27b14be` (fence row held FOR SHARE for each
 fenced transaction via `current_fence_epoch(..., share_lock=True)` so the exclusive advance cannot
 interleave; and `attempt_credential_status` `valid` now requires `row.lease_epoch == current`).
-RE-REVIEW ROUND 2 on `27b14be` then found the operator command's kill-switch barrier check was
+RE-REVIEW ROUND 2 on `27b14be` found the operator command's kill-switch barrier check was
 NOT atomic with the epoch bump (BLOCKING: a concurrent deactivation could land after the check and
 after `advance_fence_epoch` had committed, so the command reported `advanced=False` while the
 epoch had moved and automation could retry-advance repeatedly), plus two mediums (the claimed
 "operator-DB-role authenticated" was not implemented - no operator role/grants/current_user
 validation; and the drill bypassed the command, calling `repository.advance_fence_epoch()` directly,
-which is why the non-atomicity escaped it). All three are FIXED in locally-staged, uncommitted
-changes (regression-tested; negative controls reverted to green): `advance_fence_epoch_with_barrier`
-makes the barrier and bump ONE transaction (lock `kill_switch` FOR UPDATE, confirm ACTIVE, bump the
-fence epoch under its own lock, commit once - a concurrent deactivation either completes first and
-causes REFUSAL with no epoch change, or blocks until the advance commits; both orderings
-two-session regression-tested, worker-leasing 44 + credentials 15 green); the command now reports
-`current_user` and `--by-user` is re-scoped to an OPTIONAL, INFORMATIONAL audit label (executable
-`--check`/refusal/advance verified against the control plane); and the drill now drives
-`scripts/fence_advance.py` AS A SUBPROCESS (restored DB inherits the backup's INACTIVE kill switch;
-`--check` fails then passes; refusal leaves the epoch unchanged; advance only under a
-RE-ESTABLISHED barrier; resume precedes the fresh-claim assertion) with the runbook rewritten to
-that exact order. RE-REVIEW OF THIS ROUND IS PENDING (fixes staged uncommitted on `27b14be`);
-re-review of `27b14be` itself confirmed HEAD == origin/main there and untouched tracked files. gap 5
+which is why the non-atomicity escaped it). All three were fixed and pushed at `8ea56af`:
+`advance_fence_epoch_with_barrier` makes the barrier and bump ONE transaction (lock `kill_switch`
+FOR UPDATE, confirm ACTIVE, bump the fence epoch under its own lock, commit once - a concurrent
+deactivation either completes first and causes REFUSAL with no epoch change, or blocks until the
+advance commits; both orderings two-session regression-tested, worker-leasing 44 + credentials 15
+green); the command now reports `current_user` and `--by-user` is re-scoped to an OPTIONAL,
+INFORMATIONAL audit label (executable `--check`/refusal/advance verified against the control
+plane); and the drill now drives `scripts/fence_advance.py` AS A SUBPROCESS (restored DB inherits
+the backup's INACTIVE kill switch; `--check` fails then passes; refusal leaves the epoch unchanged;
+advance only under a RE-ESTABLISHED barrier; resume precedes the fresh-claim assertion) with the
+runbook rewritten to that exact order.
+RE-REVIEW ROUND 3 of `8ea56af` accepted all of that but found a NEW blocker in the concurrent-operator
+path: two concurrent `scripts/fence_advance.py` invocations each read epoch 0 up front (UNLOCKED),
+so PostgreSQL correctly serialized the mutations (A committed 0 -> 1, B committed 1 -> 2) and B then
+reported FAILURE AFTER ITS OWN MUTATION HAD COMMITTED (`fence-advance FAILED: expected epoch 0 ->
+1, observed 2`, exit 1) - the same "reports failure after committing" hazard this epoch exists to
+remove, inviting a retry that would double-advance. The round-3 fix was first reproduced RED as the
+reviewer did (the reviewer's exact two-`_advance()` reproduction is now a regression test that
+drives the real script), then closed: (previous, new) epoch are BOTH read under the SAME locks and
+RETURNED by `advance_fence_epoch_with_barrier` (a `(before, after)` tuple); the CLI no longer does
+an unlocked pre-read or a post-commit mismatch check, so each command reports exactly the
+transition it committed (the concurrent run now yields 0 -> 1 and 1 -> 2, final epoch 2, both exit
+0); `--check` is genuinely WRITE-FREE (it reads the fence row directly instead of triggering the
+repository's missing-row self-heal INSERT); and `--by-user` is validated against `users` with a
+clean REFUSED (exit 3, epoch unchanged) instead of a raw IntegrityError traceback. Round-3
+verification: worker-leasing 46/46 (incl. the deterministic lock-timeout ordering-B, the
+script-seam concurrent-command regression, and the repository-seam pair-return regression),
+credentials 15/15, backup/restore drill 5/5 through the command. The round-3 fix is being staged
+with the ledger updates for RE-REVIEW; gap 5
 (operator kill-switch API/CLI - the repository knob exists, the operator surface does not) and gap 6
 (Prometheus `/metrics` + alerting) have NOT started; gap 5 is next after gap 4 accepts. PG-gated
 execution is no longer blocked here: the `aieb-test-postgres` container

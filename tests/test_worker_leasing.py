@@ -953,54 +953,164 @@ class WorkerLeasingTests(unittest.TestCase):
         FOR UPDATE lock activate/deactivate take) until the advance has committed, so the
         barrier can never vanish between the check and the mutation. The unlocked version on
         27b14be let the deactivation land mid-command and report advanced=False with the epoch
-        moved. Regression-red there; green with advance_fence_epoch_with_barrier."""
+        moved. Regression-red there; green with advance_fence_epoch_with_barrier. Proven with a
+        deterministic lock_timeout (the same pattern ordering A and
+        test_fence_advance_is_atomic_against_in_flight_fenced_operations use), not wall-clock
+        sleeps that a slower CI host could make vacuous."""
         from sqlalchemy.exc import OperationalError
 
         self._frozen_enqueued_campaign()
         with self.session_factory() as session:
             repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+
+        # The advance opens its single transaction (barrier lock + fence lock) but does NOT
+        # commit yet - the reviewer's in-flight window. The transition is returned under the
+        # same locks.
+        with self.session_factory() as session_a:
+            before, advanced_to = repository.advance_fence_epoch_with_barrier(
+                session_a, reason="test: atomic advance in flight", commit=False,
+            )
+            self.assertEqual((before, advanced_to), (0, 1))
+
+            # A concurrent deactivation STARTS while the advance is in flight. It cannot land
+            # before the advance commits: it BLOCKS on the kill_switch row FOR UPDATE the
+            # advance already holds. A short lock_timeout turns that enforced wait into a
+            # deterministic OperationalError, proving the deactivation could not have committed
+            # its deactivation yet - no timing sensitivity.
+            with self.session_factory() as session_b:
+                session_b.execute(text("SET LOCAL lock_timeout = 500"))
+                with self.assertRaises(OperationalError):
+                    repository.deactivate_kill_switch(session_b)
+
+            # The barrier is still intact for the whole in-flight window.
+            with self.session_factory() as session:
+                self.assertTrue(repository.is_kill_switch_active(session))
+
+            # The successful advance commits FIRST...
+            session_a.commit()
+
+        # ...and only THEN is the barrier clear for a NEW deactivation to proceed and land.
         with self.session_factory() as session:
-            self.assertTrue(repository.is_kill_switch_active(session))
-
-        # The advance opens its single transaction (barrier lock + fence lock) and does NOT
-        # commit yet - the reviewer's in-flight window.
-        session_a = self.session_factory()
-        advanced_to = repository.advance_fence_epoch_with_barrier(
-            session_a, reason="test: atomic advance in flight", commit=False,
-        )
-        self.assertEqual(advanced_to, 1)
-
-        # A concurrent deactivation STARTS while the advance is in flight. It cannot land before
-        # the advance commits - launch it on a background thread that must BLOCK on the
-        # kill_switch row (the same FOR UPDATE lock the advance holds) until session_a commits.
-        errors: list[BaseException] = []
-        landed = threading.Event()
-
-        def _deactivate_after_waiting() -> None:
-            try:
-                with self.session_factory() as session:
-                    repository.deactivate_kill_switch(session)
-            except BaseException as exc:  # surfaced below via `errors`
-                errors.append(exc)
-            finally:
-                landed.set()
-
-        deactivation = threading.Thread(target=_deactivate_after_waiting, daemon=True)
-        deactivation.start()
-        time.sleep(0.4)  # give it time to reach (and block on) the row lock
-        self.assertFalse(landed.is_set(), "the concurrent deactivation must WAIT, not slip in before the advance commits")
-
-        # The successful advance commits FIRST...
-        session_a.commit()
-        session_a.close()
-        # ...and only THEN does the deferred deactivation proceed.
-        landed.wait(timeout=10)
-        deactivation.join(timeout=10)
-        self.assertFalse(errors, "the deferred deactivation must eventually succeed: %r" % (errors,))
-        self.assertTrue(landed.is_set())
+            repository.deactivate_kill_switch(session)
         with self.session_factory() as session:
             self.assertEqual(repository.current_fence_epoch(session), 1)
             self.assertFalse(repository.is_kill_switch_active(session))
+
+    @staticmethod
+    def _load_fence_advance_script():
+        """Load `scripts/fence_advance.py` as a module so tests can drive its `_advance()`
+        exactly as `main()` does - the reviewer's round-3 reproduction runs concurrent
+        `_advance()` calls, not direct repository calls."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("fence_advance_script", ROOT / "scripts" / "fence_advance.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+
+    def test_two_concurrent_operator_commands_each_report_their_own_committed_transition(self) -> None:
+        """ENG-020 gap 4, re-review round 3 (the reviewer's exact reproduction - BLOCKING): two
+        concurrent `scripts/fence_advance.py::_advance()` calls that both read epoch 0 before
+        entering the atomic helper. Pre-fix, PostgreSQL correctly serialized the mutations
+        (command A committed 0 -> 1, command B committed 1 -> 2) but command B then reported
+        `fence-advance FAILED: expected epoch 0 -> 1, observed 2` and exited 1 - a failure AFTER
+        its own mutation had committed, recreating the dangerous property this feature exists to
+        remove (an automated or human retry would double-advance the fence). Regression-red on
+        8ea56af (the second command lands SystemExit(1)); green once `_advance` reads the
+        transition returned by advance_fence_epoch_with_barrier instead of an unlocked pre-read.
+        The epoch read is synchronized so BOTH commands verifiably observe epoch 0 before either
+        enters the helper - the reviewer's interleaving made deterministic rather than left to
+        thread scheduling."""
+        from threading import Barrier as ThreadBarrier
+        from unittest.mock import patch as mock_patch
+
+        _fence_advance = self._load_fence_advance_script()
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+
+        # Both commands must finish their unlocked epoch pre-read BEFORE either enters the atomic
+        # helper (the reviewer's interleaving); a barrier inside the read makes that exact order
+        # deterministic. It wraps the REAL repository read - the rest of the command path is
+        # unchanged, so the pre-fix bug (stale pre-read vs committed bump) is exercised as-is.
+        read_barrier = ThreadBarrier(2)
+        real_reader = repository.current_fence_epoch
+
+        def _synchronized_read(session, *args, **kwargs):
+            value = real_reader(session, *args, **kwargs)
+            read_barrier.wait(timeout=10)
+            return value
+
+        barrier = ThreadBarrier(2)
+        results: dict[str, object] = {}
+
+        def _operator(name: str) -> None:
+            try:
+                barrier.wait(timeout=10)
+                results[name] = _fence_advance._advance(
+                    self.session_factory, reason=f"test: concurrent operator {name}", by_user=None,
+                )
+            except BaseException as exc:  # surfaced via `results` below
+                results[name] = exc
+
+        first = threading.Thread(target=_operator, args=("a",), daemon=True)
+        second = threading.Thread(target=_operator, args=("b",), daemon=True)
+        with mock_patch.object(repository, "current_fence_epoch", side_effect=_synchronized_read):
+            first.start()
+            second.start()
+            first.join(timeout=60)
+            second.join(timeout=60)
+        # BOTH concurrent commands must return their own honest committed transition - neither
+        # may report failure (0) after its mutation committed.
+        self.assertEqual(
+            [type(value).__name__ for value in results.values()], ["dict", "dict"],
+            f"a concurrent command reported failure after committing: {results!r}",
+        )
+        transitions = sorted(
+            (result["fence_epoch_before"], result["fence_epoch_after"]) for result in results.values()
+        )
+        self.assertEqual(transitions, [(0, 1), (1, 2)])
+        with self.session_factory() as session:
+            self.assertEqual(repository.current_fence_epoch(session), 2)
+            self.assertTrue(repository.is_kill_switch_active(session))
+
+    def test_concurrent_advances_each_return_only_their_own_locked_transition(self) -> None:
+        """ENG-020 gap 4, re-review round 3 (contract at the repository seam): every concurrent
+        `advance_fence_epoch_with_barrier()` call must return the (previous, new) pair it itself
+        committed under the fence row's FOR UPDATE lock - monotonic, never a pre-read stale
+        value. Pre-fix (returns an int, `before` read outside the transaction) this disagreed
+        for a concurrent operator; the (before, after) pair is the honest per-call view, and the
+        combined transitions sort to the exact serialization PostgreSQL chose."""
+        from threading import Barrier as ThreadBarrier
+
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+
+        barrier = ThreadBarrier(2)
+        results: dict[str, tuple[int, int] | BaseException] = {}
+
+        def _advance(name: str) -> None:
+            try:
+                with self.session_factory() as session:
+                    barrier.wait(timeout=10)
+                    results[name] = repository.advance_fence_epoch_with_barrier(
+                        session, reason=f"test: concurrent advance {name}",
+                    )
+            except BaseException as exc:  # surfaced via `results` below
+                results[name] = exc
+
+        first = threading.Thread(target=_advance, args=("a",), daemon=True)
+        second = threading.Thread(target=_advance, args=("b",), daemon=True)
+        first.start()
+        second.start()
+        first.join(timeout=60)
+        second.join(timeout=60)
+        self.assertEqual(sorted(results.values()), [(0, 1), (1, 2)])
+        with self.session_factory() as session:
+            self.assertEqual(repository.current_fence_epoch(session), 2)
+            self.assertTrue(repository.is_kill_switch_active(session))
 
     # ---- 6. verifier outage (trusted scorer crash, not a candidate defect) --
 

@@ -35,6 +35,12 @@ Usage:
 `current_user`, and exits non-zero (3) if the barrier is missing - a pre-flight gate. The mutating
 form refuses to run unless the kill switch is active and prints the old/new epochs plus the DB
 identity that advanced them.
+
+Rounds 2 + 3 summary: (a) the barrier check is ATOMIC with the epoch bump (one transaction),
+(b) a command reports the (previous, new) transition read under the SAME locks - it never reads
+the epoch up front or reports FAILED after its own mutation committed, and (c) `--check` performs
+no writes at all (it reads the fence row directly rather than triggering the repository's
+missing-row self-heal), so an operator pre-flight never mutates the database.
 """
 from __future__ import annotations
 
@@ -68,10 +74,15 @@ def _current_user(session) -> str:
 
 
 def _check(session_factory) -> dict[str, object]:
+    from aieb_api import models as api_models
     from aieb_api.worker import repository
 
     with session_factory() as session:
-        epoch = repository.current_fence_epoch(session)
+        # Read the epoch DIRECTLY so `--check` performs no writes at all: the repository's
+        # current_fence_epoch() self-heals a missing singleton row with an INSERT (rolled back on
+        # close, but a write during a pre-flight check is still a write).
+        fence = session.get(api_models.SystemFenceRow, 1)
+        epoch = 0 if fence is None else fence.lease_fence_epoch
         kill_switch_active = repository.is_kill_switch_active(session)
         db_user = _current_user(session)
     return {"fence_epoch": epoch, "kill_switch_active": kill_switch_active, "db_user": db_user}
@@ -81,18 +92,17 @@ def _advance(session_factory, *, reason: str, by_user: uuid.UUID | None) -> dict
     from aieb_api.worker import repository
 
     with session_factory() as session:
-        before = repository.current_fence_epoch(session)
         try:
-            after = repository.advance_fence_epoch_with_barrier(
+            before, after = repository.advance_fence_epoch_with_barrier(
                 session, reason=reason, activated_by_user_id=by_user,
             )
         except repository.KillSwitchBarrierError as exc:
             print(f"fence-advance REFUSED: {exc}", file=sys.stderr)
             return {"advanced": False, "refused": "kill switch not active"}
+        except ValueError as exc:
+            print(f"fence-advance REFUSED: {exc}", file=sys.stderr)
+            return {"advanced": False, "refused": str(exc)}
         db_user = _current_user(session)
-    if after != before + 1:
-        print(f"fence-advance FAILED: expected epoch {before} -> {before + 1}, observed {after}", file=sys.stderr)
-        raise SystemExit(1)
     return {"advanced": True, "fence_epoch_before": before, "fence_epoch_after": after, "db_user": db_user}
 
 

@@ -323,6 +323,56 @@ re-opened the closure with three findings, all fixed and regression-tested in th
    stop/isolate + set barrier on the live DB (knowing it will be lost), restore, RE-ESTABLISH the
    barrier on the restored DB, `--check`, advance, reconcile, resume.
 
+### Re-review round 3 (reviewer re-check of `8ea56af`): concurrent operator commands must never report failure after committing
+The re-review accepted the round-2 findings (atomic barrier, honest authorization, drill through
+the command) but reproduced a NEW blocker in the concurrent-operator path, plus a stale-ledger
+item; all are fixed and regression-tested in this round:
+
+1. **BLOCKING - two concurrent fence commands each read epoch 0 up front, so the later one
+   reported FAILED after its OWN mutation had committed.** The CLI's `_advance()` read `before`
+   with an UNLOCKED `current_fence_epoch()` before entering the atomic helper. The reviewer
+   synchronized two valid commands so both observed epoch 0, then let PostgreSQL serialize the
+   mutations: command A committed 0 -> 1 and reported success; command B committed 1 -> 2 and
+   then reported `fence-advance FAILED: expected epoch 0 -> 1, observed 2` (exit 1) - a failure
+   AFTER its own mutation committed, recreating the dangerous property this epoch exists to
+   remove (an automated or human retry would double-advance the fence). FIXED by removing the
+   unlocked read and the post-commit mismatch check entirely: `advance_fence_epoch_with_barrier`
+   now returns the **(previous_epoch, new_epoch) tuple, BOTH read under the same locks** - the
+   fence row's FOR UPDATE is taken first, `before` read from that locked row, then the bump - so
+   every concurrent command reports exactly the transition it itself committed. Regression (the
+   reviewer's exact reproduction): `test_two_concurrent_operator_commands_each_report_their_own_committed_transition`
+   drives the REAL `scripts/fence_advance.py::_advance()` twice concurrently, with the epoch
+   pre-reads synchronized so both observe 0 (making the reviewer's interleaving deterministic
+   instead of lottery-heavy); it is RED on `8ea56af` (the second command records SystemExit(1)
+   with `fence-advance FAILED: expected epoch 0 -> 1, observed 2`) and GREEN on the fix (both
+   return dicts, transitions sort to [(0,1),(1,2)], final epoch 2). A second regression at the
+   repository seam, `test_concurrent_advances_each_return_only_their_own_locked_transition`,
+   pins the (before, after) pair-return contract itself.
+2. **LOW - `--by-user` with a syntactically-valid but unknown UUID ended in a raw IntegrityError
+   traceback** (the FK catches it, so nothing was committed - a UX/disclosure defect, not a
+   correctness leak). FIXED: `advance_fence_epoch_with_barrier` validates `activated_by_user_id`
+   against `users` BEFORE any lock or epoch change and raises `ValueError`; the CLI prints a
+   clean `fence-advance REFUSED: ... does not reference an existing users row; nothing was
+   advanced` and exits 3 with the epoch unchanged (verified against the control plane).
+3. **LOW - `--check` claimed to be read-only but could write.** `current_fence_epoch()` self-heals
+   a missing `system_fence` row with an INSERT (rolled back at session close), so a pre-flight
+   check could mutate (or at least log an ERROR against a read-only credential). FIXED: `--check`
+   now reads the fence row directly (`session.get(SystemFenceRow, 1)`), genuinely write-free.
+4. **Low - ledgers said the round-2 fixes were still staged uncommitted on `8ea56af`.**
+   STATUS.md/SESSION_HANDOFF.md corrected: round-2 was committed and pushed at `8ea56af`; the
+   round-3 fix is the concurrent-transition work in this section.
+5. **Test rigor (internal, not a review finding) - ordering B used `time.sleep(0.4)` to prove the
+   deferred deactivation could not slip in**, which is vacuous on a slow CI host if the
+   deactivation thread merely starts late. FIXED: the same proof made deterministic with the
+   `SET LOCAL lock_timeout` pattern the other concurrency regressions use - while the advance's
+   transaction is open, a concurrent deactivate must raise a lock-timeout OperationalError; after
+   the advance commits, a fresh deactivate lands.
+
+Round-3 verification on the staged tree: worker-leasing 46/46 (incl. the script-seam concurrent
+regression, the repository-seam pair-return regression, both deactivation orderings, and the FOR
+SHARE atomicity test), credentials 15/15, and the backup/restore drill 5/5 through
+`scripts/fence_advance.py`. Working tree and `git diff --check` clean on the last full state.
+
 ### CI (spec section 42)
 - `permissions: contents: read` added to all five workflows (the three pre-existing ones plus
   the two new ones below) - none previously declared least-privilege permissions.

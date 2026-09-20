@@ -43,6 +43,7 @@ from ..models import (
     SystemFenceRow,
     TaskRevisionRow,
     TrialRow,
+    User,
     WorkItemRow,
     WorkerArtifactBlobRow,
     WorkerArtifactReferenceRow,
@@ -232,23 +233,44 @@ class KillSwitchBarrierError(RuntimeError):
 
 def advance_fence_epoch_with_barrier(
     session: Session, *, reason: str, activated_by_user_id: uuid.UUID | None = None, commit: bool = True,
-) -> int:
-    """ENG-020 gap 4 (re-review round 2): the OPERATOR advance, made ATOMIC with the kill-switch
-    barrier. ONE transaction (1) locks the kill_switch singleton row FOR UPDATE - the same lock
-    activate/deactivate_kill_switch take - (2) confirms it is ACTIVE, raising KillSwitchBarrierError
-    with the epoch untouched otherwise, then (3) bumps the fence epoch under its own FOR UPDATE
-    lock and (4) commits ONCE (`commit=False` leaves both locks open for the caller's single outer
-    commit). A concurrent deactivation therefore either wins the kill_switch row lock FIRST - this
-    call then sees active=False and refuses with NO epoch change - or BLOCKS on that row until this
-    advance has fully committed, so the barrier can never disappear between the check and the
-    mutation (the re-review's reproduced `advanced=False` while the epoch HAD advanced)."""
-    kill_switch = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one()
+) -> tuple[int, int]:
+    """ENG-020 gap 4 (re-review rounds 2 + 3): the OPERATOR advance, made ATOMIC with the
+    kill-switch barrier. ONE transaction (1) locks the kill_switch singleton row FOR UPDATE - the
+    same lock activate/deactivate_kill_switch take - (2) confirms it is ACTIVE, raising
+    KillSwitchBarrierError with the epoch untouched otherwise, then (3) bumps the fence epoch
+    under its own FOR UPDATE lock and (4) commits ONCE (`commit=False` leaves both locks open for
+    the caller's single outer commit). A concurrent deactivation therefore either wins the
+    kill_switch row lock FIRST - this call then sees active=False and refuses with NO epoch
+    change - or BLOCKS on that row until this advance has fully committed, so the barrier can
+    never disappear between the check and the mutation.
+
+    Returns the (previous_epoch, new_epoch) pair, BOTH read under these same locks (round-3
+    blocker: the operator CLI previously read `before` outside this transaction, so a concurrent
+    command that committed between that unlocked read and this bump made its own honestly
+    committed transition look like a FAILURE - "expected epoch 0 -> 1, observed 2" - recreating
+    the "reports failure after its own mutation committed" hazard this epoch exists to remove, and
+    inviting a retry that would double-advance the fence). `activated_by_user_id`, when given,
+    must reference an existing `users` row - surfaced as ValueError BEFORE any lock or epoch
+    change so an operator typo fails cleanly instead of as a raw IntegrityError (the FK would
+    catch it too, after the mutation had already been attempted)."""
+    kill_switch = session.execute(select(KillSwitchRow).where(KillSwitchRow.id == 1).with_for_update()).scalar_one_or_none()
+    if kill_switch is None:
+        raise RuntimeError("kill_switch singleton row (id=1) is missing; run migrations before advancing the fence")
     if not kill_switch.active:
         raise KillSwitchBarrierError(
             "the kill switch is not active: the restore runbook requires it (no new dispatch) "
             "before the system fence epoch may advance; nothing was advanced"
         )
-    return advance_fence_epoch(session, reason=reason, activated_by_user_id=activated_by_user_id, commit=commit)
+    if activated_by_user_id is not None and session.get(User, activated_by_user_id) is None:
+        raise ValueError(
+            f"activated_by_user_id {activated_by_user_id} does not reference an existing users row; "
+            "nothing was advanced"
+        )
+    fence = session.execute(select(SystemFenceRow).where(SystemFenceRow.id == 1).with_for_update()).scalar_one_or_none()
+    if fence is None:
+        raise RuntimeError("system_fence singleton row (id=1) is missing; run migrations before advancing the fence")
+    before = fence.lease_fence_epoch
+    return before, advance_fence_epoch(session, reason=reason, activated_by_user_id=activated_by_user_id, commit=commit)
 
 
 def _fenced_work_item_where(*, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_fence_epoch: int):
