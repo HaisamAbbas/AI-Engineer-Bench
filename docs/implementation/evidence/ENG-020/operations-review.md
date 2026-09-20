@@ -213,21 +213,70 @@ empty database. Two legs:
 
 ### Backup/restore drill (spec section 40)
 `scripts/backup_restore_drill.py` - a real `pg_dump`/`pg_restore` cycle between two separate
-disposable databases, asserting the THREE specific behaviors spec section 40 names (not restore
-duration, which is reported only as a disclosed local-proxy measurement):
-1. An abandoned lease is still `leased` immediately after restore - not silently resumed.
-2. Reconciliation run against the RESTORED database correctly recognizes and quarantines the
-   orphaned lease (the same mechanism `tests/test_worker_leasing.py` already covers against a
-   live connection, now proven to survive an actual restore).
-3. A worker retrying with its stale pre-restore lease generation is fenced out after
+disposable databases, asserting the behaviors spec section 40 names (not restore duration, which
+is reported only as a disclosed local-proxy measurement). FIVE assertions:
+1. An abandoned lease is still `leased` immediately after restore - not silently resumed. The
+   drill's lease is DELIBERATELY still within its window (`lease_expiry` 30 minutes in the
+   future, not backdated) because that in-window case is exactly the pre-reconciliation fencing
+   hole that was the open gap 4 from the audit.
+2. The fence advance (the operator's post-restore step) fences the pre-restore worker at FIRST
+   touch - heartbeat, credential issuance, and finalize all refused BEFORE any reconciliation -
+   and the pre-restore credential (seeded live into the backup) is dead at first use, with
+   `attempt_credential_status()` AGREING (see "Gap 4 closure" below, deciding-review finding 2).
+3. Reconciliation run against the RESTORED database correctly recognizes and quarantines the
+   orphaned lease - here via the STALE-EPOCH sweep (its expiry being still in the future, only
+   the epoch condition could claim it) - the same mechanism `tests/test_worker_leasing.py`
+   already covers against a live connection, now proven to survive an actual restore.
+4. A worker retrying with its stale pre-restore lease generation is fenced out after
    reconciliation and cannot commit results - the concrete form "revoke stale credentials"
-   takes here. The Prompt-15 continuation pass ADDED the server-side credential store this
-   report previously said none existed: `attempt_credential` rows (short expiry + explicit
-   phase-end revocation) are what a phase's process actually presents for
-   candidate/verifier identity - see "Scoped attempt credentials" above; the restore-drill's
-   own pre-reconciliation fencing hole (a restored-backup DB that still shows a lease as live,
-   letting a stale worker act before reconciliation refences it) is ledgered as the open gap 4
-   from that same audit, not silently absorbed here.
+   takes here; the `attempt_credential` rows (short expiry + explicit phase-end revocation)
+   are what a phase's process presents for candidate/verifier identity.
+5. A fresh post-restore worker claims and heartbeats under the advanced epoch - the advance
+   does not break the system.
+
+The audit's "the restore-drill's own pre-reconciliation fencing hole" ledger line (gap 4, "a
+restored-backup DB that still shows a lease as live, letting a stale worker act before
+reconciliation refences it") is closed by the system fence epoch - see the next section.
+
+### Gap 4 closure: the system fence epoch (deciding review)
+The open gap 4 from the codex audit - a restored database looks exactly like a live one to a
+pre-restore worker while its in-window lease survives - is closed with a monotonic SYSTEM FENCE
+EPOCH: a singleton `system_fence` row (`lease_fence_epoch`), stamped onto every work-item lease
+and attempt credential when claimed/issued; every fenced operation requires the stored stamp to
+equal the CURRENT epoch; the reconciler sweeps stale-epoch leases on its next poll even while
+their expiry is still in the future.
+
+The independent deciding review accepted the migration and sequential restore flow but found one
+BLOCKING race and two smaller gaps, all fixed and regression-tested in this round (commit after
+`f1000a6`):
+
+1. **BLOCKING - fence advancement was not atomic against in-flight fenced mutations.** The epoch
+   read was unlocked, so the reviewer reproduced with two PostgreSQL sessions: stale heartbeat
+   reads epoch 0, the operator advances and commits 1, the stale heartbeat's UPDATE then lands
+   True after the advance. FIXED: every fenced lease/credential operation now takes the fence
+   row's PostgreSQL **FOR SHARE** lock for its WHOLE transaction
+   (`current_fence_epoch(..., share_lock=True)`), while `advance_fence_epoch` takes the
+   same row's EXCLUSIVE lock - the two cannot interleave; parallel workers never contend with
+   each other, only the advance waits. Regression:
+   `tests/test_worker_leasing.py::test_fence_advance_is_atomic_against_in_flight_fenced_operations`
+   proves a concurrent advance BLOCKS (lock timeout) until the fenced transaction closes; it is
+   RED on `f1000a6` (the advance commits immediately and the stale heartbeat lands True).
+2. **MEDIUM - `attempt_credential_status` reported stale credentials as valid.** It checked only
+   expiry and revocation, so after the advance it reported `valid=True` for a pre-advance token
+   that `verify_attempt_credential` refused (`reported_valid True, actually_accepted False`).
+   FIXED: `valid` now also requires `row.lease_epoch == current_fence_epoch`. Regression:
+   `tests/test_attempt_credentials.py::test_status_and_verify_report_a_stale_epoch_credential_as_invalid`
+   (RED without the fix), and the restore drill now asserts status agreement through a real
+   restore (its item-2 check).
+3. **MEDIUM - the restore runbook gave a bare repository call, no operational barrier.** FIXED:
+   the "Database restored from backup" runbook now REQUIRES a barrier before the advance - kill
+   switch active (no new dispatch), reconciler/workers stopped or network-isolated, defense-in-depth
+   behind the FOR SHARE serialization - and provides a concrete, executable, operator-role-
+   authenticated command `scripts/fence_advance.py` (`--check` pre-flight prints epoch +
+   barrier and exits non-zero when the barrier is missing; the mutating form REFUSES to advance
+   unless the kill switch is active, requires an audit `--reason`, and re-checks the barrier
+   inside the transaction). The command was executed against the test control plane: refused
+   without the barrier (exit 3), advanced `1 -> 2` only with the kill switch active.
 
 ### CI (spec section 42)
 - `permissions: contents: read` added to all five workflows (the three pre-existing ones plus
@@ -287,11 +336,22 @@ duration, which is reported only as a disclosed local-proxy measurement):
   compatibility): the parent commit (`4a9c7c3`)'s `CampaignRow` ORM class, imported directly
   from a throwaway git worktree, read a real row through the post-migration schema without
   error - the expand-phase compatibility property, reproduced, not merely asserted.
-- Backup/restore drill: **ALL THREE assertions PASS**, real `pg_dump`/`pg_restore` cycle between
-  `aieb_restore_drill_source` and `aieb_restore_drill_restored`, restore completed in 0.95s
-  (disclosed local-proxy measurement, not a production RPO/RTO figure - spec section 40's real
-  targets, RPO <=15 minutes / RTO <=4 hours, require real staging/production infrastructure this
-  environment does not have).
+- Backup/restore drill: **ALL FIVE assertions PASS**, real `pg_dump`/`pg_restore` cycle between
+  `aieb_restore_drill_source` and `aieb_restore_drill_restored` - now covering the in-window
+  (still-renewable) restored lease, the fence advance fencing the pre-restore worker at FIRST
+  touch BEFORE reconciliation, the pre-restore token dead at first use with its STATUS agreeing,
+  the stale-epoch reconciler sweep, the stale-generation finalize refusal, and a fresh
+  post-restore claim - restore completed in ~0.9s (disclosed local-proxy measurement, not a
+  production RPO/RTO figure - spec section 40's real targets, RPO <=15 minutes / RTO <=4 hours,
+  require real staging/production infrastructure this environment does not have).
+- Fence advance atomicity + status agreement (deciding review, after `f1000a6`):
+  `tests/test_worker_leasing.py` **42/42 passed** including the new
+  `::test_fence_advance_is_atomic_against_in_flight_fenced_operations` (two-session: a concurrent
+  advance blocks while a fenced transaction holds the fence row, RED without the FOR SHARE lock),
+  and `tests/test_attempt_credentials.py` **15/15 passed** including
+  `::test_status_and_verify_report_a_stale_epoch_credential_as_invalid` (RED when the epoch
+  condition was dropped). Operator-role command executed against the test control plane: refused
+  without the kill-switch barrier (exit 3), advanced `1 -> 2` only with it active.
 - Toolchain pinning across a simulated software upgrade:
   `tests/test_api_service.py::test_frozen_campaign_toolchain_stays_pinned_across_a_simulated_software_upgrade`
   - **1/1 passed**. Freezes a real campaign, registers a genuinely newer entrant revision under

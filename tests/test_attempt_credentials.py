@@ -195,6 +195,35 @@ class AttemptCredentialTests(unittest.TestCase):
             self.assertFalse(self.repository.verify_attempt_credential(session, attempt_id=bundle.attempt_id, actor_role="candidate", token=issued.token))
             self.assertFalse(self.repository.attempt_credential_status(session, attempt_id=bundle.attempt_id, actor_role="candidate").valid)
 
+    def test_status_and_verify_report_a_stale_epoch_credential_as_invalid(self) -> None:
+        """ENG-020 gap 4, deciding-review finding 2: after the operator advances the fence
+        epoch, a pre-restore credential is dead at FIRST use - attempt_credential_status().valid
+        must agree with verify_attempt_credential(), not just check expiry/revocation, so an
+        operator (or a test) never trusts a status no live verification would honor.
+        Regression-red on f1000a6: status only checked expiry and revocation, so it reported a
+        stale-epoch credential as valid while verify refused it (reported_valid True,
+        actually_accepted False - the deciding review's exact repro)."""
+        bundle = self._seed_attempt()
+        with self.session_factory() as session:
+            issued = self._issue(session, bundle, role="candidate")
+            self.assertTrue(self.repository.verify_attempt_credential(
+                session, attempt_id=bundle.attempt_id, actor_role="candidate", token=issued.token,
+            ))
+            status_before = self.repository.attempt_credential_status(session, attempt_id=bundle.attempt_id, actor_role="candidate")
+            self.assertTrue(status_before.valid)
+            self.assertEqual(status_before.lease_epoch, 0)
+            self.assertEqual(self.repository.advance_fence_epoch(session, reason="test: simulated restore"), 1)
+            # The pre-restore token is dead at first use...
+            self.assertFalse(self.repository.verify_attempt_credential(
+                session, attempt_id=bundle.attempt_id, actor_role="candidate", token=issued.token,
+            ))
+            # ...and the status read AGREES: reported_valid must now be False. The row itself is
+            # unchanged (still epoch 0, unrevoked, unexpired) - only its validity vs the current
+            # epoch flipped, which is exactly what the deciding review's repro demanded.
+            status_after = self.repository.attempt_credential_status(session, attempt_id=bundle.attempt_id, actor_role="candidate")
+            self.assertFalse(status_after.valid)
+            self.assertEqual(status_after.lease_epoch, 0)
+
     def test_credentials_are_role_and_attempt_scoped(self) -> None:
         bundle_a = self._seed_attempt()
         bundle_a_verify = self._add_work_item(bundle_a, work_type="verification")

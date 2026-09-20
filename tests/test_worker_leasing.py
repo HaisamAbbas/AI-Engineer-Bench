@@ -868,6 +868,60 @@ class WorkerLeasingTests(unittest.TestCase):
         self.assertIsNotNone(second)
         self.assertEqual(second.lease_epoch, 1)
 
+    def test_fence_advance_is_atomic_against_in_flight_fenced_operations(self) -> None:
+        """ENG-020 gap 4, deciding-review finding 1: the epoch read must be atomic against a
+        concurrent advance. Each fenced operation's transaction holds the fence row FOR SHARE
+        for its WHOLE lifetime; advance_fence_epoch() takes the same row's EXCLUSIVE lock, so
+        PostgreSQL serializes the two. Without this a stale worker could read epoch 0, have the
+        operator advance to (and commit) epoch 1, and then land its own epoch-0 fenced mutation
+        AFTER the advance committed - the exact interleaving the deciding review reproduced
+        (heartbeat read 0, advance committed 1, heartbeat UPDATE then returned True). The two
+        sequential epoch tests cannot see it. This regression opens a fenced transaction on one
+        session, then proves a CONCURRENT advance on a second session BLOCKS (lock timeout)
+        until the first transaction closes.
+        Regression-red on f1000a6: with an unlocked epoch read the advance commits immediately
+        and the stale heartbeat lands after it."""
+        from sqlalchemy.exc import OperationalError
+
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            first = repository.claim_work_item(session, worker_id="worker-a")
+        self.assertIsNotNone(first)
+
+        # A fenced operation on session_a (a pre-restore worker, epoch still 0) opens its
+        # transaction: the epoch read takes the fence row's FOR SHARE lock, held until the
+        # operation commits.
+        session_a = self.session_factory()
+        self.assertEqual(repository.current_fence_epoch(session_a, share_lock=True), 0)
+
+        # A CONCURRENT advance on session_b cannot commit while session_a's fenced transaction
+        # is open: give it a lock_timeout and prove it is blocked.
+        session_b = self.session_factory()
+        session_b.execute(text("SET LOCAL lock_timeout = 800"))
+        with self.assertRaises(OperationalError):
+            repository.advance_fence_epoch(
+                session_b, reason="test: concurrent advance while a fenced transaction is open",
+            )
+        session_b.close()
+
+        # session_a's fenced mutation completes under the epoch it read (0) - legitimately,
+        # because the advance could NOT have committed in the meantime.
+        self.assertTrue(repository.heartbeat(
+            session_a, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+        ))
+        session_a.close()
+
+        # Once no fenced transaction is open the advance commits...
+        with self.session_factory() as session:
+            advanced_to = repository.advance_fence_epoch(session, reason="test: advance after the fenced transaction closed")
+        self.assertEqual(advanced_to, 1)
+
+        # ...and the same worker is now fenced at first touch, as the sequential tests assert.
+        with self.session_factory() as session:
+            self.assertFalse(repository.heartbeat(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+            ))
+
     # ---- 6. verifier outage (trusted scorer crash, not a candidate defect) --
 
     def test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail(self) -> None:

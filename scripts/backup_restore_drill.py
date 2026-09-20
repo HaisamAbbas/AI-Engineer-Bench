@@ -14,7 +14,15 @@ simulation):
 3. The pre-restore worker's identity (its lease generation) is fenced out the first and only
    time a finalize is attempted with it - never accepted even transiently before
    reconciliation runs (the existing lease-fencing mechanism is the concrete form "revoke
-   stale credentials" takes here).
+   stale credentials" takes here). A live pre-restore credential rides along in the backup
+   and is asserted to be DEAD at first use after the fence advance, with
+   attempt_credential_status() AGREING (deciding-review finding 2) rather than reporting a
+   "valid" status no actual verification would honor.
+4. The fence advance itself is atomic against in-flight fenced transactions (deciding-review
+   finding 1): every fenced operation shares the fence row for its whole transaction, so a
+   pre-restore worker cannot read epoch 0 and land an epoch-0 mutation after the advance
+   committed. Covered continuously by the two-session regression in
+   tests/test_worker_leasing.py::test_fence_advance_is_atomic_against_in_flight_fenced_operations.
 
 The drill's pre-restore lease is DELIBERATELY still WITHIN its lease window when the backup is
 taken (lease_expiry set to the future, not backdated): that is exactly the pre-reconciliation
@@ -169,7 +177,18 @@ def main() -> None:
             )
         )
         session.commit()
-    print(f"seeded an in-window leased item (work_item={leased.work_item_id}, generation={stale_generation}) before backup")
+    # A live pre-restore credential rides along in the backup too: the restored snapshot must not
+    # keep it usable for the rest of its TTL. It is valid at backup time (asserted), then must be
+    # dead at first use after the fence advance (asserted in assertion 2).
+    with db.session_factory()() as session:
+        pre_restore = repository.issue_attempt_credential(
+            session, attempt_id=leased.attempt_id, actor_role="candidate",
+            work_item_id=leased.work_item_id, worker_id="pre-backup-worker", lease_generation=stale_generation,
+        )
+        assert repository.attempt_credential_status(
+            session, attempt_id=leased.attempt_id, actor_role="candidate",
+        ).valid, "the pre-restore credential must be valid BEFORE the backup"
+    print(f"seeded an in-window leased item (work_item={leased.work_item_id}, generation={stale_generation}) plus a live pre-restore credential before backup")
 
     dump_path = ROOT / ".cache" / "restore-drill" / "backup.dump"
     dump_path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +243,9 @@ def main() -> None:
     # reconciliation runs, and while its lease expiry is still in the future). Every fenced
     # touch must fail at first use: heartbeat, a candidate-role credential issuance, and a
     # finalize. The credential path is the concrete form "revoke stale credentials" takes: a
-    # pre-restore token (or the ability to mint one) is dead the moment the epoch advances.
+    # pre-restore token (or the ability to mint one) is dead the moment the epoch advances,
+    # and the STATUS read agrees (deciding-review finding 2) - never a "valid" status that no
+    # live verification would honor.
     with db.session_factory()() as session:
         assert repository.heartbeat(
             session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
@@ -241,11 +262,18 @@ def main() -> None:
         else:
             raise AssertionError("a pre-restore worker must not be able to issue a credential before reconciliation")
     with db.session_factory()() as session:
+        assert repository.verify_attempt_credential(
+            session, attempt_id=leased.attempt_id, actor_role="candidate", token=pre_restore.token,
+        ) is False, "a pre-restore token must be dead at first use once the fence epoch advanced"
+        stale_status = repository.attempt_credential_status(session, attempt_id=leased.attempt_id, actor_role="candidate")
+        assert stale_status.valid is False, "status must report a stale-epoch credential as invalid, NOT a valid one that verify would refuse"
+        assert stale_status.lease_epoch == 0, "the pre-restore credential row itself is unchanged - only its validity vs the current epoch flipped"
+    with db.session_factory()() as session:
         assert repository.finalize(
             session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
             attempt_id=leased.attempt_id, terminal_status="pass", done=True,
         ) is False, "a pre-restore worker must not be able to commit results before reconciliation"
-    print("[assertion 2] PASS: the pre-restore worker is fenced from heartbeat/issue/finalize at FIRST touch, before any reconciliation")
+    print("[assertion 2] PASS: pre-restore worker fenced from heartbeat/issue/finalize at FIRST touch, pre-restore token dead, status agrees - all before any reconciliation")
 
     # Assertion 3 (spec section 40's "reconcile leases ... quarantine orphan allocations"):
     # reconciliation against the RESTORED database recognizes and quarantines the orphaned

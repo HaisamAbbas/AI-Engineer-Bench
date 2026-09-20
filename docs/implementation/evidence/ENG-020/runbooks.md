@@ -55,17 +55,32 @@ epoch closes this: every lease/credential is stamped with the epoch under which 
 issued, every fenced operation requires that stamp to equal the CURRENT epoch, and the reconciler
 sweeps stale-epoch leases on its next poll even while they are still renewable.
 
-1. Restore the database, then - BEFORE resuming any dispatch - advance the fence epoch:
-   `repository.advance_fence_epoch(session, reason="post-restore fencing", activated_by_user_id=...)`
-   (one `aieb-reconciler`/API-adjacent invocation). This one steps fences every pre-restore lease
-   and credential at first touch, so no reconciliation is required to keep a stale worker out.
-2. The reconciler's next poll recovers the stale-epoch orphans (replacing/requeuing according to
-   each phase's artifact-first evidence) and revokes their credentials inside the same pass.
-3. Verify before/while resuming: `scripts/backup_restore_drill.py` now proves all of this through
-   a real `pg_dump`/`pg_restore` cycle - the in-window lease survives restore as `leased`, the
-   fence advance fences the pre-restore worker at FIRST touch (heartbeat/issue/finalize all
-   refused BEFORE reconciliation), the reconciler quarantines the stale-epoch lease, and a fresh
-   worker then claims and heartbeats under the new epoch.
+1. **Establish the barrier - HALF the barn door before the fence moves.** Set the kill switch
+   (`repository.activate_kill_switch(session, activated_by_user_id=<admin>, reason="restore drill")`)
+   so NO new dispatch is possible, and STOP the reconciler loop AND every worker process (or
+   network-isolate workers at the load balancer) so no already-running worker holds an open
+   transaction across the advance. The epoch advance itself is atomic even against a worker that
+   slips through (deciding-review finding 1: fenced operations share the fence row FOR SHARE for
+   their whole transaction, and the advance's exclusive lock waits) - the barrier is the
+   defense-in-depth that makes an operator deliberately aware of every actor, not the only line.
+2. Restore the database, verify it (migration head, a migration rollback drill), then pre-flight:
+   `python scripts/fence_advance.py --check` - read-only, prints the fence epoch and confirms the
+   kill-switch barrier is in place.
+3. **Advance the fence** with the DEDICATED, executable, operator-DB-role-authenticated command:
+   `python scripts/fence_advance.py --reason "restore drill 2026-09-20" [--by-user <operator-uid>]`.
+   It REFUSES to advance while the kill switch is inactive, requires the audit `--reason`, and
+   re-checks the barrier inside the transaction. After it prints `fence epoch advanced: N -> N+1`,
+   every pre-restore lease and credential is fenced at first touch - no reconciliation required.
+4. Let the reconciler's next poll recover the stale-epoch orphans (replacing/requeuing per each
+   phase's artifact-first evidence) and revokes their credentials inside the same pass. Health-check
+   the queue before opening traffic.
+5. Resume: clear the kill switch (`repository.deactivate_kill_switch(session)`) and restart the
+   reconciler/workers only after dispatch reaches a verified steady state. Before/while resuming,
+   run `scripts/backup_restore_drill.py` - a real `pg_dump`/`pg_restore` cycle proving the whole
+   sequence: the in-window lease survives restore as `leased`, the fence advance fences the
+   pre-restore worker at FIRST touch (heartbeat/issue/finalize refused BEFORE reconciliation), the
+   pre-restore TOKEN is dead and its STATUS agrees (finding 2), the reconciler quarantines the
+   stale-epoch lease, and a fresh worker claims and heartbeats under the new epoch.
 
 ## Scorer defect
 

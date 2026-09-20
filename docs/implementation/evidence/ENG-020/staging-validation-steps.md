@@ -93,10 +93,16 @@ disposable one) is new.
    migration head is now current.
 4. Never cancel a scored run merely to hide a bad outcome (spec section 45) - a rollback
    addresses the deployment, not the campaign's recorded evidence.
-5. Run `scripts/backup_restore_drill.py`'s three assertions (not resumed blindly, stale
-   generation fenced, reconciliation quarantines orphans) against the ROLLED-BACK state before
-   resuming normal dispatch, exactly as they were proven against a restored database in this
-   repository's own drill.
+5. If the rollback was a DATABASE restore, advance the system fence epoch with the operator
+   command BEFORE resuming any dispatch: set the kill switch (barrier), then
+   `python scripts/fence_advance.py --check` (pre-flight) and
+   `python scripts/fence_advance.py --reason "post-rollback fence advance"` - see the
+   "Database restored from backup" runbook. Then run `scripts/backup_restore_drill.py`'s FIVE
+   assertions (restored lease still `leased`, pre-restore worker fenced at FIRST touch with its
+   credential dead and status agreeing, reconciliation quarantines the stale-epoch orphan, stale
+   generation finalize refused, fresh claim works) against the ROLLED-BACK state before resuming
+   normal dispatch, exactly as they were proven against a restored database in this repository's
+   own drill.
 
 ## 6. Post-incident (if steps 1-5 were triggered by a real incident, not a routine deploy)
 

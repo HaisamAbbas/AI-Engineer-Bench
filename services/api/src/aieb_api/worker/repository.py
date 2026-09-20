@@ -171,13 +171,27 @@ class LeasedWork:
     lease_epoch: int | None = None
 
 
-def current_fence_epoch(session: Session) -> int:
+def current_fence_epoch(session: Session, *, share_lock: bool = False) -> int:
     """ENG-020 restore-drill fencing (gap 4): the CURRENT system fence epoch. Every fenced
     lease/credential operation requires the row's stored `lease_epoch` to equal this value, so a
     database restore followed by advance_fence_epoch() orphans every pre-restore lease and
-    credential immediately. Reads the singleton row; self-heals if it is absent (a fresh schema
-    created without the migration's seed, e.g. a test harness) by creating it at 0."""
-    row = session.get(SystemFenceRow, 1)
+    credential immediately.
+
+    With `share_lock=True` the singleton row is locked FOR SHARE for the caller's WHOLE
+    transaction (deciding-review finding 1): advance_fence_epoch() takes the same row's EXCLUSIVE
+    lock, so PostgreSQL serializes the two - an advance cannot commit between a fenced
+    operation's epoch READ and its lease/credential mutation (a stale worker's pre-advance read
+    can never be followed by a post-advance commit), and a fenced operation can never observe a
+    half-advanced epoch. Access itself is shared, so parallel workers do not contend; only the
+    operator's exclusive advance waits. Every fenced lease/credential operation passes
+    `share_lock=True` as its first step. Without the flag this is a plain read (informational /
+    intros in tests and the drill, never a fencing decision). Reads the singleton row;
+    self-heals if it is absent (a fresh schema created without the migration's seed, e.g. a test
+    harness) by creating it at 0."""
+    stmt = select(SystemFenceRow).where(SystemFenceRow.id == 1)
+    if share_lock:
+        stmt = stmt.with_for_update(read=True)  # PostgreSQL FOR SHARE - conflicts with the advance's FOR UPDATE
+    row = session.execute(stmt).scalar_one_or_none()
     if row is None:
         session.add(SystemFenceRow(id=1, lease_fence_epoch=0))
         session.flush()
@@ -308,7 +322,7 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
         query = query.where(WorkItemRow.type == work_type)
     candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
-    lease_fence_epoch = current_fence_epoch(session)
+    lease_fence_epoch = current_fence_epoch(session, share_lock=True)
     leased = session.execute(
         update(WorkItemRow)
         .where(WorkItemRow.id == candidate.c.id)
@@ -340,7 +354,7 @@ def heartbeat(session: Session, *, work_item_id: uuid.UUID, worker_id: str, gene
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     result = session.execute(
         update(WorkItemRow)
-        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
         .values(lease_expiry=lease_expiry)
     )
     session.commit()
@@ -385,7 +399,7 @@ def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id:
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     fenced = session.execute(
         update(WorkItemRow)
-        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
         .values(lease_expiry=lease_expiry)
         .returning(WorkItemRow.id)
     ).scalar_one_or_none()
@@ -499,7 +513,7 @@ def advance_to_verification(session: Session, *, work_item_id: uuid.UUID, worker
     attempt's work item."""
     result = session.execute(
         update(WorkItemRow)
-        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
         .values(state="done")
     )
     if result.rowcount != 1:
@@ -766,7 +780,7 @@ def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, gener
     after reassignment (or a duplicate finalize call) cannot commit results (EX-04)."""
     result = session.execute(
         update(WorkItemRow)
-        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session, share_lock=True)))
         .values(state="done" if done else "failed")
     )
     if result.rowcount != 1:
@@ -832,7 +846,7 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
     """
     resumed = replaced = exhausted = advanced = requeued = 0
     orphaned: list[uuid.UUID] = []
-    lease_fence_epoch = current_fence_epoch(session)
+    lease_fence_epoch = current_fence_epoch(session, share_lock=True)
     expired = session.execute(
         select(WorkItemRow)
         .where(
@@ -993,7 +1007,7 @@ def issue_attempt_credential(
     because that is an entirely different, role-checked token class."""
     if actor_role not in CREDENTIAL_ROLES:
         raise ValueError(f"unknown actor_role {actor_role!r}; expected one of {CREDENTIAL_ROLES}")
-    lease_fence_epoch = current_fence_epoch(session)
+    lease_fence_epoch = current_fence_epoch(session, share_lock=True)
     lease = session.execute(
         select(WorkItemRow)
         .where(
@@ -1069,7 +1083,7 @@ def verify_attempt_credential(session: Session, *, attempt_id: uuid.UUID, actor_
         .where(
             AttemptCredentialRow.attempt_id == attempt_id,
             AttemptCredentialRow.actor_role == actor_role,
-            AttemptCredentialRow.lease_epoch == current_fence_epoch(session),
+            AttemptCredentialRow.lease_epoch == current_fence_epoch(session, share_lock=True),
         )
     ).scalar_one_or_none()
     if row is None:
@@ -1126,7 +1140,7 @@ def revoke_attempt_credential(
             AttemptCredentialRow.work_item_id == work_item_id,
             AttemptCredentialRow.worker_id == worker_id,
             AttemptCredentialRow.lease_generation == lease_generation,
-            AttemptCredentialRow.lease_epoch == current_fence_epoch(session),
+            AttemptCredentialRow.lease_epoch == current_fence_epoch(session, share_lock=True),
         )
         .values(revoked_at=now)
     )
@@ -1145,7 +1159,11 @@ def revoke_attempt_credentials(session: Session, *, attempt_id: uuid.UUID, commi
 
 def attempt_credential_status(session: Session, *, attempt_id: uuid.UUID, actor_role: str) -> AttemptCredentialStatus:
     """Read-only status of a credential row (or that no credential exists) - for evidence and
-    tests; carries no secret, only the hash's presence."""
+    tests; carries no secret, only the hash's presence. `valid` must match what
+    verify_attempt_credential() would actually accept (deciding-review finding 2): expiry and
+    revocation are necessary but not sufficient - a row minted under an EARLIER fence epoch is
+    stale and must report invalid, exactly as verify refuses it at first use, lest operators/tests
+    trust a status that no live verification would honor."""
     row = session.execute(
         select(AttemptCredentialRow)
         .where(AttemptCredentialRow.attempt_id == attempt_id, AttemptCredentialRow.actor_role == actor_role)
@@ -1153,7 +1171,8 @@ def attempt_credential_status(session: Session, *, attempt_id: uuid.UUID, actor_
     if row is None:
         return AttemptCredentialStatus(actor_role=actor_role, issued_at=None, expires_at=None, revoked_at=None, valid=False)
     now = datetime.now(timezone.utc)
-    valid = row.revoked_at is None and row.expires_at > now
+    current = current_fence_epoch(session)
+    valid = row.revoked_at is None and row.expires_at > now and row.lease_epoch == current
     return AttemptCredentialStatus(
         actor_role=row.actor_role, issued_at=row.issued_at, expires_at=row.expires_at, revoked_at=row.revoked_at, valid=valid,
         work_item_id=row.work_item_id, worker_id=row.worker_id, lease_generation=row.lease_generation, lease_epoch=row.lease_epoch,
