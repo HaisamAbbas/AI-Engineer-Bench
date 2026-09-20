@@ -291,6 +291,13 @@ class WorkItemRow(Base):
     worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expiry: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # ENG-020 restore-drill fencing (gap 4): the system fence epoch under which this lease was
+    # claimed. Every fenced lease operation requires `lease_epoch == current_fence_epoch()`, so
+    # advancing the epoch after a database restore orphans every pre-restore lease at FIRST touch
+    # - even one whose lease_expiry is still in the future - instead of only when the reconciler's
+    # expiry sweep fires. 0 for rows predating the mechanism (backfilled by migration); new claims
+    # stamp whatever epoch is current at claim time.
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         CheckConstraint("state in ('ready','leased','done','failed')", name="ck_work_item_state"),
@@ -731,6 +738,30 @@ class KillSwitchRow(Base):
     )
 
 
+class SystemFenceRow(Base):
+    """ENG-020 restore-drill fencing (gap 4): a single global fence epoch. The operator advances
+    this epoch immediately after restoring the database from a backup; every work-item lease and
+    attempt credential carries the epoch under which it was created, and every fenced lease/
+    credential operation requires that stored epoch to equal the CURRENT fence epoch. Advancing
+    therefore orphans ALL pre-restore leases and credentials at first touch - before the
+    reconciler's next poll - closing the restore-drill hole where a restored snapshot still showed
+    a lease as live (its expiry still in the future) and let a stale worker act. Always exactly
+    one row (id=1), seeded by its migration. Monotonic: only ever incremented."""
+
+    __tablename__ = "system_fence"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lease_fence_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    activated_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_system_fence_singleton"),
+    )
+
+
 class AttemptCredentialRow(Base):
     """ENG-020 (spec section 37): per-attempt, per-role, short-lived, scoped credentials.
 
@@ -761,6 +792,12 @@ class AttemptCredentialRow(Base):
     work_item_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("work_item.id"), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ENG-020 restore-drill fencing (gap 4): the system fence epoch at (re)issue time. A
+    # credential minted before a database restore is dead immediately after the fence epoch is
+    # advanced - verify_attempt_credential refuses it at first use, before any reconciliation -
+    # so a pre-restore token cannot outlive its lease even for the remainder of its TTL.
+    # 0 for rows predating the column (migration backfills 0).
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
     __table_args__ = (
         UniqueConstraint("attempt_id", "actor_role", name="uq_attempt_credential_attempt_role"),

@@ -14,10 +14,20 @@ simulation):
 3. The pre-restore worker's identity (its lease generation) is fenced out the first and only
    time a finalize is attempted with it - never accepted even transiently before
    reconciliation runs (the existing lease-fencing mechanism is the concrete form "revoke
-   stale credentials" takes here - there is no separate server-side credential store to
-   revoke). This script deliberately does NOT attempt a stale finalize before reconciliation:
-   a real restore procedure must keep a pre-restore worker fenced throughout, not merely
-   happen to reject it once something else later changes the generation.
+   stale credentials" takes here).
+
+The drill's pre-restore lease is DELIBERATELY still WITHIN its lease window when the backup is
+taken (lease_expiry set to the future, not backdated): that is exactly the pre-reconciliation
+fencing hole the audit ledgered as open gap 4 - a restored snapshot that still shows a lease as
+live lets a stale worker act (heartbeat, finalize, issue credentials) before the reconciler's
+next poll, and if that worker keeps heartbeating, its lease never expires so reconciliation would
+never fence it at all. Gap 4 closes the hole with a monotonic system fence epoch the operator
+advances AFTER restore: every lease/credential stamped with an older epoch fails every fenced
+operation at FIRST touch, before any reconciliation, and the reconciler's sweep treats
+stale-epoch leases as orphaned on its next poll even while their expiry is still in the future.
+This script now performs that operator step after restore and asserts the stale worker is fenced
+BEFORE reconciliation runs - the procedure requirement the older drill only wrote down as a
+comment without a mechanism behind it.
 
 Restore duration is reported as a LOCAL PROXY measurement only, disclosed as such - it is not
 a production RPO/RTO measurement (spec section 40's targets: metadata RPO <=15 minutes, RTO
@@ -148,14 +158,18 @@ def main() -> None:
         leased = repository.claim_work_item(session, worker_id="pre-backup-worker")
     assert leased is not None
     stale_generation = leased.generation
+    # Deliberately set the lease to expire in the FUTURE (30 minutes out), NOT backdated: this
+    # is the exact gap-4 hole. An expired lease is fenced by the pre-existing reconciler sweep;
+    # a STILL-renewable restored lease is the case nothing fenced until the epoch advance, and
+    # a stale worker heartbeating it would keep it renewable forever.
     with db.session_factory()() as session:
         session.execute(
             update(api_models.WorkItemRow).where(api_models.WorkItemRow.id == leased.work_item_id).values(
-                lease_expiry=datetime.now(timezone.utc) - timedelta(hours=1)
+                lease_expiry=datetime.now(timezone.utc) + timedelta(minutes=30)
             )
         )
         session.commit()
-    print(f"seeded an abandoned lease (work_item={leased.work_item_id}, generation={stale_generation}) before backup")
+    print(f"seeded an in-window leased item (work_item={leased.work_item_id}, generation={stale_generation}) before backup")
 
     dump_path = ROOT / ".cache" / "restore-drill" / "backup.dump"
     dump_path.parent.mkdir(parents=True, exist_ok=True)
@@ -191,40 +205,86 @@ def main() -> None:
         row = session.get(api_models.WorkItemRow, work_item_id)
         assert row.state == "leased", f"expected the abandoned lease to survive restore as 'leased', got {row.state!r}"
         assert row.generation == stale_generation, "generation must be unchanged immediately after restore"
-    print("[assertion 1] PASS: the abandoned lease is still 'leased', not silently resumed as fresh")
+        assert row.lease_expiry > datetime.now(timezone.utc), "the restored lease is still WITHIN its window - the gap-4 case"
+        fence_before = repository.current_fence_epoch(session)
+    assert fence_before == 0, "the fence epoch itself must survive restore unchanged"
+    print(f"[assertion 1] PASS: the lease is still 'leased' at generation {stale_generation}, expiry in the future, fence epoch {fence_before}")
 
-    # Deliberately does NOT attempt a stale finalize before reconciliation runs: a real
-    # restore procedure must keep a pre-restore worker fenced until reconciliation completes,
-    # not merely happen to reject it once something else later changes the generation. Fixing
-    # test state after a speculative "would this have been accepted?" attempt would prove
-    # nothing about that requirement - so this drill goes straight to reconciliation, then
-    # proves fencing against its OWN output.
+    # THE OPERATOR POST-RESTORE STEP (gap 4): advance the system fence epoch. From this commit
+    # on, every lease/credential stamped with an earlier epoch is fenced at first touch - no
+    # reconciliation required.
+    with db.session_factory()() as session:
+        advanced_to = repository.advance_fence_epoch(
+            session, reason="backup/restore drill: post-restore fence advance",
+        )
+    assert advanced_to == fence_before + 1
+    print(f"[operator step] PASS: advanced the system fence epoch to {advanced_to} on the restored database")
 
-    # Assertion 2 (spec section 40's "reconcile leases ... quarantine orphan allocations"):
-    # reconciliation against the RESTORED database recognizes and quarantines
-    # the orphaned lease - bumping its generation - proving the SAME mechanism that already
-    # protects a live database also protects state that came through backup/restore.
+    # Assertion 2 (pretend the PRE-RESTORE worker came back and tried to act - BEFORE any
+    # reconciliation runs, and while its lease expiry is still in the future). Every fenced
+    # touch must fail at first use: heartbeat, a candidate-role credential issuance, and a
+    # finalize. The credential path is the concrete form "revoke stale credentials" takes: a
+    # pre-restore token (or the ability to mint one) is dead the moment the epoch advances.
+    with db.session_factory()() as session:
+        assert repository.heartbeat(
+            session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
+            lease_seconds=60,
+        ) is False, "a pre-restore worker must be fenced out from its very first heartbeat, before reconciliation"
+    with db.session_factory()() as session:
+        try:
+            repository.issue_attempt_credential(
+                session, attempt_id=leased.attempt_id, actor_role="candidate",
+                work_item_id=work_item_id, worker_id="pre-backup-worker", lease_generation=stale_generation,
+            )
+        except repository.LeaseFenceError:
+            pass
+        else:
+            raise AssertionError("a pre-restore worker must not be able to issue a credential before reconciliation")
+    with db.session_factory()() as session:
+        assert repository.finalize(
+            session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
+            attempt_id=leased.attempt_id, terminal_status="pass", done=True,
+        ) is False, "a pre-restore worker must not be able to commit results before reconciliation"
+    print("[assertion 2] PASS: the pre-restore worker is fenced from heartbeat/issue/finalize at FIRST touch, before any reconciliation")
+
+    # Assertion 3 (spec section 40's "reconcile leases ... quarantine orphan allocations"):
+    # reconciliation against the RESTORED database recognizes and quarantines the orphaned
+    # lease - here via the STALE-EPOCH sweep (its expiry is still in the future, so only the
+    # epoch condition could have claimed it) - bumping its generation, proving the SAME
+    # mechanism that already protects a live database also protects state that came through
+    # backup/restore.
     from aieb_api.worker.reconciler import reconcile_once
 
     work_root = ROOT / ".cache" / "restore-drill" / "work-root"
     work_root.mkdir(parents=True, exist_ok=True)
     summary = reconcile_once(db.session_factory(), work_root)
     assert summary.replaced == 1, f"expected reconciliation to replace the one orphaned lease, got {summary}"
-    print(f"[assertion 2] PASS: reconciliation against the restored database quarantined the orphaned lease ({summary})")
+    print(f"[assertion 3] PASS: reconciliation against the restored database quarantined the orphaned lease via the stale-epoch sweep ({summary})")
 
-    # Assertion 3 (the "revoke stale credentials" equivalent - there is no separate
-    # server-side credential store in this system): the pre-restore worker's identity
-    # (its lease generation) was NEVER valid against the post-reconciliation state - it is
-    # fenced out the first and only time it is tried, not merely eventually.
+    # Assertion 4 (the "revoke stale credentials" equivalent): the pre-restore worker's identity
+    # (its lease generation) was NEVER valid against the post-restore state - it is fenced out
+    # the first and only time it is tried, not merely eventually.
     with db.session_factory()() as session:
         stale_retry_finalized = repository.finalize(
             session, work_item_id=work_item_id, worker_id="pre-backup-worker", generation=stale_generation,
             attempt_id=leased.attempt_id, terminal_status="pass", done=True,
         )
     assert stale_retry_finalized is False, "a stale pre-restore generation must be fenced out after reconciliation, not accepted"
-    print("[assertion 3] PASS: the stale pre-restore worker/generation is fenced out and cannot commit results")
+    print("[assertion 4] PASS: the stale pre-restore worker/generation is fenced out and cannot commit results")
 
-    print("Backup/restore drill: ALL THREE assertions passed.")
+    # Assertion 5 (the advance must not break the system): a FRESH worker can still claim the
+    # replacement work item, heartbeat it, and is NOT itself fenced.
+    with db.session_factory()() as session:
+        fresh = repository.claim_work_item(session, worker_id="post-restore-worker")
+        assert fresh is not None, "a fresh worker must still be able to claim work after the fence advance"
+        assert fresh.lease_epoch == advanced_to, f"a fresh claim must be stamped with the CURRENT fence epoch ({advanced_to}), got {fresh.lease_epoch}"
+        assert repository.heartbeat(
+            session, work_item_id=fresh.work_item_id, worker_id="post-restore-worker", generation=fresh.generation,
+            lease_seconds=60,
+        ) is True, "a fresh post-restore worker must be able to heartbeat"
+    print("[assertion 5] PASS: a fresh post-restore worker claims and heartbeats under the advanced fence epoch")
+
+    print("Backup/restore drill: ALL FIVE assertions passed.")
 
 
 if __name__ == "__main__":

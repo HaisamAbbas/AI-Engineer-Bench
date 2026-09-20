@@ -64,9 +64,10 @@ class WorkerLeasingTests(unittest.TestCase):
         with engine.begin() as connection:
             for table in reversed(api_models.Base.metadata.sorted_tables):
                 connection.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
-            # The kill_switch singleton is seeded once by its migration, not re-created by
-            # this per-test TRUNCATE - reseed it so ENG-020 kill-switch tests find their row.
+            # The kill_switch and system_fence singletons are seeded once by their migrations,
+            # not re-created by this per-test TRUNCATE - reseed them so ENG-020 tests find their rows.
             connection.execute(text("INSERT INTO kill_switch (id, active) VALUES (1, false)"))
+            connection.execute(text("INSERT INTO system_fence (id, lease_fence_epoch) VALUES (1, 0)"))
         self.session_factory = db.session_factory()
         self.work_root = ROOT / ".cache" / "eng015-tests" / uuid.uuid4().hex
         self.work_root.mkdir(parents=True, exist_ok=True)
@@ -754,6 +755,118 @@ class WorkerLeasingTests(unittest.TestCase):
                 attempt_id=second.attempt_id, terminal_status="pass", done=True,
             )
         self.assertTrue(legitimate)
+
+    # ---- gap 4: restore-drill pre-reconciliation fencing (system fence epoch) --
+
+    def test_fence_epoch_advance_fences_pre_restore_lease_at_first_touch(self) -> None:
+        """ENG-020 gap 4: a database restore resurrects every pre-restore lease and credential
+        exactly as it was - the lease_expiry is still in the future, the worker/generation
+        still match. Nothing fenced such a lease until the reconciler's expiry poll, and a
+        stale worker heartbeating it kept that poll from ever firing. The system fence epoch
+        closes the hole: the operator advances it AFTER restore, and every fenced operation on
+        a pre-restore lease/credential fails at FIRST touch - before any reconciliation."""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            first = repository.claim_work_item(session, worker_id="worker-a")
+        self.assertIsNotNone(first)
+        with self.session_factory() as session:
+            self.assertEqual(repository.current_fence_epoch(session), 0)
+        self.assertEqual(first.lease_epoch, 0)
+
+        # A pre-restore credential exists and is valid BEFORE the advance.
+        with self.session_factory() as session:
+            issued = repository.issue_attempt_credential(
+                session, attempt_id=first.attempt_id, actor_role="candidate",
+                work_item_id=first.work_item_id, worker_id="worker-a", lease_generation=first.generation,
+            )
+            self.assertTrue(repository.verify_attempt_credential(
+                session, attempt_id=first.attempt_id, actor_role="candidate", token=issued.token,
+            ))
+        pre_restore_token = issued.token
+
+        # The operator's post-restore step: advance the fence epoch.
+        with self.session_factory() as session:
+            advanced_to = repository.advance_fence_epoch(session, reason="test: restore-drill fence advance")
+        self.assertEqual(advanced_to, 1)
+
+        # WITHOUT any reconciliation, every fenced touch by the pre-restore worker fails.
+        with self.session_factory() as session:
+            self.assertFalse(repository.heartbeat(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+            ))
+            self.assertFalse(repository.finalize(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+                attempt_id=first.attempt_id, terminal_status="pass", done=True,
+            ))
+            self.assertIsNone(repository.record_candidate(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+                attempt_id=first.attempt_id,
+                candidate=repository.CandidateOutcome(
+                    tree_digest="t" * 64, manifest_digest="m" * 64, validation_status="valid", stored_candidate={},
+                ),
+            ))
+            self.assertFalse(repository.advance_to_verification(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+                attempt_id=first.attempt_id,
+            ))
+            with self.assertRaises(repository.LeaseFenceError):
+                repository.issue_attempt_credential(
+                    session, attempt_id=first.attempt_id, actor_role="candidate",
+                    work_item_id=first.work_item_id, worker_id="worker-a", lease_generation=first.generation,
+                )
+            # The pre-restore token itself is dead at first use, not merely unmintable.
+            self.assertFalse(repository.verify_attempt_credential(
+                session, attempt_id=first.attempt_id, actor_role="candidate", token=pre_restore_token,
+            ))
+
+        # The advance must not break the system: after the reconciler's next poll replaces the
+        # orphan (as it does in real life), a fresh worker claims and heartbeats normally.
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.replaced, 1)
+        with self.session_factory() as session:
+            second = repository.claim_work_item(session, worker_id="worker-b")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.lease_epoch, advanced_to)
+        with self.session_factory() as session:
+            self.assertTrue(repository.heartbeat(
+                session, work_item_id=second.work_item_id, worker_id="worker-b", generation=second.generation,
+            ))
+            fresh = repository.issue_attempt_credential(
+                session, attempt_id=second.attempt_id, actor_role="candidate",
+                work_item_id=second.work_item_id, worker_id="worker-b", lease_generation=second.generation,
+            )
+            self.assertTrue(repository.verify_attempt_credential(
+                session, attempt_id=second.attempt_id, actor_role="candidate", token=fresh.token,
+            ))
+
+    def test_reconciler_sweeps_a_stale_epoch_lease_while_still_renewable(self) -> None:
+        """ENG-020 gap 4: reconciliation must recover a stale-epoch lease EVEN WHILE its
+        lease_expiry is still in the future - the pre-restore snapshot looked exactly like a
+        live, renewable lease, and only the epoch condition can claim it on the next poll.
+        (An EXPIRED lease was already swept before this change; this is the case that wasn't.)"""
+        self._frozen_enqueued_campaign()
+        with self.session_factory() as session:
+            first = repository.claim_work_item(session, worker_id="worker-a")
+        self.assertIsNotNone(first)
+        # Deliberately NOT backdated: the lease is still renewable when the epoch advances.
+        with self.session_factory() as session:
+            self.assertEqual(repository.advance_fence_epoch(session, reason="test: simulated restore"), 1)
+            row = session.get(api_models.WorkItemRow, first.work_item_id)
+            self.assertGreater(row.lease_expiry, datetime.now(timezone.utc))
+        # The stale worker cannot even heartbeat it any more...
+        with self.session_factory() as session:
+            self.assertFalse(repository.heartbeat(
+                session, work_item_id=first.work_item_id, worker_id="worker-a", generation=first.generation,
+            ))
+        # ...and reconciliation STILL quarantines it via the epoch sweep.
+        summary = reconcile_once(self.session_factory)
+        self.assertEqual(summary.replaced, 1)
+        with self.session_factory() as session:
+            row = session.get(api_models.WorkItemRow, first.work_item_id)
+            self.assertEqual(row.state, "failed")
+            second = repository.claim_work_item(session, worker_id="worker-b")
+        self.assertIsNotNone(second)
+        self.assertEqual(second.lease_epoch, 1)
 
     # ---- 6. verifier outage (trusted scorer crash, not a candidate defect) --
 

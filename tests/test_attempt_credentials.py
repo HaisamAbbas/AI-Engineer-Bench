@@ -72,7 +72,10 @@ class AttemptCredentialTests(unittest.TestCase):
         with engine.begin() as connection:
             for table in reversed(self.api_models.Base.metadata.sorted_tables):
                 connection.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
+            # The kill_switch and system_fence singletons are seeded once by their migrations,
+            # not re-created by this per-test TRUNCATE - reseed them so ENG-020 tests find their rows.
             connection.execute(text("INSERT INTO kill_switch (id, active) VALUES (1, false)"))
+            connection.execute(text("INSERT INTO system_fence (id, lease_fence_epoch) VALUES (1, 0)"))
         self.session_factory = self.db.session_factory()
 
     def _seed_attempt(

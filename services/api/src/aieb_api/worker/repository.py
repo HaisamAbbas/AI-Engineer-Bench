@@ -27,7 +27,7 @@ from typing import Sequence
 
 from aieb_core.models import EntrantRevision, TaskRevision
 from aieb_core.models import Trial as TrialContract
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import and_, exists, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -40,6 +40,7 @@ from ..models import (
     EntrantRevisionRow,
     EvaluationRow,
     KillSwitchRow,
+    SystemFenceRow,
     TaskRevisionRow,
     TrialRow,
     WorkItemRow,
@@ -100,6 +101,9 @@ class AttemptCredentialStatus:
     work_item_id: uuid.UUID | None = None
     worker_id: str | None = None
     lease_generation: int | None = None
+    # Restore-drill fence epoch (gap 4): the system fence epoch the live credential was
+    # (re)issued under - dead as soon as the operator advances the epoch after a restore.
+    lease_epoch: int | None = None
 
 
 def append_attempt_event(session: Session, *, attempt_id: uuid.UUID, event_type: str, payload: dict[str, str | int | bool | None]) -> None:
@@ -163,6 +167,61 @@ class LeasedWork:
     trial_id: uuid.UUID
     generation: int
     work_type: str = "engineering"
+    # ENG-020 restore-drill fencing (gap 4): the system fence epoch this lease was claimed under.
+    lease_epoch: int | None = None
+
+
+def current_fence_epoch(session: Session) -> int:
+    """ENG-020 restore-drill fencing (gap 4): the CURRENT system fence epoch. Every fenced
+    lease/credential operation requires the row's stored `lease_epoch` to equal this value, so a
+    database restore followed by advance_fence_epoch() orphans every pre-restore lease and
+    credential immediately. Reads the singleton row; self-heals if it is absent (a fresh schema
+    created without the migration's seed, e.g. a test harness) by creating it at 0."""
+    row = session.get(SystemFenceRow, 1)
+    if row is None:
+        session.add(SystemFenceRow(id=1, lease_fence_epoch=0))
+        session.flush()
+        return 0
+    return row.lease_fence_epoch
+
+
+def advance_fence_epoch(
+    session: Session, *, reason: str, activated_by_user_id: uuid.UUID | None = None, commit: bool = True,
+) -> int:
+    """ENG-020 restore-drill fencing (gap 4): the OPERATOR's post-restore step. Atomically
+    increments the singleton fence epoch under its row lock, returning the NEW epoch. Once this
+    commits, every lease/credential stamped with an earlier epoch fails every fenced operation
+    at first touch - BEFORE the reconciler's next poll - and the reconciler's sweep treats
+    those same stale-epoch leases as orphaned even while their lease_expiry is still in the
+    future. Monotonic by construction (only ever += 1, serialized by SELECT ... FOR UPDATE).
+    """
+    row = session.execute(select(SystemFenceRow).where(SystemFenceRow.id == 1).with_for_update()).scalar_one_or_none()
+    if row is None:
+        raise RuntimeError("system_fence singleton row (id=1) is missing; run migrations before advancing the fence")
+    now = datetime.now(timezone.utc)
+    row.lease_fence_epoch += 1
+    row.reason = reason
+    row.activated_by_user_id = activated_by_user_id
+    row.activated_at = now
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+    return row.lease_fence_epoch
+
+
+def _fenced_work_item_where(*, work_item_id: uuid.UUID, worker_id: str, generation: int, lease_fence_epoch: int):
+    """Shared WHERE predicates for every fenced lease operation (ENG-015 fencing plus the
+    ENG-020 restore-drill fence epoch): the row must still be leased to this worker/generation
+    AND stamped with the CURRENT fence epoch (so advancing the epoch after a database restore
+    fences a pre-restore lease even while its lease_expiry is still in the future)."""
+    return and_(
+        WorkItemRow.id == work_item_id,
+        WorkItemRow.worker_id == worker_id,
+        WorkItemRow.generation == generation,
+        WorkItemRow.state == "leased",
+        WorkItemRow.lease_epoch == lease_fence_epoch,
+    )
 
 
 def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
@@ -249,10 +308,14 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
         query = query.where(WorkItemRow.type == work_type)
     candidate = query.order_by(WorkItemRow.id).with_for_update(skip_locked=True).limit(1).cte("candidate")
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+    lease_fence_epoch = current_fence_epoch(session)
     leased = session.execute(
         update(WorkItemRow)
         .where(WorkItemRow.id == candidate.c.id)
-        .values(state="leased", worker_id=worker_id, generation=WorkItemRow.generation + 1, lease_expiry=lease_expiry)
+        .values(
+            state="leased", worker_id=worker_id, generation=WorkItemRow.generation + 1,
+            lease_expiry=lease_expiry, lease_epoch=lease_fence_epoch,
+        )
         .returning(WorkItemRow)
     ).scalar_one_or_none()
     if leased is None:
@@ -267,6 +330,7 @@ def claim_work_item(session: Session, *, worker_id: str, work_type: str | None =
     return LeasedWork(
         work_item_id=leased.id, attempt_id=leased.attempt_id,
         trial_id=session.get(AttemptRow, leased.attempt_id).trial_id, generation=leased.generation, work_type=leased.type,
+        lease_epoch=leased.lease_epoch,
     )
 
 
@@ -276,7 +340,7 @@ def heartbeat(session: Session, *, work_item_id: uuid.UUID, worker_id: str, gene
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     result = session.execute(
         update(WorkItemRow)
-        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
         .values(lease_expiry=lease_expiry)
     )
     session.commit()
@@ -321,7 +385,7 @@ def _fenced_lease_touch(session: Session, *, work_item_id: uuid.UUID, worker_id:
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
     fenced = session.execute(
         update(WorkItemRow)
-        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
         .values(lease_expiry=lease_expiry)
         .returning(WorkItemRow.id)
     ).scalar_one_or_none()
@@ -435,7 +499,7 @@ def advance_to_verification(session: Session, *, work_item_id: uuid.UUID, worker
     attempt's work item."""
     result = session.execute(
         update(WorkItemRow)
-        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
         .values(state="done")
     )
     if result.rowcount != 1:
@@ -702,7 +766,7 @@ def finalize(session: Session, *, work_item_id: uuid.UUID, worker_id: str, gener
     after reassignment (or a duplicate finalize call) cannot commit results (EX-04)."""
     result = session.execute(
         update(WorkItemRow)
-        .where(WorkItemRow.id == work_item_id, WorkItemRow.worker_id == worker_id, WorkItemRow.generation == generation, WorkItemRow.state == "leased")
+        .where(_fenced_work_item_where(work_item_id=work_item_id, worker_id=worker_id, generation=generation, lease_fence_epoch=current_fence_epoch(session)))
         .values(state="done" if done else "failed")
     )
     if result.rowcount != 1:
@@ -729,7 +793,12 @@ class ReconciliationSummary:
 
 
 def reconcile_expired_leases(session: Session, *, default_max_replacements: int = 2) -> ReconciliationSummary:
-    """Recover work items whose lease expired without a fenced finalize.
+    """Recover work items whose lease EXPIRED without a fenced finalize OR whose lease is
+    stamped with an OLDER fence epoch than the current one (gap 4: the operator advances the
+    system fence epoch immediately after restoring the database from a backup, and every
+    pre-restore lease - even one whose lease_expiry is still in the future, which a still-
+    heartbeating stale worker would otherwise keep renewable forever - is swept here on the
+    next poll).
     Handles both work-item types, each recovered according to what that
     phase's own artifact-first evidence shows (ENG015-007):
 
@@ -763,9 +832,14 @@ def reconcile_expired_leases(session: Session, *, default_max_replacements: int 
     """
     resumed = replaced = exhausted = advanced = requeued = 0
     orphaned: list[uuid.UUID] = []
+    lease_fence_epoch = current_fence_epoch(session)
     expired = session.execute(
         select(WorkItemRow)
-        .where(WorkItemRow.type.in_(("engineering", "verification", "regrade")), WorkItemRow.state == "leased", WorkItemRow.lease_expiry < func.now())
+        .where(
+            WorkItemRow.type.in_(("engineering", "verification", "regrade")),
+            WorkItemRow.state == "leased",
+            (WorkItemRow.lease_expiry < func.now()) | (WorkItemRow.lease_epoch != lease_fence_epoch),
+        )
         .with_for_update(skip_locked=True)
     ).scalars().all()
     for item in expired:
@@ -919,6 +993,7 @@ def issue_attempt_credential(
     because that is an entirely different, role-checked token class."""
     if actor_role not in CREDENTIAL_ROLES:
         raise ValueError(f"unknown actor_role {actor_role!r}; expected one of {CREDENTIAL_ROLES}")
+    lease_fence_epoch = current_fence_epoch(session)
     lease = session.execute(
         select(WorkItemRow)
         .where(
@@ -928,6 +1003,7 @@ def issue_attempt_credential(
             WorkItemRow.generation == lease_generation,
             WorkItemRow.state == "leased",
             WorkItemRow.lease_expiry > datetime.now(timezone.utc),
+            WorkItemRow.lease_epoch == lease_fence_epoch,
         )
         .with_for_update()
     ).scalar_one_or_none()
@@ -962,6 +1038,7 @@ def issue_attempt_credential(
                 work_item_id=work_item_id,
                 worker_id=worker_id,
                 lease_generation=lease_generation,
+                lease_epoch=lease_fence_epoch,
             )
         )
     else:
@@ -971,6 +1048,7 @@ def issue_attempt_credential(
         row.work_item_id = work_item_id
         row.worker_id = worker_id
         row.lease_generation = lease_generation
+        row.lease_epoch = lease_fence_epoch
     append_attempt_event(session, attempt_id=attempt_id, event_type=f"credential.{actor_role}.issued", payload={"ttl_seconds": ttl_seconds, "work_item_id": str(work_item_id), "worker_id": worker_id})
     session.commit()
     return IssuedAttemptCredential(token=token, expires_at=expires_at)
@@ -979,14 +1057,20 @@ def issue_attempt_credential(
 def verify_attempt_credential(session: Session, *, attempt_id: uuid.UUID, actor_role: str, token: str) -> bool:
     """ENG-020 (spec section 37): role-scoped, attempt-scoped proof of identity for a presented
     token - the check succeeds only when the exact (attempt_id, actor_role) row exists, is not
-    revoked, is not expired, and hashes to the presented token. This is what a trusted VERIFY
-    subprocess (or candidate code) uses to authenticate to the control plane as that attempt's
-    verifier (or candidate), never as the operator or any other attempt."""
+    revoked, is not expired, is stamped with the CURRENT fence epoch (gap 4: a credential minted
+    before a database restore is dead at first use once the fence epoch was advanced), and hashes
+    to the presented token. This is what a trusted VERIFY subprocess (or candidate code) uses to
+    authenticate to the control plane as that attempt's verifier (or candidate), never as the
+    operator or any other attempt."""
     if actor_role not in CREDENTIAL_ROLES:
         return False
     row = session.execute(
         select(AttemptCredentialRow)
-        .where(AttemptCredentialRow.attempt_id == attempt_id, AttemptCredentialRow.actor_role == actor_role)
+        .where(
+            AttemptCredentialRow.attempt_id == attempt_id,
+            AttemptCredentialRow.actor_role == actor_role,
+            AttemptCredentialRow.lease_epoch == current_fence_epoch(session),
+        )
     ).scalar_one_or_none()
     if row is None:
         return False
@@ -1042,6 +1126,7 @@ def revoke_attempt_credential(
             AttemptCredentialRow.work_item_id == work_item_id,
             AttemptCredentialRow.worker_id == worker_id,
             AttemptCredentialRow.lease_generation == lease_generation,
+            AttemptCredentialRow.lease_epoch == current_fence_epoch(session),
         )
         .values(revoked_at=now)
     )
@@ -1071,7 +1156,7 @@ def attempt_credential_status(session: Session, *, attempt_id: uuid.UUID, actor_
     valid = row.revoked_at is None and row.expires_at > now
     return AttemptCredentialStatus(
         actor_role=row.actor_role, issued_at=row.issued_at, expires_at=row.expires_at, revoked_at=row.revoked_at, valid=valid,
-        work_item_id=row.work_item_id, worker_id=row.worker_id, lease_generation=row.lease_generation,
+        work_item_id=row.work_item_id, worker_id=row.worker_id, lease_generation=row.lease_generation, lease_epoch=row.lease_epoch,
     )
 
 

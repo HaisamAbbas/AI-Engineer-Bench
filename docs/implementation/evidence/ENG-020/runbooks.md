@@ -45,6 +45,28 @@ exists); each cites the test that exercises the underlying mechanism.
 3. Classify the affected attempt's invalidity honestly (`infrastructure_invalid`) rather than
    scoring a candidate that never ran under real conditions.
 
+## Database restored from backup
+
+A `pg_restore` resurrects every pre-restore lease and credential exactly as it was - a lease
+whose `lease_expiry` is still in the future looks live, and a pre-restore worker with the right
+generation can heartbeat, finalize, and issue/use credentials before the reconciler's next poll
+(and a stale worker heartbeating it would keep that poll from ever fencing it). The system fence
+epoch closes this: every lease/credential is stamped with the epoch under which it was claimed/
+issued, every fenced operation requires that stamp to equal the CURRENT epoch, and the reconciler
+sweeps stale-epoch leases on its next poll even while they are still renewable.
+
+1. Restore the database, then - BEFORE resuming any dispatch - advance the fence epoch:
+   `repository.advance_fence_epoch(session, reason="post-restore fencing", activated_by_user_id=...)`
+   (one `aieb-reconciler`/API-adjacent invocation). This one steps fences every pre-restore lease
+   and credential at first touch, so no reconciliation is required to keep a stale worker out.
+2. The reconciler's next poll recovers the stale-epoch orphans (replacing/requeuing according to
+   each phase's artifact-first evidence) and revokes their credentials inside the same pass.
+3. Verify before/while resuming: `scripts/backup_restore_drill.py` now proves all of this through
+   a real `pg_dump`/`pg_restore` cycle - the in-window lease survives restore as `leased`, the
+   fence advance fences the pre-restore worker at FIRST touch (heartbeat/issue/finalize all
+   refused BEFORE reconciliation), the reconciler quarantines the stale-epoch lease, and a fresh
+   worker then claims and heartbeats under the new epoch.
+
 ## Scorer defect
 
 1. Block publication of any snapshot pinning an evaluation the defective scorer produced -
