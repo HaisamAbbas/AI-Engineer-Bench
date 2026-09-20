@@ -19,6 +19,7 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -53,7 +54,20 @@ def _rmtree_windows_safe(path: str) -> None:
 
 class BundleExclusionTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp()
+        # A retry here mirrors scripts/build_release_bundle.py's _mkdir_windows_safe:
+        # tempfile.mkdtemp() itself can raise a transient PermissionError on Windows
+        # if the OS temp root is momentarily locked by an antivirus/indexer handle.
+        last_error: OSError | None = None
+        self.tmp = None
+        for attempt in range(3):
+            try:
+                self.tmp = tempfile.mkdtemp()
+                break
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.2)
+        if self.tmp is None:
+            raise last_error  # type: ignore[misc]
         self.output = Path(self.tmp) / "bundle-out"
 
     def tearDown(self) -> None:

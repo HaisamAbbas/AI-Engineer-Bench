@@ -221,3 +221,46 @@ step, not software):**
 
 Overall status is unchanged by this pass: **ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.**
 No official campaign or release is claimed or was performed.
+
+## ENG-021 review follow-up, round 2 (2026-09-21)
+
+A second independent review of the above pass found two of the three "fixed" items were not
+fully closed, plus a wording discrepancy in the handoff summary. All three are addressed here.
+
+**Fixed:**
+
+1. **A fourth stale cost figure was found**: `release-process-runbook.md` line 91 still stated
+   "Grand total reservation: ~$39.12 (with 20% margin: ~$46.94)" — the round-1 pass corrected
+   `campaign-execution-guide.md` but missed this second copy of the same stale number. Corrected
+   to the authoritative $162.00/$194.40 figures with a note explaining the correction. A repo-wide
+   grep for `39.12`/`46.94` now shows the only remaining occurrences are inside explicit
+   "Correction" / round-1-follow-up prose describing what was wrong and why — not live claims.
+2. **Bundle test hardening was incomplete**: round 1 hardened `shutil.rmtree` (the cleanup path)
+   against Windows `PermissionError`, but the second review reported failures during *directory
+   creation* (a `PermissionError` while creating the temporary output directory), a different code
+   path the round-1 fix could not have addressed. Added `_mkdir_windows_safe()` to
+   `build_release_bundle.py` (retries `bundle_root.mkdir(parents=True, exist_ok=True)` on
+   `PermissionError`, the same rationale as the existing rmtree hardening: a path just freed by
+   `_rmtree_windows_safe` can still be transiently locked) and applied the same retry to
+   `tests/test_eng021_bundle_exclusions.py`'s `setUp()` around `tempfile.mkdtemp()` itself.
+   **Important honesty note**: this creation-path failure was, like the round-1 cleanup failure,
+   NOT reproduced in this environment — `tests/test_eng021_bundle_exclusions.py` passed 6/6 across
+   every run attempted here, both before and after this change. The hardening is a defensible,
+   narrowly-scoped mitigation for the exact failure class described, not confirmation that the
+   root cause is fixed; a genuinely independent, reproducible run in the reviewing environment
+   (or a shared CI job) is still needed before this gap can be called closed with confidence.
+3. **Commit-state wording discrepancy**: the round-1 handoff said "nothing has been committed
+   yet," which was accurate at the moment that pass's agent finished, but by the time it was
+   reported to the reviewer the changes had already been committed (`9f290e8`) and pushed at the
+   requesting user's explicit instruction. That was a stale summary sentence, not a repository
+   inconsistency — `git log`/`git status` were and remain the source of truth, and this file (and
+   `SESSION_HANDOFF.md`) are updated and committed together with the code changes they describe,
+   same as every other entry here.
+
+**Still genuinely blocked**, unchanged from round 1: gaps 1 (genuine held-out family), 2
+(independent admission reviews), 4 (pilot-derived variance), 5 (project diversity), and 6
+(authorization/real campaign) all remain open for the same real human/infrastructure/content
+reasons documented above — nothing in this round touched them.
+
+**ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.** No official campaign or release is
+claimed or was performed.

@@ -955,3 +955,27 @@ summary of the same work).
   approval, ENG-019/ENG-020 completion, and live-smoke authorization). None of these were
   fabricated, self-approved, or worked around. Status remains **ENG-021 IN_PROGRESS / ENG-022
   BLOCKED**.
+
+## ENG-021 review follow-up, round 2 (COMPLETE for the fixable subset, 2026-09-21)
+
+A second review of the round-1 pass found two "fixed" items weren't fully closed, plus a stale
+wording sentence in the handoff (see STATUS.md's matching "round 2" section for the full writeup).
+
+- **Fourth stale cost figure**: `release-process-runbook.md:91` still had the old "~$39.12
+  (~$46.94)" figure that round 1's fix to `campaign-execution-guide.md` didn't cover, since it's a
+  separate file with its own copy of the number. Corrected to $162.00/$194.40 with an inline note.
+  Repo-wide grep confirms every remaining `39.12`/`46.94` mention now lives inside explicit
+  "Correction" prose, not a live claim.
+- **Bundle-test hardening gap**: round 1 only hardened `shutil.rmtree` (cleanup); round 2's review
+  reported the failure happens during directory *creation* instead - a different code path. Added
+  `_mkdir_windows_safe()` (retry-on-`PermissionError`, `exist_ok=True`) to `build_release_bundle.py`
+  and the same retry around `tempfile.mkdtemp()` in the test's `setUp()`. Still NOT reproduced here
+  (6/6 clean before and after) - this is a defensible mitigation for the described failure class,
+  not confirmation the root cause is understood. A genuinely independent reproducible run (shared
+  CI, or the reviewing environment itself) is still needed to close this with confidence.
+- **Commit-state wording**: round 1's "nothing committed yet" was true when that pass's agent
+  finished, but stale by the time it reached the reviewer, since the user had since asked for (and
+  received) a commit+push (`9f290e8`). Not a repo inconsistency - `git log`/`git status` are and
+  remain authoritative; noted here for the record.
+- **Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same real human/infrastructure/content
+  reasons as round 1. Status remains **ENG-021 IN_PROGRESS / ENG-022 BLOCKED**.

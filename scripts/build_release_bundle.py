@@ -135,12 +135,34 @@ def _check_no_protected_paths(bundle_root: Path) -> dict:
     return {"violations": violations, "excluded": excluded}
 
 
+def _mkdir_windows_safe(path: Path, *, retries: int = 3, delay_seconds: float = 0.2) -> None:
+    """Create a directory tree, retrying a transient PermissionError once or twice.
+
+    On Windows, a directory just removed by `_rmtree_windows_safe` can still be
+    momentarily locked by an antivirus/indexer handle, so an immediate `mkdir`
+    can raise PermissionError ([WinError 5]) even though the path is free a
+    moment later. `exist_ok=True` also tolerates the directory already existing
+    (e.g. a prior failed run's rmtree left it in place)."""
+    import time
+
+    last_error: OSError | None = None
+    for attempt in range(retries):
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt < retries - 1:
+                time.sleep(delay_seconds)
+    raise last_error  # type: ignore[misc]
+
+
 def build_bundle(output_dir: Path) -> dict:
     """Build the complete release candidate bundle."""
     bundle_root = output_dir / "release-candidate-bundle"
     if bundle_root.exists():
         _rmtree_windows_safe(bundle_root)
-    bundle_root.mkdir(parents=True)
+    _mkdir_windows_safe(bundle_root)
 
     catalog = _load_catalog()
     tasks = catalog["tasks"]

@@ -88,7 +88,11 @@ examples/official-campaign-proposal.json
 - **Enforcement**: `estimated_time_limited` (not hard-enforced)
 - **No provider reservation integration** exists
 - Assumptions-based estimates only
-- Grand total reservation: ~\$39.12 (with 20% margin: ~\$46.94)
+- Grand total reservation: **\$162.00** (with 20% margin: **\$194.40**) — over the 540-trial
+  worst-case-replacement basis; see `official-campaign-proposal.json`'s `cost_reservation` block
+  (script-generated, authoritative) and `campaign-execution-guide.md`'s "Cost Accounting" section
+  for the computation. An earlier draft of this runbook stated ~\$39.12/\$46.94; that figure did
+  not reconcile against the proposal and has been corrected here to match.
 - **Status**: Estimates only, not enforceable
 
 ## Two-Human Approval
