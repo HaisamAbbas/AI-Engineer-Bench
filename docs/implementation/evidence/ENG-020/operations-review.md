@@ -173,9 +173,8 @@ entrypoint resolves the import only after scrubbing, and `_sanitized_child_env` 
 credentials embedded in allowlisted VALUES (URL userinfo, `?password=/token=/key=/secret=`).
 Green at the fifth round: `tests/test_attempt_credentials.py` 14/14,
 `tests/test_attempt_lifecycle.py` 21/21, `tests/test_worker_leasing.py` 38/38, the ENG-019 threat
-model 39/39. Gap 3 remains in review pending the reviewer's negative-control run of these exact
-controls; full detail in `sandbox-review.md` (fifth review round) and DECISIONS.md
-ENG019-006/ENG020-007.
+model 39/39. Gap 3 was accepted as closed by the reviewer's deciding run on `895814a` (see below);
+full detail in `sandbox-review.md` (fifth review round) and DECISIONS.md ENG019-006/ENG020-007.
 
 The reviewer's own negative run re-opened the import-time closure as a HIGH blocker: the HOSTED
 WORKER's parent still imported the evaluator module (`runner_bridge.py` did
@@ -192,8 +191,14 @@ the probe never enters the worker parent's `sys.modules`, and went RED (then rev
 reintroduced parent import. Green after closure: worker leasing 39/39 (new
 `test_hosted_verification_never_imports_the_evaluator_in_the_worker_parent`), lifecycle 21/21
 (rewritten `test_import_time_env_leak_...` on the identity path), credentials 14/14, ENG-019
-threat-model 39/39. Gap 3 still awaits the reviewer's re-run of the negative controls, including
-the parent-import control.
+threat-model 39/39. The reviewer's deciding run accepted Gap 3 as closed for the currently
+supported architecture on 2026-09-20 (`895814a`; credential+worker-leasing 53/53, lifecycle+sandbox
+60/60, worktree + whitespace clean): the hosted worker imports no evaluator modules in its parent
+process, evaluator identity stays plain `(module, qualname)` strings all the way to the spawn
+child - the only importer, after the scrub - and every negative control (cross-attempt issuance,
+role mismatch, stale revoke, crashed-regrade revoke, verifier-only candidate, malformed UUID,
+invalid-token non-disclosure, production-path parent import) passes. Official VM/live-infra
+validation remains explicitly deferred; gaps 4-6 remain open.
 
 ### Migration rollback drill (spec section 43)
 `scripts/migration_rollback_drill.py` - explicitly NOT limited to a schema round-trip on an

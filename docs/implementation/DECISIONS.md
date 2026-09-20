@@ -979,8 +979,8 @@ these five clauses - the two built and the three disclosed - is now visible, mat
 ## ENG019-006 / ENG020-007 - Codex fifth review round: five incomplete closures re-opened and closed, incl. the parent-import env-leak fix
 
 - Date: 2026-09-20
-- Status: accepted (implemented, PG-verified; gap 3 left in review pending the reviewer's own
-  negative-control run)
+- Status: accepted (implemented, PG-verified; the reviewer's deciding run on `895814a` accepted
+  Gap 3 as closed for the currently supported architecture, 2026-09-20)
 - Decision: a SECOND review round of the credential path (after ENG019-005 claimed it closed)
   returned four findings, each with a concrete negative control the then-current code failed.
   All four are accepted as real and fixed; the reviewer's each control is reproduced as a
@@ -1050,9 +1050,15 @@ these five clauses - the two built and the three disclosed - is now visible, mat
 - Consequence: `tests/test_attempt_credentials.py` 14/14, `tests/test_attempt_lifecycle.py` 21/21,
   `tests/test_worker_leasing.py` 39/39 (incl. the new leased parent-import control),
   `tests/test_eng019_sandbox_threat_model.py` 39/39, all green against the `aieb-test-postgres`
-  container/PG attrs. Single head `bc5e9d4b2107`. Gap 3 is NOT declared closed by this document:
-  the reviewer's own run of the negative controls above (including the new parent-import control)
-  is the gate, and gaps 4 (restore-drill fencing), 5 (kill-switch API/CLI), and 6 (Prometheus
+  container/PG attrs. Single head `bc5e9d4b2107`. Gap 3 was then ACCEPTED as closed by the
+  reviewer's deciding run on `895814a`: hosted worker imports no evaluator modules in its parent,
+  evaluator identity is plain `(module, qualname)` strings through `runner_bridge`, the isolated
+  child is the only importer and only after the scrub, the production-path parent-import control
+  passes, and cross-attempt issuance / role-mismatch refusal / stale revocation / crashed-regrade
+  revocation / verifier-only candidate access / malformed-UUID handling / invalid-token
+  non-disclosure all pass (credential+worker-leasing 53/53, lifecycle+sandbox 60/60, working tree
+  and whitespace clean). Official VM/live-infrastructure validation is explicitly deferred by the
+  verdict; gaps 4 (restore-drill fencing), 5 (kill-switch API/CLI), and 6 (Prometheus
   metrics/alerts) remain open in order.
 
 ## ENG023 - Fixed reference model-track loop (plan corrected after codebase verification)

@@ -60,8 +60,12 @@ which is the FIRST process to import the module, after the scrub. Negative contr
 secrets BEFORE any probe import and drive the real production path (identity strings; end-to-end
 leased execution via `execute_leased_work`), asserting the probe never enters the worker parent's
 `sys.modules` and its import-time snapshot saw no secrets - asserted red, then reverted, against
-the reintroduced parent import. Gap 3 is still NOT CLOSED here: it awaits the reviewer's own run of
-the negative controls (including the parent-import control). Suites green against the disposable
+the reintroduced parent import. Gap 3 is CLOSED - the reviewer's deciding run on `895814a` accepted it for the currently
+supported architecture (hosted worker imports no evaluator modules in its parent; evaluator
+identity is plain `(module, qualname)` strings; the isolated child is the only importer, after the
+scrub; production-path parent-import control and all other negative controls pass; credential +
+worker-leasing 53/53, lifecycle + sandbox 60/60, working tree and whitespace clean; official
+VM/live-infrastructure validation explicitly deferred). Suites green against the disposable
 `aieb-test-postgres` container (postgres:16 on `localhost:5544`,
 `postgresql+psycopg://postgres:aieb_test_password@...`): credentials 14/14, lifecycle 21/21,
 worker leasing 39/39, sandbox threat-model 39/39. Single alembic head `bc5e9d4b2107`.

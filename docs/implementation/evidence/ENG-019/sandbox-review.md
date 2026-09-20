@@ -214,8 +214,9 @@ A SECOND review round of the credential path found four of the fourth round's cl
 incomplete, each with a concrete negative control that the then-current code failed - so the
 fourth round's "closed" claims were premature. All four are now closed with code and tests. The
 reviewer's negative controls are each reproduced as a regression test before the fix is
-accepted; gap 3 is NOT claimed closed on the basis of this document's word alone - it is the
-reviewer's own run of those controls that decides.
+accepted; gap 3 was NOT claimed closed on the basis of this document's word alone - it is the
+reviewer's own run of those controls that decides. That deciding run (2026-09-20, on `895814a`)
+passed and accepted Gap 3 as closed; see the "Deciding review" note at the end of this round.
 
 1. **Issuance was attempt- and role-blind (fourth round item 1/3 incomplete).** The fence
    checked the lease row's identity but NOT that the lease's work item belonged to the attempt
@@ -302,9 +303,24 @@ Verification (all green in this pass): `tests/test_attempt_credentials.py` 14/14
 controls), `tests/test_worker_leasing.py` 39/39 (incl. the new leased parent-import control),
 `tests/test_eng019_sandbox_threat_model.py` 39/39. Single alembic head `bc5e9d4b2107`, upgrade
 chain green. Full mechanical detail in `operations-review.md` (fifth review round) and
-DECISIONS.md ENG019-006/ENG020-007; gap 3 remains in review pending the reviewer's own
-re-run of the negative controls (including the new parent-import control), and gaps 4/5/6 remain
-open.
+DECISIONS.md ENG019-006/ENG020-007.
+
+### Deciding review (codex, 2026-09-20) - Gap 3 accepted as closed on `895814a`
+
+The reviewer ran the deciding negative-control pass against `895814a` (the commit that removed
+the worker-parent evaluator import): the hosted worker imports NO evaluator modules in its parent
+process; evaluator identity is plain `(module, qualname)` strings through
+`runner_bridge.py` (`TASK_RUNTIMES` third element); the isolated VERIFY child is the ONLY
+importer and imports only after `os.environ` is scrubbed (`lifecycle.py`
+`_verify_subprocess_entrypoint`); the production-path parent-import regression passes; and
+cross-attempt issuance, role-mismatch refusal, stale revocation, crashed-regrade revocation,
+verifier-only candidate access, malformed-UUID handling, and invalid-token non-disclosure all
+pass. Independent results: credential + worker-leasing 53/53, lifecycle + sandbox 60/60, `HEAD` =
+`origin/main` = `895814a`, working tree clean, commit whitespace check clean. Verdict: **ENG-019
+Gap 3 - scoped credentials and candidate/verifier identity separation - is accepted as closed for
+the currently supported architecture.** This does not close ENG-019/ENG-020 overall: gaps 4
+(restore-drill fencing), 5 (kill-switch API/CLI), 6 (Prometheus metrics/alerts), and the
+explicitly deferred official VM/live-infrastructure gates remain open.
 
 ## Implementation - network-policy guard and hardened mount scan
 
