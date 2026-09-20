@@ -976,7 +976,7 @@ these five clauses - the two built and the three disclosed - is now visible, mat
   credential path then found four of these closures incomplete and re-opened them - see
   ENG019-006/ENG020-007 (fifth review round) below. Gaps 4/5/6 remain open in order.
 
-## ENG019-006 / ENG020-007 - Codex fifth review round: four incomplete closures re-opened and closed, plus the import-time env-leak fix
+## ENG019-006 / ENG020-007 - Codex fifth review round: five incomplete closures re-opened and closed, incl. the parent-import env-leak fix
 
 - Date: 2026-09-20
 - Status: accepted (implemented, PG-verified; gap 3 left in review pending the reviewer's own
@@ -1021,20 +1021,39 @@ these five clauses - the two built and the three disclosed - is now visible, mat
      issuance (`_abort_infra`) plus the phase-ending finally and the reconciler on worker crash.
      Control: `test_get_candidate_capability_is_credential_authorized` (full payload, cross-attempt
      401, same-attempt candidate-role 403).
-  5. **Import-time env leak (separate, environmental):** the isolated VERIFY child imported the
-     evaluator module during spawn bootstrap, before the environment scrub, so top-level module
-     code observed worker secrets. Fixed: `_run_verify_isolated`/`_verify_subprocess_entrypoint`
-     pass the evaluator as `(module, qualname)` identity STRINGS (never the pickled callable) and
-     resolve it only after `os.environ` is scrubbed; `_sanitized_child_env()` also strips
-     credentials embedded in allowlisted VALUES (URL userinfo, `?password=/token=/key=/secret=`
-     segments). Controls: `test_import_time_env_leak_...`,
-     `test_proxy_value_embedded_credentials_are_scrubbed_from_child_env`.
+5. **Import-time env leak (separate, environmental):** the isolated VERIFY child imported the
+      evaluator module during spawn bootstrap, before the environment scrub, so top-level module
+      code observed worker secrets. Fixed: `_run_verify_isolated`/`_verify_subprocess_entrypoint`
+      pass the evaluator as `(module, qualname)` identity STRINGS (never the pickled callable) and
+      resolve it only after `os.environ` is scrubbed; `_sanitized_child_env()` also strips
+      credentials embedded in allowlisted VALUES (URL userinfo, `?password=/token=/key=/secret=`
+      segments). Controls: `test_import_time_env_leak_...`,
+      `test_proxy_value_embedded_credentials_are_scrubbed_from_child_env`.
+
+  The reviewer's own negative run then re-opened item 5 as a HIGH blocker and closed the rest:
+  **`runner_bridge` still imported the evaluator module in the WORKER PARENT before the isolated
+  child existed** (`importlib.import_module(evaluator_module)`), so evaluator top-level code ran
+  against the worker's unsanitized environment; the first regression missed it only because it
+  imported the probe BEFORE planting secrets. Reproduced by the reviewer in a fresh process
+  (`parent_import_db=postgresql://sentinel:PLANTED@db.example/compromised`,
+  `parent_import_token=PLANTED_TOK`). Fixed by carrying the evaluator identity IN `TASK_RUNTIMES`
+  as a third element (source_dir, evaluator_module, qualname) and threading `(module, qualname)`
+  strings straight from `runner_bridge` into the spawn child: `runner_bridge` no longer imports
+  the module at all, `run_verification` takes `evaluate_identity` directly (`TypeError` if
+  neither a callable nor an identity is given), and the isolated child is the first process to
+  import it, after the scrub. Negative controls plant the worker secrets BEFORE any probe import
+  and go red against the reintroduced parent import (verified red, then reverted): rewritten
+  `test_import_time_env_leak_...` (identity path, `evaluator=None`, probe must never enter the
+  parent's `sys.modules`) and new leased end-to-end
+  `test_hosted_verification_never_imports_the_evaluator_in_the_worker_parent` (real
+  `execute_leased_work`, probe stays out of the worker parent, child import-time snapshot clean).
 - Consequence: `tests/test_attempt_credentials.py` 14/14, `tests/test_attempt_lifecycle.py` 21/21,
-  `tests/test_worker_leasing.py` 38/38, `tests/test_eng019_sandbox_threat_model.py` 39/39,
-  all green against the `aieb-test-postgres` container/PG attrs. Single head `bc5e9d4b2107`.
-  Gap 3 is NOT declared closed by this document: the reviewer's own run of the negative
-  controls above is the gate, and gaps 4 (restore-drill fencing), 5 (kill-switch API/CLI), and 6
-  (Prometheus metrics/alerts) remain open in order.
+  `tests/test_worker_leasing.py` 39/39 (incl. the new leased parent-import control),
+  `tests/test_eng019_sandbox_threat_model.py` 39/39, all green against the `aieb-test-postgres`
+  container/PG attrs. Single head `bc5e9d4b2107`. Gap 3 is NOT declared closed by this document:
+  the reviewer's own run of the negative controls above (including the new parent-import control)
+  is the gate, and gaps 4 (restore-drill fencing), 5 (kill-switch API/CLI), and 6 (Prometheus
+  metrics/alerts) remain open in order.
 
 ## ENG023 - Fixed reference model-track loop (plan corrected after codebase verification)
 

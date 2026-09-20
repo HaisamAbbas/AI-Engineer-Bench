@@ -208,7 +208,7 @@ the disposable `aieb-test-postgres` container (postgres:16 on `localhost:5544`, 
 environment-delivery tests and the new scrub regression. Alembic has a single head
 (`bc5e9d4b2107`) and the whole chain upgrades cleanly.
 
-## Fifth independent review round (codex, 2026-09-20) - four incomplete closures re-opened and closed
+## Fifth independent review round (codex, 2026-09-20) - five incomplete closures re-opened and closed
 
 A SECOND review round of the credential path found four of the fourth round's closures
 incomplete, each with a concrete negative control that the then-current code failed - so the
@@ -274,12 +274,37 @@ variable. New controls: `test_import_time_env_leak_is_closed...` (a fixture eval
 TOP-LEVEL code snapshots `os.environ` at import and asserts it never saw the planted secrets)
 and `test_proxy_value_embedded_credentials_are_scrubbed_from_child_env`.
 
+The reviewer's own run then re-opened that closure as a HIGH blocker: **the hosted worker still
+imported the evaluator module in ITS OWN parent process before the isolated child existed.**
+`runner_bridge.py` did `importlib.import_module(evaluator_module)` to build the callable it
+passed into `run_verification`, so evaluator module-level code ran against the worker's full
+unsanitized environment (`AIEB_DATABASE_URL`, CI tokens). The then-regression missed it only
+because it imported the probe BEFORE planting secrets, so the probe's import-time snapshot was
+never taken against the leak. Reproduced in a fresh process by the reviewer
+(`parent_import_db=postgresql://sentinel:PLANTED@db.example/compromised`,
+`parent_import_token=PLANTED_TOK`). Closed: evaluator identity now lives IN `TASK_RUNTIMES`
+as a third element (source_dir, evaluator_module, qualname) and travels all the way from
+`runner_bridge` to the spawn child as plain strings - `runner_bridge` no longer imports the
+module at all, `run_verification` accepts `evaluate_identity=(module, qualname)` directly (a
+`TypeError` guards the "exactly one of callable or identity" contract), and the isolated child is
+the FIRST process to import the module, and only after the scrub. Negative controls that plant
+the worker secrets BEFORE any probe import and then fail (asserted red, then reverted) against
+the reintroduced parent import: rewritten
+`test_import_time_env_leak_is_closed_evaluator_module_runs_after_scrub` (identity path,
+`evaluator=None`, asserts the probe never enters the worker/test parent's `sys.modules`) and a
+new end-to-end leased test `test_hosted_verification_never_imports_the_evaluator_in_the_worker_parent`
+(real `execute_leased_work` engineering -> verification against the import-time probe,
+asserting the probe stays out of the worker parent's `sys.modules` and the recorded evaluation's
+import-time snapshot saw neither planted secret).
+
 Verification (all green in this pass): `tests/test_attempt_credentials.py` 14/14,
 `tests/test_attempt_lifecycle.py` 21/21 (incl. the two new controls above and the two new env
-controls), `tests/test_worker_leasing.py` 38/38, `tests/test_eng019_sandbox_threat_model.py`
-39/39. Single alembic head `bc5e9d4b2107`, upgrade chain green. Full mechanical detail in
-`operations-review.md` (fifth review round) and DECISIONS.md ENG019-006/ENG020-007; gap 3 remains
-in review pending the reviewer's own negative-control run, and gaps 4/5/6 remain open.
+controls), `tests/test_worker_leasing.py` 39/39 (incl. the new leased parent-import control),
+`tests/test_eng019_sandbox_threat_model.py` 39/39. Single alembic head `bc5e9d4b2107`, upgrade
+chain green. Full mechanical detail in `operations-review.md` (fifth review round) and
+DECISIONS.md ENG019-006/ENG020-007; gap 3 remains in review pending the reviewer's own
+re-run of the negative controls (including the new parent-import control), and gaps 4/5/6 remain
+open.
 
 ## Implementation - network-policy guard and hardened mount scan
 

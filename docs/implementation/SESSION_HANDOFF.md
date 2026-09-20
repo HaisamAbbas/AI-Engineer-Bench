@@ -39,24 +39,32 @@ DECISIONS.md ENG019-004/ENG020-005 and this handoff):
    executors in `runner_bridge.py` issuing at phase start and revoking in `finally`. Non-PG
    behavior proven: `tests/test_attempt_lifecycle.py` 18/18 (incl. two new env-delivery tests).
 
-A codex follow-up review of gap 3 returned six findings (4 high, 1 medium, 1 low), all now closed
-(disposition ledgered in DECISIONS.md ENG019-005/ENG020-006 and `sandbox-review.md` fourth review
-round): (1) the credential now authorizes a REAL capability - `GET /v1/attempts/{attempt_id}/candidate`
-returns the persisted candidate only under a valid candidate/verifier credential for that attempt;
-(2) child environments are allowlist-scrubbed (`_sanitized_child_env()`, applied in `_start`, the
-BUILD entrypoint, and the isolated VERIFY entrypoint) so worker secrets like `AIEB_DATABASE_URL` are
-never inherited by candidate/evaluator code - regression
-`test_subprocess_environ_never_inherits_worker_secrets` plants sentinels and asserts they never
-reach either subprocess; (3) issuance is lease-fenced (migration `bc5e9d4b2107` adds
-`work_item_id`/`worker_id`/`lease_generation`; `LeaseFenceError` on a stale/expired worker;
-`revoke_attempt_credentials` runs inside `reconcile_expired_leases`'s recovery transaction so a
-crashed worker's tokens DIE at lease recovery, never lingering to TTL); (4) the PG test seed no
-longer collides on unique identity constraints; (5) invalid-token responses no longer leak the
-roll's real expiry and malformed UUIDs are 404s; (6) the stale `IsolationPolicy` docstring and a
-trailing-whitespace finding were cleaned up. Gap 3 is now CLOSED: `tests/test_attempt_credentials.py`
-passes 10/10 against the disposable `aieb-test-postgres` container (postgres:16 on `localhost:5544`,
-`postgresql+psycopg://postgres:aieb_test_password@...`), and `tests/test_attempt_lifecycle.py`
-19/19. Single alembic head `bc5e9d4b2107`.
+A codex follow-up review of gap 3 returned six findings (fourth review round, disposition in
+DECISIONS.md ENG019-005/ENG020-006 and `sandbox-review.md`), then a SECOND review round
+(ENG019-006/ENG020-007) found four of those closures incomplete and one import-time env leak; the
+reviewer's own negative run re-opened that leak as a HIGH blocker (`runner_bridge` imported the
+evaluator module in the WORKER PARENT). All are now closed: (1) issuance is attempt- and
+role-fenced (work-item type -> allowed role, `engineering` -> candidate / `verification`+`regrade`
+-> verifier; cross-attempt or type mismatch refused); (2) revoke is fenced to the credential row's
+OWN lease identity - a stale worker's delayed `finally` NO-OPS against a replacement's rotated
+token; (3) the reconciler's lease sweep covers crashed `regrade` items and revokes both roles; (4)
+`GET /v1/attempts/{attempt_id}/candidate` is verifier-ROLE-ONLY (`_require_role`: 401 absent/
+invalid, 403 valid-but-wrong-role) returning the FULL stored payload, and verification issues its
+verifier credential first then reads the candidate through the SAME credential gate
+(`load_stored_candidate_authorized`, `CredentialDeniedError` -> infrastructure_invalid), revoking
+on every infra-abort path; (5) evaluators are delivered as `(module, qualname)` identity STRINGS -
+never the pickled callable - and resolved only after `os.environ` is scrubbed (allowlisted-field
+credential stripping included); (6) the worker parent no longer imports the evaluator at all:
+identity (incl. qualname) lives IN `TASK_RUNTIMES` and threads straight to the spawned child,
+which is the FIRST process to import the module, after the scrub. Negative controls plant worker
+secrets BEFORE any probe import and drive the real production path (identity strings; end-to-end
+leased execution via `execute_leased_work`), asserting the probe never enters the worker parent's
+`sys.modules` and its import-time snapshot saw no secrets - asserted red, then reverted, against
+the reintroduced parent import. Gap 3 is still NOT CLOSED here: it awaits the reviewer's own run of
+the negative controls (including the parent-import control). Suites green against the disposable
+`aieb-test-postgres` container (postgres:16 on `localhost:5544`,
+`postgresql+psycopg://postgres:aieb_test_password@...`): credentials 14/14, lifecycle 21/21,
+worker leasing 39/39, sandbox threat-model 39/39. Single alembic head `bc5e9d4b2107`.
 
 Remaining from the audit, NOT yet started (ledger order): gap 4 (restore-drill pre-reconciliation
 fencing hole - a restored-from-backup DB could let a stale worker / overlapping lease act);

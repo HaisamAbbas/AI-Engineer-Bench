@@ -391,16 +391,23 @@ class AttemptLifecycleTests(unittest.TestCase):
                     os.environ[key] = value
 
     def test_import_time_env_leak_is_closed_evaluator_module_runs_after_scrub(self) -> None:
-        """Codex-audit finding 4 (second review round): spawn unpickles the Process target and
-        args at child bootstrap, BEFORE _verify_subprocess_entrypoint scrubs os.environ - so a
-        pickled evaluator FUNCTION forced the evaluator's module to be imported (and its
-        import-time code to run) against the worker's unsanitized environment. The fix passes
-        the evaluator as (module, qualname) identity STRINGS and resolves it - importing the
-        module - only after the scrub, so top-level module code sees the scrubbed env.
+        """Codex-audit finding 4 (second review round) PLUS the reviewer blocker round:
+        both the pickled-callable spawn leak and the runner_bridge PARENT-import leak are
+        closed. The hosted worker previously did `importlib.import_module(evaluator_module)`
+        in its own parent process (runner_bridge), so evaluator TOP-LEVEL code ran against the
+        worker's unsanitized environment (AIEB_DATABASE_URL, CI_BUILD_TOKEN, ...) BEFORE the
+        isolated child - or even the entrypoint's scrub - existed. The regression must plant
+        secrets BEFORE any import of the probe and drive the PRODUCTION path: identity strings
+        carried straight through (evaluate_identity=(module, qualname), evaluator=None, exactly
+        as runner_bridge now calls run_verification), so the spawned child is the FIRST process
+        to import the module, after the scrub.
         fixtures/worker/import_time_probe.py snapshots os.environ AT IMPORT TIME and reports
-        it; run verification against it with planted secrets and assert its import-time
-        snapshot never saw them, even though the module was fresh (child-side) at spawn."""
-        from tests.fixtures.worker.import_time_probe import evaluate as import_time_probe_evaluate
+        it; this test asserts the probe was never imported into the worker/test parent process
+        at all, and that the child's import-time snapshot never saw the planted secrets."""
+        import sys
+
+        probe_module = "tests.fixtures.worker.import_time_probe"
+        sys.modules.pop(probe_module, None)
 
         planted = {
             "AIEB_DATABASE_URL": "postgresql://sentinel:PLANTED@db.example/compromised",
@@ -409,18 +416,21 @@ class AttemptLifecycleTests(unittest.TestCase):
         kept = {key: os.environ.get(key) for key in planted}
         os.environ.update(planted)
         try:
+            self.assertNotIn(probe_module, sys.modules, "probe must be fresh at test start")
             collected = self._collected_outcome("import-time-leak")
             verified = self.runner.run_verification(
                 self.config("import-time-leak", self.script("import-time-leak.py", self.reference_editor()), 20),
-                import_time_probe_evaluate,
+                None,
                 AttemptOutcome(collected.attempt_id, candidate=collected.candidate),
                 attempt_vars={
                     "AIEB_ATTEMPT_ID": "attempt-import-time-leak",
                     "AIEB_ATTEMPT_ROLE": "verifier",
                     "AIEB_ATTEMPT_CREDENTIAL": "verifier-token-import-time",
                 },
+                evaluate_identity=(probe_module, "evaluate"),
             )
             self.assertEqual(verified.verdict, Verdict.PASS, verified.diagnostics)
+            self.assertNotIn(probe_module, sys.modules, "verification imported the evaluator in the worker/TEST parent - the very leak runner_bridge reintroduced")
             self.assertEqual(
                 verified.evaluation["import_time_db_url"], "<absent>",
                 "import-time evaluator module code observed the worker's DB secret before the scrub",

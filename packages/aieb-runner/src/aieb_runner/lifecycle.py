@@ -371,7 +371,10 @@ def _verify_subprocess_entrypoint(
     bootstrap - BEFORE the environment scrub - leaking the worker's secrets
     to import-time code. The identity is resolved to a callable only after
     os.environ is replaced, so the evaluator's module import runs inside the
-    scrubbed environment."""
+    scrubbed environment - and, carried as strings from the hosted worker's
+    TASK_RUNTIMES, this child is the FIRST process to import it at all
+    (codex reviewer blocker round: runner_bridge never imports the module in
+    its parent)."""
     if os.name != "nt":
         os.setsid()
         startup_event.set()
@@ -955,7 +958,7 @@ class LocalAttemptRunner:
 
     @staticmethod
     def _run_verify_isolated(
-        evaluate: Evaluator, build: Path, cancel_event: Event | None,
+        evaluate_identity: tuple[str, str], build: Path, cancel_event: Event | None,
         *, attempt_vars: Mapping[str, str] | None = None,
     ) -> VerifyRun:
         """Run VERIFY in an owned process tree and receive bounded JSON over
@@ -970,8 +973,10 @@ class LocalAttemptRunner:
         # callable (codex-audit finding 4): spawning pickles the Process args and the child
         # bootstrap imports `__main__`/the target module BEFORE _verify_subprocess_entrypoint
         # scrubs the environment, so a pickled function would cause the evaluator module to be
-        # imported - and its import-time code run - inside the worker's unsanitized env.
-        evaluate_identity = (evaluate.__module__, evaluate.__qualname__)
+        # imported - and its import-time code run - inside the worker's unsanitized env. The
+        # caller carries the same strings all the way from runner_bridge's TASK_RUNTIMES
+        # without ever importing the module in the worker parent (codex reviewer blocker
+        # round): this spawned child is the FIRST process to import it, after the scrub.
         process = ctx.Process(
             target=_verify_subprocess_entrypoint,
             args=(evaluate_identity, build, stop_event, result_endpoint, startup_event, attempt_vars),
@@ -1150,14 +1155,26 @@ class LocalAttemptRunner:
                     pass
 
     def run_verification(
-        self, config: AttemptConfig, evaluator: Evaluator, outcome: AttemptOutcome, cancel_event: Event | None = None,
+        self, config: AttemptConfig, evaluator: Evaluator | None, outcome: AttemptOutcome, cancel_event: Event | None = None,
         *, attempt_vars: Mapping[str, str] | None = None,
+        evaluate_identity: tuple[str, str] | None = None,
     ) -> AttemptOutcome:
         """BUILD -> VERIFY -> FINALIZE/CLEANUP, given an outcome that already
         carries a collected `candidate` - either from this same process's own
         prior run_engineering() call, or reconstructed from persisted
         artifact-store references by an entirely different worker recovering
         after a crash (ENG015-007). Mutates and returns the same outcome.
+
+        The evaluator reaches VERIFY by IDENTITY, never as a pickled callable:
+        spawn would otherwise import the evaluator module at child bootstrap,
+        before the environment scrub (codex-audit finding 4). `evaluator` is
+        the in-process callable for local/CLI/tests, from which the
+        (module, qualname) identity is derived; the HOSTED worker instead
+        passes `evaluate_identity` as plain strings lifted straight out of
+        runner_bridge's TASK_RUNTIMES, and must pass `evaluator=None` - it
+        never imports the evaluator module in the worker parent at all, so the
+        isolated child is the first process to import it, after scrubbing
+        (codex reviewer blocker round). Exactly one of the two is required.
 
         BUILD runs in an owned process group/Windows Job Object, so cancellation
         can terminate reconstruction even while filesystem or PostgreSQL I/O
@@ -1185,6 +1202,10 @@ class LocalAttemptRunner:
         storage/reference integrity failure, not something the candidate
         itself did wrong.
         """
+        if evaluate_identity is None:
+            if evaluator is None:
+                raise TypeError("run_verification requires an evaluator callable or an evaluate_identity")
+            evaluate_identity = (evaluator.__module__, evaluator.__qualname__)
         attempt_root = config.work_root / config.attempt_id
         build = attempt_root / "build"
         evidence = attempt_root / "attempt.json"
@@ -1226,7 +1247,7 @@ class LocalAttemptRunner:
             # in-process daemon thread (review finding #2): a
             # cancellation-ignoring evaluator is genuinely terminated after
             # grace, never merely abandoned - see _run_verify_isolated.
-            verify_run = self._run_verify_isolated(evaluator, build, cancel_event, attempt_vars=attempt_vars)
+            verify_run = self._run_verify_isolated(evaluate_identity, build, cancel_event, attempt_vars=attempt_vars)
             if verify_run.cancelled:
                 outcome.execution_validity = ExecutionValidity.CANCELLED
                 outcome.termination_reason = "cancelled"

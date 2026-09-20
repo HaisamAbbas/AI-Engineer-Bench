@@ -177,6 +177,24 @@ model 39/39. Gap 3 remains in review pending the reviewer's negative-control run
 controls; full detail in `sandbox-review.md` (fifth review round) and DECISIONS.md
 ENG019-006/ENG020-007.
 
+The reviewer's own negative run re-opened the import-time closure as a HIGH blocker: the HOSTED
+WORKER's parent still imported the evaluator module (`runner_bridge.py` did
+`importlib.import_module(evaluator_module)` to build the callable it passed into `run_verification`),
+so evaluator top-level code ran against the worker's unsanitized env; the first regression only
+imported its probe before planting secrets. Closed: evaluator identity (including qualname) now
+lives IN `TASK_RUNTIMES` as a third tuple element and is threaded as plain `(module, qualname)`
+strings from `runner_bridge` into the isolated spawn child; `runner_bridge` never imports the
+module, `run_verification` accepts `evaluate_identity` directly (`TypeError` unless exactly one of
+callable/identity), the isolated child is the FIRST process to import it, after the scrub. The
+regressions now plant worker secrets BEFORE any probe import, exercise the real production paths
+(identity strings; end-to-end leased engineering+verification via `execute_leased_work`), assert
+the probe never enters the worker parent's `sys.modules`, and went RED (then reverted) against the
+reintroduced parent import. Green after closure: worker leasing 39/39 (new
+`test_hosted_verification_never_imports_the_evaluator_in_the_worker_parent`), lifecycle 21/21
+(rewritten `test_import_time_env_leak_...` on the identity path), credentials 14/14, ENG-019
+threat-model 39/39. Gap 3 still awaits the reviewer's re-run of the negative controls, including
+the parent-import control.
+
 ### Migration rollback drill (spec section 43)
 `scripts/migration_rollback_drill.py` - explicitly NOT limited to a schema round-trip on an
 empty database. Two legs:

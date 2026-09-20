@@ -10,7 +10,6 @@ CLI already uses (aieb_cli.main._editor) for development verticals.
 
 from __future__ import annotations
 
-import importlib
 import sys
 import threading
 import uuid
@@ -38,20 +37,25 @@ ROOT = Path(__file__).resolve().parents[5]
 # services/api must not depend on aieb-cli (the dependency would run backwards
 # per the monorepo layout), so this mapping is intentionally kept in sync by
 # hand rather than imported; unifying it into aieb-core is a follow-up, not
-# blocking this ticket.
-TASK_RUNTIMES: dict[str, tuple[str, str]] = {
-    "rag.document-freshness": ("knowledge_service", "tests.maintainer.rag01.evaluator"),
-    "rag.metadata-filter-topk": ("search_service", "tests.maintainer.rag02.evaluator"),
-    "rag.citation-current-span": ("citation_service", "tests.maintainer.rag03.evaluator"),
-    "rag.embedding-version": ("embedding_service", "tests.maintainer.rag04.evaluator"),
-    "ext.missingness": ("missingness_service", "tests.maintainer.ext01.evaluator"),
-    "ext.batch-alignment": ("extraction_service", "tests.maintainer.ext02.evaluator"),
-    "ext.unit-normalization": ("unit_service", "tests.maintainer.ext03.evaluator"),
-    "ext.partial-batch": ("batch_service", "tests.maintainer.ext04.evaluator"),
-    "tool.false-completion": ("workflow_service", "tests.maintainer.tool01.evaluator"),
-    "tool.idempotent-write": ("write_service", "tests.maintainer.tool02.evaluator"),
-    "tool.session-isolation": ("session_service", "tests.maintainer.tool03.evaluator"),
-    "tool.corrected-arguments": ("correction_service", "tests.maintainer.tool04.evaluator"),
+# blocking this ticket. The third element is the evaluator's attribute
+# (qualname) on that module - carried here as a plain string (codex reviewer
+# blocker round) so the hosted worker can hand the isolated VERIFY child a
+# (module, qualname) identity WITHOUT importing the evaluator module in its
+# own parent process, where the worker's unsanitized secrets would be visible
+# to evaluator import-time code before any scrub.
+TASK_RUNTIMES: dict[str, tuple[str, str, str]] = {
+    "rag.document-freshness": ("knowledge_service", "tests.maintainer.rag01.evaluator", "evaluate"),
+    "rag.metadata-filter-topk": ("search_service", "tests.maintainer.rag02.evaluator", "evaluate"),
+    "rag.citation-current-span": ("citation_service", "tests.maintainer.rag03.evaluator", "evaluate"),
+    "rag.embedding-version": ("embedding_service", "tests.maintainer.rag04.evaluator", "evaluate"),
+    "ext.missingness": ("missingness_service", "tests.maintainer.ext01.evaluator", "evaluate"),
+    "ext.batch-alignment": ("extraction_service", "tests.maintainer.ext02.evaluator", "evaluate"),
+    "ext.unit-normalization": ("unit_service", "tests.maintainer.ext03.evaluator", "evaluate"),
+    "ext.partial-batch": ("batch_service", "tests.maintainer.ext04.evaluator", "evaluate"),
+    "tool.false-completion": ("workflow_service", "tests.maintainer.tool01.evaluator", "evaluate"),
+    "tool.idempotent-write": ("write_service", "tests.maintainer.tool02.evaluator", "evaluate"),
+    "tool.session-isolation": ("session_service", "tests.maintainer.tool03.evaluator", "evaluate"),
+    "tool.corrected-arguments": ("correction_service", "tests.maintainer.tool04.evaluator", "evaluate"),
 }
 
 
@@ -320,7 +324,7 @@ def execute_leased_engineering(
     runtime = TASK_RUNTIMES.get(task_slug)
     if runtime is None:
         raise UnsupportedTaskError(f"task {task_slug} has no supported local evaluator")
-    source_dir, _evaluator_module = runtime
+    source_dir, _evaluator_module, _evaluator_qualname = runtime
 
     task_dir = ROOT / "suites" / "dev" / task_slug
     attempt_work_root = work_root / str(leased.attempt_id)
@@ -566,10 +570,19 @@ def execute_leased_verification(
                 work_item_id=leased.work_item_id, worker_id=worker_id, lease_generation=leased.generation,
             )
         raise UnsupportedTaskError(f"task {task_slug} has no supported local evaluator")
-    source_dir, evaluator_module = runtime
+    source_dir, evaluator_module, evaluator_qualname = runtime
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    evaluate = importlib.import_module(evaluator_module).evaluate
+    # The evaluator is NEVER imported in this worker parent process (codex
+    # reviewer blocker round): importlib.import_module(evaluator_module) would run
+    # the evaluator's module-level code against the worker's unsanitized
+    # environment (AIEB_DATABASE_URL, CI tokens, ...) BEFORE the isolated child -
+    # or even its scrub - exists. Carry the (module, qualname) identity as plain
+    # strings and let LocalAttemptRunner._run_verify_isolated spawn the child,
+    # which is the FIRST process to import the module, and only after
+    # os.environ is scrubbed (codex-audit finding 4). ROOT is still injected into
+    # sys.path so the spawn child inherits it and can find tests.maintainer.*.
+    evaluate_identity = (evaluator_module, evaluator_qualname)
 
     task_dir = ROOT / "suites" / "dev" / task_slug
     attempt_work_root = work_root / str(leased.attempt_id)
@@ -608,8 +621,9 @@ def execute_leased_verification(
     cancel_poll_thread.start()
     try:
         outcome = runner.run_verification(
-            config, evaluate, outcome, cancel_event=cancel_event,
+            config, None, outcome, cancel_event=cancel_event,
             attempt_vars=_attempt_env(leased.attempt_id, "verifier", credential.token),
+            evaluate_identity=evaluate_identity,
         )
     finally:
         stop_heartbeat.set()

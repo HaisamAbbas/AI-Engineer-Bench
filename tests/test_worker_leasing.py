@@ -762,7 +762,7 @@ class WorkerLeasingTests(unittest.TestCase):
 
         raising_module = "tests.fixtures.worker.raising_evaluator"
         original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
-        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module)
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module, original[2])
         try:
             self._frozen_enqueued_campaign()
             # Two phases now: engineering succeeds and hands off; verification
@@ -785,6 +785,72 @@ class WorkerLeasingTests(unittest.TestCase):
             self.assertEqual(verification_item.state, "failed")
             evaluations = session.execute(select(api_models.EvaluationRow)).scalars().all()
             self.assertEqual(evaluations, [])  # never fabricate a verdict from a crashed scorer
+
+    # ---- reviewer blocker round: the EVALUATOR must never be imported in the worker parent --
+
+    def test_hosted_verification_never_imports_the_evaluator_in_the_worker_parent(self) -> None:
+        """Codex reviewer blocker round (runner_bridge parent-import leak): the hosted worker
+        previously did `importlib.import_module(evaluator_module)` in ITS OWN parent process
+        before spawning the isolated VERIFY child, so evaluator TOP-LEVEL code ran against the
+        worker's unsanitized environment (AIEB_DATABASE_URL, CI_BUILD_TOKEN) - the regression
+        missed it because it imported the probe BEFORE planting secrets. This end-to-end leased
+        test plants the worker secrets FIRST, points the installed evaluator for this task at
+        fixtures/worker/import_time_probe.py (which snapshots os.environ AT IMPORT TIME), and
+        drives the real execute_leased_work engineering -> verification path. If anything in
+        the production parent path (TASK_RUNTIMES resolution or run_verification) imported the
+        probe, the probe would land in THIS process's sys.modules, and - imported with secrets
+        already planted - its import-time snapshot would contain them. Assert both: the probe
+        never enters the worker/test parent's sys.modules, and the recorded evaluation shows the
+        child (THE first importer, post-scrub) saw neither planted secret at import time."""
+        import sys
+
+        from aieb_api.worker import runner_bridge
+
+        probe_module = "tests.fixtures.worker.import_time_probe"
+        sys.modules.pop(probe_module, None)
+
+        original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], probe_module, "evaluate")
+
+        planted = {
+            "AIEB_DATABASE_URL": "postgresql://sentinel:PLANTED@db.example/compromised",
+            "CI_BUILD_TOKEN": "PLANTED_TOK",
+        }
+        kept = {key: os.environ.get(key) for key in planted}
+        os.environ.update(planted)
+        try:
+            self.assertNotIn(probe_module, sys.modules, "probe must be fresh before the leased run")
+            self._frozen_enqueued_campaign()
+            results = self._run_to_completion(worker_id="w1")
+        finally:
+            runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = original
+            for key, value in kept.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(results[0].finalized)  # engineering
+        self.assertTrue(results[1].finalized)  # verification
+        self.assertEqual(results[1].verdict, "pass")
+        self.assertNotIn(probe_module, sys.modules,
+            "production verification imported the evaluator module into the worker parent - the runner_bridge leak is not closed")
+        with self.session_factory() as session:
+            evaluation = session.execute(select(api_models.EvaluationRow)).scalars().one()
+            self.assertEqual(evaluation.verdict, "pass")
+            self.assertEqual(
+                evaluation.result["import_time_db_url"], "<absent>",
+                "evaluator import-time code (child, first importer) saw the worker's DB secret",
+            )
+            self.assertEqual(
+                evaluation.result["import_time_build_token"], "<absent>",
+                "evaluator import-time code (child, first importer) saw the worker's build token",
+            )
+            self.assertEqual(
+                evaluation.result["import_time_secret_substr_count"], 0,
+                "evaluator import-time code (child, first importer) saw a secret-named environment member",
+            )
 
     # ---- review finding #3: stored candidate is checked against its own digests --
 
@@ -1106,7 +1172,7 @@ class WorkerLeasingTests(unittest.TestCase):
         # The same worker replays its last action - but this time the evaluator
         # behaves differently and recomputes "fail" under the IDENTICAL
         # evaluation identity.
-        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], failing_module)
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], failing_module, original[2])
         try:
             second = execute_leased_work(self.session_factory, verification, worker_id="w2", work_root=self.work_root)
         finally:
@@ -1369,7 +1435,7 @@ class WorkerLeasingTests(unittest.TestCase):
 
         slow_module = "tests.fixtures.worker.slow_evaluator"
         original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
-        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], slow_module)
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], slow_module, original[2])
         try:
             campaign_id = self._frozen_enqueued_campaign()
             with self.session_factory() as session:
@@ -1477,7 +1543,7 @@ class WorkerLeasingTests(unittest.TestCase):
 
         raising_module = "tests.fixtures.worker.raising_evaluator"
         original = runner_bridge.TASK_RUNTIMES[self.TASK_SLUG]
-        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module)
+        runner_bridge.TASK_RUNTIMES[self.TASK_SLUG] = (original[0], raising_module, original[2])
         try:
             campaign_id = self._frozen_enqueued_campaign(repetitions=3)
             for expected_streak in (1, 2):
