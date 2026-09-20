@@ -979,3 +979,18 @@ wording sentence in the handoff (see STATUS.md's matching "round 2" section for 
   remain authoritative; noted here for the record.
 - **Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same real human/infrastructure/content
   reasons as round 1. Status remains **ENG-021 IN_PROGRESS / ENG-022 BLOCKED**.
+
+## ENG-021 review follow-up, round 3 (2026-09-21)
+
+Round 2's fix retried the same denied OS temp-root path; round 3's review correctly pointed out
+the reviewing environment's `PermissionError` is persistent, not transient, so retrying it can
+never help - and that `test_bundle_fails_if_maintainer_slipped_in`'s direct `bundle_root.mkdir()`
+call still bypassed the hardening entirely. Fixed both: that test now calls
+`_mkdir_windows_safe()` like every other bundle-directory creation site, and the test's scratch
+directory (`_make_test_tmp_dir()`) now defaults to `<repo>/.cache/test-tmp` instead of the OS
+global temp root - sidestepping a denied location rather than retrying against it - with
+`AIEB_TEST_TMP_ROOT` as an override if that default is also denied somewhere. Verified 6/6 and
+23/23 still pass here, `.cache/test-tmp` confirmed empty before/after (cleanup intact). This still
+cannot be confirmed fixed *in the reviewing environment* from here; that needs an actual rerun
+there. **Not touched**: gaps 1, 2, 4, 5, 6. Status remains **ENG-021 IN_PROGRESS / ENG-022
+BLOCKED**.

@@ -19,7 +19,6 @@ import stat
 import sys
 import tarfile
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -52,22 +51,36 @@ def _rmtree_windows_safe(path: str) -> None:
     shutil.rmtree(path, onerror=_on_error)
 
 
+def _make_test_tmp_dir() -> str:
+    """Create a writable scratch directory for this test run.
+
+    Round-2 review finding: retrying `tempfile.mkdtemp()` (the OS global temp
+    root) does not help when that root's PermissionError is persistent rather
+    than transient - every retry hits the same denied parent. `AIEB_TEST_TMP_ROOT`
+    lets a sandboxed/CI environment point this at a location it actually has
+    write access to; failing that, default to `<repo>/.cache/test-tmp` (already
+    gitignored, and a location this checkout must be writable under - the test
+    suite itself only runs from inside a writable repo checkout) instead of the
+    OS temp root, since a restricted-ACL global TEMP is the exact failure this
+    is working around. `tempfile.mkdtemp(dir=...)` is used either way so cleanup
+    and uniqueness semantics stay identical to the original behavior; only the
+    parent directory choice changes.
+    """
+    preferred_root = os.environ.get("AIEB_TEST_TMP_ROOT") or str(ROOT / ".cache" / "test-tmp")
+    last_error: OSError | None = None
+    for root in (preferred_root, None):  # None = final fallback to the OS default temp root
+        try:
+            if root is not None:
+                os.makedirs(root, exist_ok=True)
+            return tempfile.mkdtemp(dir=root)
+        except OSError as exc:
+            last_error = exc
+    raise last_error  # type: ignore[misc]
+
+
 class BundleExclusionTest(unittest.TestCase):
     def setUp(self) -> None:
-        # A retry here mirrors scripts/build_release_bundle.py's _mkdir_windows_safe:
-        # tempfile.mkdtemp() itself can raise a transient PermissionError on Windows
-        # if the OS temp root is momentarily locked by an antivirus/indexer handle.
-        last_error: OSError | None = None
-        self.tmp = None
-        for attempt in range(3):
-            try:
-                self.tmp = tempfile.mkdtemp()
-                break
-            except PermissionError as exc:
-                last_error = exc
-                time.sleep(0.2)
-        if self.tmp is None:
-            raise last_error  # type: ignore[misc]
+        self.tmp = _make_test_tmp_dir()
         self.output = Path(self.tmp) / "bundle-out"
 
     def tearDown(self) -> None:
@@ -121,9 +134,9 @@ class BundleExclusionTest(unittest.TestCase):
     def test_bundle_fails_if_maintainer_slipped_in(self) -> None:
         """Verify the build itself refuses to produce a bundle with protected paths."""
         # Test the _check_no_protected_paths function detects violations
-        from scripts.build_release_bundle import _check_no_protected_paths
+        from scripts.build_release_bundle import _check_no_protected_paths, _mkdir_windows_safe
         bundle_root = self.output / "release-candidate-bundle"
-        bundle_root.mkdir(parents=True, exist_ok=True)
+        _mkdir_windows_safe(bundle_root)
         fake = bundle_root / "tests" / "maintainer" / "leaked.py"
         fake.parent.mkdir(parents=True, exist_ok=True)
         fake.write_text("SHOULD NOT BE HERE", encoding="utf-8")

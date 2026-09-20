@@ -264,3 +264,37 @@ reasons documented above — nothing in this round touched them.
 
 **ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.** No official campaign or release is
 claimed or was performed.
+
+## ENG-021 review follow-up, round 3 (2026-09-21)
+
+A third review found round 2's bundle-test hardening still didn't close the gap: the test's
+`bundle_root.mkdir(...)` call inside `test_bundle_fails_if_maintainer_slipped_in` bypassed the new
+`_mkdir_windows_safe()` entirely (it called `.mkdir()` directly), and — more importantly — the
+reviewing environment's failure is a **persistent** `PermissionError` on the OS temp root's parent
+directory, not a transient lock. Retrying the same denied path, however many times, cannot help;
+round 2's fix addressed the wrong dimension of the problem (retry count) instead of the actual one
+(which directory is being written to).
+
+**Fixed:**
+
+1. `test_bundle_fails_if_maintainer_slipped_in` now calls `_mkdir_windows_safe()` like every other
+   bundle-directory creation site, instead of a bare `.mkdir(parents=True, exist_ok=True)` — closes
+   the "unwrapped path" the review pointed out.
+2. Replaced the retry-on-the-same-path approach with `_make_test_tmp_dir()`: the test's scratch
+   directory now defaults to `<repo>/.cache/test-tmp` (already gitignored, and necessarily writable
+   by anything that can check out and run this test suite) instead of the OS's global temp root,
+   with `AIEB_TEST_TMP_ROOT` as an explicit override for a CI/sandbox environment that prefers a
+   different location, and the OS default temp root kept only as a last-resort fallback. This is a
+   different kind of fix than rounds 1–2: it sidesteps a restricted/denied global TEMP location
+   entirely rather than retrying against it, which is the correct response to a *persistent* denial
+   (retries only ever help with *transient* locks).
+
+Verified: `tests/test_eng021_bundle_exclusions.py` (6/6) and the full ENG-021 suite (23/23) still
+pass here; `.cache/test-tmp` is confirmed empty before and after the run (cleanup still works).
+This still cannot be verified as fixed *in the reviewing environment itself* from here — that
+requires an actual rerun there, which this pass cannot perform. If `AIEB_TEST_TMP_ROOT`'s default
+(`.cache/test-tmp`) is for some reason also denied in that environment, set `AIEB_TEST_TMP_ROOT` to
+a location confirmed writable there and rerun.
+
+**Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same reasons as rounds 1–2.
+**ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.**
