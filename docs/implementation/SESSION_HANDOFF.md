@@ -994,3 +994,22 @@ global temp root - sidestepping a denied location rather than retrying against i
 cannot be confirmed fixed *in the reviewing environment* from here; that needs an actual rerun
 there. **Not touched**: gaps 1, 2, 4, 5, 6. Status remains **ENG-021 IN_PROGRESS / ENG-022
 BLOCKED**.
+
+## ENG-021 review follow-up, round 4 (2026-09-21)
+
+Round 4 supplied a real traceback and write-probe results from the reviewing host, which reframed
+the diagnosis: `tempfile.mkdtemp()` succeeds there, but every operation INSIDE the directory it
+returns (child create, `shutil.rmtree`) raises `PermissionError`, even though a plain file next to
+it (an already-existing directory) writes fine. That means the restriction is "this host can't do
+nested create/delete inside any directory this process just created," period - not about which
+directory rounds 2-3 picked. No path change from inside this repo can fix that.
+
+Fixed properly this time: added `_tmp_dir_supports_nested_ops()`, which probes exactly that in
+`setUp()` before any real work, and calls `self.skipTest(...)` with a precise, quoted reason if the
+host can't do it - instead of a fifth guessed relocation, or a false pass/fail. Verified 6/6 and
+23/23 still pass normally on a working host (the probe is one cheap extra cycle). This makes the
+suite self-report the limitation honestly; it does NOT itself make the six protected-path
+assertions pass on a host with this restriction - that still needs an environment where the
+process's own freshly created directories behave normally, which this repo can't grant.
+
+**Not touched**: gaps 1, 2, 4, 5, 6. Status remains **ENG-021 IN_PROGRESS / ENG-022 BLOCKED**.

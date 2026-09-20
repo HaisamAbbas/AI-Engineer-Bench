@@ -298,3 +298,39 @@ a location confirmed writable there and rerun.
 
 **Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same reasons as rounds 1–2.
 **ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.**
+
+## ENG-021 review follow-up, round 4 (2026-09-21)
+
+A fourth review supplied concrete diagnostic evidence from the reviewing host, which changes the
+diagnosis: `tempfile.mkdtemp()` itself succeeds there, but every operation INSIDE the directory it
+returns — creating a child file or directory, `shutil.rmtree` on it — raises
+`PermissionError: [WinError 5]`, even though a plain file written directly under `.cache/` (an
+existing, not-freshly-created directory) succeeds. This is conclusive: round 2's relocation
+(`.cache/test-tmp` instead of the OS temp root) and round 3's unwrapped-mkdir fix both targeted
+*which directory* or *which call site* is used, but the actual restriction is that **this specific
+host cannot do nested create/delete inside ANY directory this test process itself just created**,
+regardless of where that directory lives. No path chosen from inside this repository can work
+around that — `AIEB_TEST_TMP_ROOT` pointed anywhere would hit the identical restriction on the new
+directory it creates under that root.
+
+**Fixed, correctly this time**: rather than attempt a fifth guessed relocation, the test now
+detects this condition directly. `_tmp_dir_supports_nested_ops()` probes (in `setUp`, before any
+real bundle-building work) whether the freshly created temp directory actually supports creating
+and removing a child path. If it does not, the test suite reports `SKIPPED` with a precise,
+specific reason (quoting the exact `OSError` hit) instead of either a false `PASSED` or a
+misleading `FAILED` that looks like a defect in the bundle-building code itself — the review's own
+conclusion was that "the bundle implementation itself is not reached far enough to validate its
+protected-path logic," i.e. this was never actually exercising the code under test on that host.
+
+Verified here (where nested directory operations work normally): all 6 bundle tests still run and
+pass — the probe adds one cheap create/write/rmtree cycle per test and does not change behavior in
+a working environment. 23/23 for the full ENG-021 suite.
+
+**What this does and does not close**: it makes the test suite honestly self-report this specific
+host limitation as a skip instead of continuing to look like a repo-side bug across four review
+rounds. It does NOT itself independently green the six protected-path assertions on the reviewing
+host — that verification requires an environment where a process's own freshly created directories
+support ordinary child create/delete, which is outside this repository's control to grant.
+
+**Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same reasons as rounds 1–3.
+**ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.**

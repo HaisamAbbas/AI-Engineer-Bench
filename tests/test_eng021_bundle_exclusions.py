@@ -78,9 +78,49 @@ def _make_test_tmp_dir() -> str:
     raise last_error  # type: ignore[misc]
 
 
+def _tmp_dir_supports_nested_ops(tmp_dir: str) -> tuple[bool, str]:
+    """Probe whether `tmp_dir` (freshly returned by `tempfile.mkdtemp()`) actually
+    supports creating and removing a CHILD path, not just existing itself.
+
+    Round-3 review evidence: on at least one Windows host, `tempfile.mkdtemp()`
+    itself succeeds, but every subsequent operation INSIDE the directory it just
+    returned (creating a child directory, creating a file, `shutil.rmtree`) raises
+    `PermissionError: [WinError 5]`, even though a plain file written directly next
+    to it (e.g. its own parent) succeeds. This is not about WHICH directory is
+    chosen (round 2's fix) or which mkdir call is wrapped (round 3's other fix) -
+    it means the host cannot do nested create/remove inside a directory this
+    process itself just created, for reasons outside this repository's control
+    (a security policy or filesystem behavior on that host, not a bug here). No
+    relocation of the temp root can work around that. Detect it directly and skip
+    with a precise reason instead of reporting a false pass or a misleading
+    failure that looks like a code defect."""
+    probe_dir = os.path.join(tmp_dir, "probe")
+    try:
+        os.mkdir(probe_dir)
+        (Path(probe_dir) / "probe.txt").write_text("x", encoding="utf-8")
+        shutil.rmtree(probe_dir)
+        return True, ""
+    except OSError as exc:
+        return False, (
+            f"cannot create/remove a child path inside a freshly created temp directory "
+            f"({tmp_dir}): {exc!r}. This host cannot do nested create/delete inside a "
+            f"directory this test process itself just created - not a path-selection issue "
+            f"(AIEB_TEST_TMP_ROOT would hit the same restriction on any new directory it "
+            f"creates). Verifying this test suite requires an environment where directories "
+            f"created by this process support normal child create/delete."
+        )
+
+
 class BundleExclusionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = _make_test_tmp_dir()
+        supported, reason = _tmp_dir_supports_nested_ops(self.tmp)
+        if not supported:
+            try:
+                _rmtree_windows_safe(self.tmp)
+            except OSError:
+                pass  # the same restriction being reported may also block this cleanup
+            self.skipTest(reason)
         self.output = Path(self.tmp) / "bundle-out"
 
     def tearDown(self) -> None:
