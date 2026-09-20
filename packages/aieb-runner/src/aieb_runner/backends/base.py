@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class ExecutionState(StrEnum):
@@ -80,6 +80,18 @@ class ExecutionSpec:
     cpu_limit: int = 1
     memory_limit_mb: int = 256
     isolation: IsolationPolicy = field(default_factory=IsolationPolicy)
+    # Per-trial-safe agent configuration (ENG-023 review finding #1): threaded straight
+    # into Harbor's own `AgentConfig.model_name`/`AgentConfig.kwargs`, which the real
+    # `AgentFactory` passes as ordinary per-instance Python constructor arguments to the
+    # agent class it builds (see `harbor/agents/factory.py::create_agent_from_config`).
+    # This is per-trial-safe where `os.environ` is not: `HarborBackend.launch()` runs each
+    # trial as its own `asyncio.create_task(trial.run(), ...)`, so multiple trials with
+    # different requested models/config can be in flight concurrently in the same worker
+    # process - process-wide env vars would race across them, a per-instance constructor
+    # argument cannot. Additive fields only; both default to preserving today's behavior
+    # exactly (empty/None) for the agent track, which does not use them.
+    model_name: str | None = None
+    agent_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

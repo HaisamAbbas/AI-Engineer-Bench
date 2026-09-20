@@ -1157,6 +1157,83 @@ unchanged — no credentials, no approved spend cap exist in this environment. E
 P0 precondition is unchanged and still `BLOCKED` in `STATUS.md`; this work makes
 ENG-023's CODE real and tested, it does not satisfy P0.
 
+### Review follow-up 2 (2026-09-21): per-trial-safe config wiring, fail-closed dispatch, real settings-digest verification
+
+A second independent review accepted the loop's core mechanics but found real gaps in
+its configuration path and its settings-digest enforcement. Full narrative and the real
+captured re-run output are in `docs/implementation/evidence/ENG-023/README.md`;
+decisions recorded here:
+
+- **Decision**: replace `os.environ` reads of provider/model identity with real
+  per-instance constructor parameters, wired through Harbor's OWN existing
+  `AgentConfig.model_name`/`AgentConfig.kwargs` mechanism, not a new one. Rationale:
+  `HarborBackend.launch()` dispatches each trial as its own `asyncio.create_task`, so
+  concurrent trials in one worker process could otherwise race each other's env-var
+  reads of provider/model identity — a genuine correctness bug under real campaign
+  dispatch, not only "not yet wired." `harbor/agents/factory.py::create_agent_from_config`
+  already passes `AgentConfig.model_name`/`.kwargs` as ordinary per-instance `__init__`
+  keyword arguments, so no new Harbor-side mechanism was needed — only additive
+  `ExecutionSpec.model_name`/`ExecutionSpec.agent_kwargs` fields
+  (`backends/base.py`) and threading them into the existing `AgentConfig(...)`
+  construction in `HarborBackend.launch()` (`backends/harbor/backend.py`).
+- **Decision**: fail closed on missing `provider_kind` (real dispatch, no directly-
+  injected `provider`) and on an unresolvable `requested_model`, both via `RuntimeError`
+  raised immediately from `run()`. Rationale: the prior implicit "fake"/"unspecified"
+  defaults were the exact "silent fallback" behavior ENG-023's own contract (§2/§18) is
+  supposed to prohibit for entrant identity — a misconfigured real entrant must fail
+  loudly, not run silently as a fake, credential-free provider.
+- **Decision**: keep `AIEB_MODEL_TRACK_DEADLINE_SEC`/`AIEB_MODEL_TRACK_MAX_STEPS`/
+  `AIEB_MODEL_TRACK_FAKE_SCRIPT_ID` as env-var hooks rather than moving them to kwargs.
+  Rationale: the first two bound a TEST's own wall-clock/step budget, not per-entrant
+  identity or credential material — they carry none of the cross-entrant race risk the
+  removed identity env vars had (a shared test-tuning knob, not a config collision). The
+  third exists purely to hand a live, in-process scripted Python object to a
+  Harbor-constructed instance; `agent_kwargs`/`AgentConfig.kwargs` must stay
+  JSON-serializable and cannot carry a live object either, so this seam is unavoidable
+  regardless of the identity-config fix and was kept as-is.
+- **Decision**: settings-digest enforcement is VERIFICATION of a real payload, not
+  decoding. `aieb_core.models.ModelProfile.settings_digest` deliberately has no raw
+  payload field (matching `EntrantRevision.prompt_digest`/`tools_digest`'s established
+  freeze-by-digest pattern) — a hash cannot be decoded back into settings. The loop now
+  accepts `settings: dict[str, object]` and `expected_settings_digest: str | None` as
+  constructor input; `run()` recomputes `sha256(json.dumps(settings, sort_keys=True))`
+  and compares, raising on mismatch (fail-closed, matching
+  `scripts/build_release_bundle.py`'s `digest_mismatches` philosophy) before threading
+  the real settings into `provider.complete()`/`provider.unsupported_settings()`.
+- **Decision, and explicitly NOT a fix**: usage accounting is not connected to
+  `services/api`'s authoritative ledger, for either track. Independently re-verified
+  (grep for `UsageRequestRow(` across the repo: only its own class definition in
+  `services/api/src/aieb_api/models.py` and test fixtures in `tests/test_api_service.py`
+  — zero production write paths for either track). Rationale for NOT attempting a fix
+  here: a real fix requires an authenticated worker-to-API usage-reporting/budget-broker
+  endpoint that has never been built for any track; an ad hoc DB write invented inside
+  `model_loop.py` (which has no DB session, no HTTP client, no service identity) would be
+  architecturally wrong, would not match how any other part of the system reports usage,
+  and would misleadingly present ENG-023 as having solved a gap the agent track has
+  equally never had closed. Recorded as a genuine, pre-existing, system-wide gap that
+  remains open — not owned exclusively by ENG-023, and not currently owned by any
+  ticket explicitly (closest existing candidate: ENG-008, which built only the local
+  ledger, never a worker-to-API path).
+- **Decision**: reuse the ENG-021 Windows-temp-dir mitigation idiom verbatim
+  (`_make_test_tmp_dir`/`_tmp_dir_supports_nested_ops`/`_rmtree_windows_safe`, copied
+  from `tests/test_eng021_bundle_exclusions.py`) in `tests/test_eng023_model_loop.py`,
+  rather than inventing a new mitigation for the same already-diagnosed Windows
+  `WinError 5` nested-create/delete restriction a reviewer hit.
+
+**Verification**: `tests/test_eng023_model_loop.py` 19 → 28 passed (9 new tests: 4
+fail-closed provider/model-identity, 3 settings-digest, 2 config-wiring-dispatches-
+cleanly). `tests/test_eng019_sandbox_threat_model.py`
+`tests/test_accounting_and_cli.py` → 45 passed, no regressions. Real Harbor Docker
+smoke re-run with the new `ExecutionSpec.model_name`/`agent_kwargs` wiring (no env
+vars): `state: completed`, `reward: 1.0`, `model_track_summary.submitted: true`,
+`requested_model` correctly sourced from `ExecutionSpec.model_name` — full JSON in
+`docs/implementation/evidence/ENG-023/README.md`.
+
+**Unchanged**: `examples/model-track-campaign.json`'s `state: "prepared-not-authorized"`
+and `execution_blocker` (only gained an informational, non-authorizing
+`dispatch_config_hint` per entrant). ENG-024's authorization gate. ENG-001's P0
+precondition (`STATUS.md` still `BLOCKED`). No live paid-provider execution occurred.
+
 ### Phase 3: Acceptance tests
 
 1. **Verifier-isolation boundary test** — the existing test suite already

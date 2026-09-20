@@ -14,35 +14,92 @@ MAX_CONTEXT_CHARS and STEP_RETRY_BACKOFF_SECONDS are module-level constants,
 not per-entrant configuration - only the provider adapter (and therefore the
 underlying model) varies between model-track entrants.
 
-Provider selection is explicit-opt-in only, via environment variables read at
-`run()` time (the agent instance runs in the *host* process as an asyncio
-task - see `HarborBackend.launch()` - so these are ordinary process
-environment variables, not something injected into the sandboxed container):
+Configuration is per-trial-safe constructor input, NOT process-wide
+`os.environ` (review finding, 2026-09-21): `HarborBackend.launch()`
+(`backends/harbor/backend.py`) runs each trial as its own
+`asyncio.create_task(trial.run(), ...)` inside the host worker process, so
+multiple trials - potentially with different requested models - can be
+genuinely CONCURRENT in that one process. Reading `os.environ` at `run()`
+time would therefore be racy across concurrent entrants, not merely "not
+wired up yet". The fix uses the real, per-trial-safe mechanism Harbor already
+has: `harbor.models.trial.config.AgentConfig.model_name` and `.kwargs` are
+passed by `harbor/agents/factory.py::create_agent_from_config` straight into
+the agent class's own `__init__` as ordinary per-INSTANCE Python constructor
+arguments - never a shared process global. `ExecutionSpec.model_name` /
+`ExecutionSpec.agent_kwargs` (`backends/base.py`) flow into exactly those
+`AgentConfig` fields in `HarborBackend.launch()`.
 
-  AIEB_MODEL_TRACK_PROVIDER          "fake" (default) or "openai_compatible".
-                                      Never silently attempts a real network
-                                      call - "fake" is the default so this
-                                      loop is safe to run with zero
-                                      credentials unless a real provider is
-                                      explicitly requested.
-  AIEB_MODEL_TRACK_REQUESTED_MODEL   The ModelProfile.requested_model this
-                                      trial claims (default: "unspecified").
-  AIEB_MODEL_TRACK_BASE_URL          openai_compatible only: API base URL.
-  AIEB_MODEL_TRACK_API_KEY_ENV_VAR   openai_compatible only: name of the env
-                                      var holding the API key (default
-                                      AIEB_MODEL_TRACK_API_KEY). The key
-                                      itself is read at call time inside the
-                                      adapter, never stored here.
+Constructor parameters (all optional; see fail-closed behavior below):
+
+  provider               Direct injection of a live `ProviderAdapter`
+                          instance. Used by unit tests and the Harbor Docker
+                          smoke test, since a live Python object cannot
+                          round-trip through Harbor's serializable
+                          `AgentConfig.kwargs`. Bypasses provider_kind
+                          entirely when given.
+  provider_kind           "fake" or "openai_compatible". Real Harbor dispatch
+                          (i.e. `provider` was NOT directly injected) MUST
+                          set this explicitly - there is no implicit default
+                          any more. Omitting it under real dispatch raises
+                          `RuntimeError` immediately: this loop never
+                          silently falls back to a fake provider identity for
+                          a real campaign entrant.
+  requested_model         The ModelProfile.requested_model this trial claims.
+                          Falls back to `self.model_name` (which
+                          `BaseAgent.__init__` sets from Harbor's own
+                          `AgentConfig.model_name` - see
+                          `harbor/agents/base.py`) when not given. Real
+                          dispatch without either raises `RuntimeError`
+                          rather than silently reporting "unspecified".
+  base_url                openai_compatible only: API base URL.
+  api_key_env_var         openai_compatible only: name of the env var holding
+                          the API key (default AIEB_MODEL_TRACK_API_KEY). The
+                          key itself is still read at call time inside the
+                          adapter, never stored here - this one setting
+                          legitimately names an env var rather than a value,
+                          since the credential itself must never be
+                          serialized into `AgentConfig.kwargs`.
+  settings                The real settings payload (dict) this entrant's
+                          `ModelProfile.settings_digest` was computed over.
+                          Verified, not decoded: `run()` recomputes
+                          `sha256(json.dumps(settings, sort_keys=True))` and
+                          compares it to `expected_settings_digest`, raising
+                          on any mismatch (fail-closed, same philosophy as
+                          this codebase's other freeze-validation gates -
+                          see `scripts/build_release_bundle.py`'s
+                          `digest_mismatches` handling). Threaded for real
+                          into `provider.complete()` /
+                          `provider.unsupported_settings()`.
+  expected_settings_digest  The `ModelProfile.settings_digest` to verify
+                          `settings` against. `None` skips verification
+                          (test convenience).
+
+Still read from `os.environ` at `run()` time, deliberately: these are
+test-tuning knobs (bounding a test's own wall-clock/step budget), not
+per-entrant identity or credential material, so they carry no cross-entrant
+race risk in the way the removed identity env vars did.
+
   AIEB_MODEL_TRACK_DEADLINE_SEC      Override the wall-clock budget (testing
                                       hook - lets a test force a near-zero
                                       deadline without waiting).
   AIEB_MODEL_TRACK_MAX_STEPS         Override MAX_STEPS (testing hook).
+  AIEB_MODEL_TRACK_FAKE_SCRIPT_ID    provider_kind="fake" only: looks up a
+                                      pre-registered scripted
+                                      `FakeProviderAdapter` (see
+                                      `FakeProviderAdapter.register`) - the
+                                      seam a same-process caller (a test, or
+                                      `scripts/run_eng023_model_loop_spike.py`)
+                                      uses to hand a Harbor-constructed
+                                      instance a live scripted object, since
+                                      that object cannot round-trip through
+                                      `AgentConfig.kwargs` either.
 
-Unit tests and the real Harbor Docker smoke test both use the constructor's
-`provider=` keyword to inject a `FakeProviderAdapter` directly (a scripted
-Python object cannot round-trip through an environment variable) - this is
-the same instance the loop would otherwise have built from
-AIEB_MODEL_TRACK_PROVIDER="fake".
+A test or smoke script that wants the fake, no-network provider must now say
+so explicitly - either `provider_kind="fake"` in `agent_kwargs` (flows
+through real `AgentConfig.kwargs`, exercising the real dispatch path) or
+direct `provider=FakeProviderAdapter()` injection (bypasses Harbor's config
+plumbing entirely, for pure unit tests). Nothing defaults there silently any
+more.
 
 Context truncation strategy (see `_truncate_messages`): once the *serialized*
 conversation exceeds MAX_CONTEXT_CHARS, the system prompt (index 0) and the
@@ -63,6 +120,7 @@ candidate under `/workspace/submission/`, never nothing.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import time
@@ -190,10 +248,6 @@ MAX_CONTEXT_CHARS = 24_000
 STEP_RETRY_BACKOFF_SECONDS = 1.0
 DEFAULT_WALL_CLOCK_BUDGET_SEC = 240.0
 
-ENV_PROVIDER = "AIEB_MODEL_TRACK_PROVIDER"
-ENV_REQUESTED_MODEL = "AIEB_MODEL_TRACK_REQUESTED_MODEL"
-ENV_BASE_URL = "AIEB_MODEL_TRACK_BASE_URL"
-ENV_API_KEY_VAR = "AIEB_MODEL_TRACK_API_KEY_ENV_VAR"
 ENV_DEADLINE_OVERRIDE = "AIEB_MODEL_TRACK_DEADLINE_SEC"
 ENV_MAX_STEPS_OVERRIDE = "AIEB_MODEL_TRACK_MAX_STEPS"
 ENV_FAKE_SCRIPT_ID = "AIEB_MODEL_TRACK_FAKE_SCRIPT_ID"
@@ -293,9 +347,26 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
     def name() -> str:
         return "aieb-model-track-reference-loop"
 
-    def __init__(self, *args: Any, provider: ProviderAdapter | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        provider: ProviderAdapter | None = None,
+        provider_kind: str | None = None,
+        requested_model: str | None = None,
+        base_url: str | None = None,
+        api_key_env_var: str = "AIEB_MODEL_TRACK_API_KEY",
+        settings: dict[str, object] | None = None,
+        expected_settings_digest: str | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self._injected_provider = provider
+        self._provider_kind = provider_kind
+        self._requested_model_override = requested_model
+        self._base_url = base_url
+        self._api_key_env_var = api_key_env_var
+        self._settings: dict[str, object] = dict(settings) if settings is not None else {}
+        self._expected_settings_digest = expected_settings_digest
 
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
@@ -315,15 +386,27 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
     def _select_provider(self) -> ProviderAdapter:
         if self._injected_provider is not None:
             return self._injected_provider
-        kind = os.environ.get(ENV_PROVIDER, "fake")
+        # Fail closed (review finding #1): real Harbor dispatch (no directly-injected
+        # provider) must always name its provider_kind explicitly. There is no implicit
+        # "fake" default here any more - a misconfigured real entrant must fail loudly,
+        # never silently run as a fake, credential-free provider.
+        kind = self._provider_kind
+        if kind is None:
+            raise RuntimeError(
+                "ModelTrackReferenceLoop was dispatched without a directly-injected "
+                "provider and without an explicit provider_kind; refusing to silently "
+                "default to a fake provider identity. Pass provider_kind explicitly via "
+                "ExecutionSpec.agent_kwargs (flows through Harbor AgentConfig.kwargs into "
+                "this constructor), e.g. agent_kwargs={'provider_kind': 'fake', ...} for a "
+                "no-network test double, or {'provider_kind': 'openai_compatible', "
+                "'base_url': ...} for a real provider."
+            )
         if kind == "fake":
-            # Zero-configuration default: no network, no credentials. A real
-            # provider is used only on explicit opt-in (see module docstring).
-            # AIEB_MODEL_TRACK_FAKE_SCRIPT_ID lets a same-process caller (a
-            # test, or scripts/run_eng023_model_loop_spike.py) hand this
-            # Harbor-constructed instance a pre-registered scripted adapter,
-            # since a live Python object cannot round-trip through
-            # `agent_import_path` - see FakeProviderAdapter.register.
+            # AIEB_MODEL_TRACK_FAKE_SCRIPT_ID lets a same-process caller (a test, or
+            # scripts/run_eng023_model_loop_spike.py) hand this Harbor-constructed
+            # instance a pre-registered scripted adapter, since a live Python object
+            # cannot round-trip through `AgentConfig.kwargs` either - see
+            # FakeProviderAdapter.register.
             script_id = os.environ.get(ENV_FAKE_SCRIPT_ID)
             if script_id:
                 registered = FakeProviderAdapter.get_registered(script_id)
@@ -331,17 +414,40 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
                     return registered
             return FakeProviderAdapter()
         if kind == "openai_compatible":
-            base_url = os.environ.get(ENV_BASE_URL)
-            if not base_url:
+            if not self._base_url:
                 raise RuntimeError(
-                    f"{ENV_PROVIDER}=openai_compatible requires {ENV_BASE_URL} to be set"
+                    "provider_kind='openai_compatible' requires base_url to be set "
+                    "(agent_kwargs={'provider_kind': 'openai_compatible', 'base_url': ...})"
                 )
             return OpenAICompatibleAdapter(
-                base_url=base_url,
-                model=os.environ.get(ENV_REQUESTED_MODEL, "unspecified"),
-                api_key_env_var=os.environ.get(ENV_API_KEY_VAR, "AIEB_MODEL_TRACK_API_KEY"),
+                base_url=self._base_url,
+                model=self._resolve_requested_model(),
+                api_key_env_var=self._api_key_env_var,
             )
-        raise RuntimeError(f"unknown {ENV_PROVIDER} value: {kind!r}")
+        raise RuntimeError(f"unknown provider_kind: {kind!r}")
+
+    def _resolve_requested_model(self) -> str:
+        if self._requested_model_override is not None:
+            return self._requested_model_override
+        if self.model_name is not None:
+            return self.model_name
+        if self._injected_provider is not None:
+            # Direct-injection (test/smoke) convenience only: a directly-injected
+            # provider has no config-wiring path to have supplied an identity at all, so
+            # this is not the "silent default for real dispatch" the fail-closed check
+            # above guards against.
+            return "unspecified"
+        raise RuntimeError(
+            "ModelTrackReferenceLoop could not resolve a requested_model: no "
+            "requested_model constructor kwarg, no Harbor AgentConfig.model_name "
+            "(ExecutionSpec.model_name), and no directly-injected provider. Real campaign "
+            "dispatch must set ExecutionSpec.model_name or pass requested_model "
+            "explicitly via agent_kwargs."
+        )
+
+    @staticmethod
+    def _settings_digest(settings: dict[str, object]) -> str:
+        return hashlib.sha256(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()
 
     # -- context management ---------------------------------------------------
 
@@ -478,7 +584,27 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
     ) -> None:
         del context
         provider = self._select_provider()
-        requested_model = os.environ.get(ENV_REQUESTED_MODEL, "unspecified")
+
+        # Settings-digest verification (review finding #3): this is a VERIFICATION of a
+        # real settings payload the caller provides, not a decode of the digest itself -
+        # `ModelProfile.settings_digest` has no raw-payload field by design (the same
+        # freeze-by-digest pattern as `EntrantRevision.prompt_digest`/`tools_digest`: the
+        # real content lives elsewhere and is checked by recomputing its digest). Fail
+        # closed on mismatch, exactly like this codebase's other freeze-validation gates
+        # (see scripts/build_release_bundle.py's digest_mismatches handling) - never
+        # silently proceed with an unverified settings payload.
+        settings: dict[str, object] = dict(self._settings)
+        if self._expected_settings_digest is not None:
+            actual_digest = self._settings_digest(settings)
+            if actual_digest != self._expected_settings_digest:
+                raise RuntimeError(
+                    "ModelTrackReferenceLoop settings-digest mismatch: expected "
+                    f"{self._expected_settings_digest!r}, computed {actual_digest!r} from "
+                    "the real settings payload passed via the settings= constructor "
+                    "kwarg - refusing to proceed with an unverified settings payload."
+                )
+
+        requested_model = self._resolve_requested_model()
         max_steps = int(os.environ.get(ENV_MAX_STEPS_OVERRIDE, MAX_STEPS))
         wall_clock_budget = float(os.environ.get(ENV_DEADLINE_OVERRIDE, DEFAULT_WALL_CLOCK_BUDGET_SEC))
         deadline = time.monotonic() + wall_clock_budget
@@ -491,7 +617,6 @@ class ModelTrackReferenceLoop(BaseInstalledAgent):
         ]
         last_output: dict[str, str] = {"stdout": "", "stderr": ""}
         malformed_streak = 0
-        settings: dict[str, object] = {}
         outcome.unsupported_settings = provider.unsupported_settings(settings)
 
         try:

@@ -253,3 +253,200 @@ container, produces a scoreable candidate, and scores `reward: 1.0` against a re
   records ENG-001 as `BLOCKED` (no provider/model authorization). ENG-023's CODE is now
   real and tested; the model track's live-campaign readiness still formally depends on
   P0/ENG-001 exactly as documented before this pass.
+
+## Review follow-up 2 (2026-09-21): per-trial-safe config wiring, fail-closed dispatch, real settings-digest verification
+
+A second independent review accepted the loop's core mechanics but flagged three real
+gaps in how it is *configured* and *accounted for*. This section records what was
+actually fixed, and is explicit about the one gap that is genuinely NOT fixed (finding
+2 below) — carried forward honestly rather than papered over.
+
+### Finding 1 (HIGH) — campaign configuration was read from process-wide `os.environ`; now per-trial-safe constructor input
+
+**The problem, precisely**: `HarborBackend.launch()` (`backends/harbor/backend.py`)
+dispatches each trial as its own `asyncio.create_task(trial.run(), ...)` inside the
+worker process — multiple trials, potentially with different requested models, can be
+genuinely CONCURRENT in that one process. The previous implementation read
+`AIEB_MODEL_TRACK_PROVIDER`/`AIEB_MODEL_TRACK_REQUESTED_MODEL`/`AIEB_MODEL_TRACK_BASE_URL`/
+`AIEB_MODEL_TRACK_API_KEY_ENV_VAR` from `os.environ` inside `run()`. That is not merely
+"not wired up yet" — it is actively racy across concurrent entrants sharing one process,
+and it silently defaulted to a fake provider and `"unspecified"` model when unset.
+
+**The fix**: Harbor already has a real, per-trial-safe injection mechanism.
+`harbor.models.trial.config.AgentConfig` has `model_name: str | None` and
+`kwargs: dict[str, Any]` fields; `harbor/agents/factory.py::create_agent_from_config`
+constructs the agent as `agent_class(model_name=config.model_name, **agent_kwargs)`
+where `agent_kwargs` includes `config.kwargs` — i.e. Harbor passes `model_name` and
+arbitrary `kwargs` straight into the agent's `__init__` as ordinary per-INSTANCE Python
+constructor arguments, with zero cross-trial race risk (unlike a process env var).
+
+Concretely:
+- `ExecutionSpec` (`packages/aieb-runner/src/aieb_runner/backends/base.py`) gained two
+  additive fields: `model_name: str | None = None` and
+  `agent_kwargs: dict[str, Any] = field(default_factory=dict)`. Both default to
+  preserving today's behavior exactly for the agent track, which never sets them.
+- `HarborBackend.launch()` (`backends/harbor/backend.py`) now threads
+  `model_name=spec.model_name, kwargs=dict(spec.agent_kwargs)` into the `AgentConfig(...)`
+  it already builds.
+- `ModelTrackReferenceLoop.__init__` (`packages/aieb-runner/src/aieb_runner/model_loop.py`)
+  now takes real constructor parameters instead of reading identity/config from
+  `os.environ`: `provider_kind`, `requested_model` (falls back to `self.model_name`,
+  which `BaseAgent.__init__` sets from Harbor's own `AgentConfig.model_name` — confirmed
+  in `harbor/agents/base.py`), `base_url`, `api_key_env_var`, `settings`,
+  `expected_settings_digest`, plus the pre-existing `provider=` direct-injection kwarg
+  (still needed for tests/smoke, since a live Python object cannot round-trip through
+  `AgentConfig.kwargs`, which must stay JSON-serializable).
+- **Fail closed**: `_select_provider()` no longer has an implicit "fake" default for real
+  dispatch. If the loop is constructed without a directly-injected `provider` AND without
+  an explicit `provider_kind`, `run()` raises `RuntimeError` immediately, naming exactly
+  what to pass. Similarly, `_resolve_requested_model()` raises `RuntimeError` if neither
+  `requested_model` nor `self.model_name` is set and no provider was directly injected —
+  no more silent `"unspecified"` for a real entrant. A test or smoke script that wants
+  the fake, no-network provider must now say so explicitly, either
+  `provider_kind="fake"` in `agent_kwargs` (exercises the real dispatch path) or direct
+  `provider=FakeProviderAdapter()` injection (bypasses Harbor's config plumbing for pure
+  unit tests) — nothing defaults there silently any more.
+- `scripts/run_eng023_model_loop_spike.py` now configures the loop through this real
+  mechanism — `ExecutionSpec(model_name="spike-requested-model",
+  agent_kwargs={"provider_kind": "fake"}, ...)` — and was re-run against real Docker to
+  prove it (see "Real Harbor Docker integration smoke test, re-run" below). No env var
+  sets provider identity any more.
+- `AIEB_MODEL_TRACK_DEADLINE_SEC` / `AIEB_MODEL_TRACK_MAX_STEPS` were deliberately KEPT as
+  env-var testing hooks (not moved to kwargs): they bound a test's own wall-clock/step
+  budget, not per-entrant identity or credential material, so they carry none of the
+  cross-entrant race risk the removed identity env vars had — two concurrent trials
+  reading the same deadline override is a shared testing knob, not a config collision.
+  `AIEB_MODEL_TRACK_FAKE_SCRIPT_ID` was also kept: it hands a same-process caller's live,
+  scripted `FakeProviderAdapter` Python object to a Harbor-constructed instance, which
+  (like `provider=` direct injection) cannot round-trip through `AgentConfig.kwargs`
+  either since that must stay a JSON-serializable dict.
+
+### Finding 2 (HIGH) — usage is not connected to the authoritative accounting system: a genuine, PRE-EXISTING, cross-track gap, NOT fixed by this pass
+
+This is written up honestly, not claimed fixed, because it cannot honestly be fixed from
+inside this ticket. Verified directly (not taken on faith): `UsageRequestRow(` — the ORM
+model a real usage write would construct — is instantiated ONLY in two places in this
+entire repository: its own class definition in `services/api/src/aieb_api/models.py`,
+and test fixtures in `tests/test_api_service.py`. There is **no production code path,
+for the agent track OR the model track**, that ever writes a real `UsageRequestRow` from
+an actual trial execution.
+
+`aieb_runner.accounting.UsageLedger` (used by both the CLI, per ENG-008/009, and now this
+loop) is a purely local, in-process ledger with no connection to `services/api`'s
+database at all. Closing this gap for real would require an authenticated internal
+worker-to-API usage-reporting endpoint (a "budget broker" identity) that has never been
+built for any track — inventing an ad hoc, isolated DB write from inside
+`model_loop.py` alone (which has no DB session, no HTTP client, and no service identity)
+would be architecturally wrong, inconsistent with how every other part of this system
+reports usage, and would leave the agent track equally unfixed while appearing to claim
+ENG-023 solved something it does not own.
+
+**This is not an ENG-023-specific defect.** It affects both tracks equally and predates
+this ticket. It is recorded here as a real, separate, open blocker — not fixed by this
+pass, and not something ENG-023 can close alone. It most naturally belongs to whichever
+ticket is understood to own "the `usage_request` ledger is connected end to end" (no
+ticket currently claims this explicitly; ENG-008's "Role-separated usage and caps" comes
+closest but only ever implemented the LOCAL ledger, never a worker-to-API write path) —
+flagging it here as a currently unowned gap rather than assigning it a ticket that was
+never scoped to build a budget-broker service.
+
+### Finding 3 (MEDIUM) — settings-digest enforcement, made real (verification, not decoding)
+
+`aieb_core.models.ModelProfile` has `settings_digest: SHA256` but deliberately no raw
+settings-payload field — the same freeze-by-digest pattern `EntrantRevision.prompt_digest`/
+`tools_digest` already use (the real content lives elsewhere and is checked by
+recomputing its digest, never by decoding the hash). The fix: the loop now accepts a
+real `settings: dict[str, object]` payload via the constructor, alongside
+`expected_settings_digest: str | None`. At the start of `run()`, if
+`expected_settings_digest` is given, the loop computes
+`hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()` and compares
+it; a mismatch raises `RuntimeError` immediately (fail-closed — the same philosophy as
+`scripts/build_release_bundle.py`'s `digest_mismatches` handling, never a silent
+proceed). The REAL `settings` dict (no longer a hardcoded `settings = {}`) is then
+threaded into both `provider.complete(messages, tools, settings)` and
+`provider.unsupported_settings(settings)`, so unsupported-controls detection is now real
+end-to-end, not only testable via a directly-injected fake response.
+
+### Finding 4 — Windows `TemporaryDirectory` failures in the test suite, fixed with the ENG-021 idiom
+
+A reviewer reported "6 tests passed; 13 tests failed/error during TemporaryDirectory
+workspace creation/cleanup with WinError 5" running `tests/test_eng023_model_loop.py`.
+This matches an already-solved failure class (`tests/test_eng021_bundle_exclusions.py`,
+rounds 2–4 in `STATUS.md`/`DECISIONS.md`): some Windows hosts cannot do nested
+create/delete inside a directory a process just created, even though
+`tempfile.mkdtemp()`/`TemporaryDirectory()` itself succeeds. `tests/test_eng023_model_loop.py`
+now reuses the exact same idiom, copied verbatim rather than reinvented:
+`_make_test_tmp_dir()` (prefers a repo-relative `.cache/test-tmp` over the OS global temp
+root, honoring `AIEB_TEST_TMP_ROOT`), `_tmp_dir_supports_nested_ops()` (probes
+create/write/rmtree on a child path and returns a precise skip reason instead of a
+misleading failure), and `_rmtree_windows_safe()` (clears the read-only bit and retries
+on `PermissionError` during cleanup). Both `ModelTrackReferenceLoopTest.setUp` and the
+two new test classes below use this pattern instead of raw
+`tempfile.TemporaryDirectory()`.
+
+### Regression test counts (this environment)
+
+`D:\AI-Engineer-Bench\.venv\Scripts\python.exe -m pytest tests/test_eng023_model_loop.py -q`
+→ before this pass: `19 passed`; after: **`28 passed`** (9 new tests: 4 fail-closed
+provider/model-identity tests, 2 fail-closed/positive settings-digest tests, 1 real
+settings-threading test, plus 2 tests confirming the `provider_kind`/`model_name`
+config-wiring path dispatches cleanly end to end without any direct `provider=`
+injection).
+
+`D:\AI-Engineer-Bench\.venv\Scripts\python.exe -m pytest tests/test_eng019_sandbox_threat_model.py tests/test_accounting_and_cli.py -q`
+→ `45 passed` (no regressions in the shared `ExecutionSpec`/accounting code the
+`ExecutionSpec.model_name`/`agent_kwargs` fields touch).
+
+### Real Harbor Docker integration smoke test, re-run after the wiring change
+
+`scripts/run_eng023_model_loop_spike.py` was updated to configure the loop through the
+real mechanism (`ExecutionSpec(model_name="spike-requested-model",
+agent_kwargs={"provider_kind": "fake"}, ...)`, no env vars for provider identity) and
+re-executed against real Docker. Real captured output:
+
+```json
+{
+  "agent_version": "aieb-model-track-reference-loop 0.1.0",
+  "candidate_files": [
+    "README.txt",
+    "hello-from-model-track.txt",
+    "model_track_summary.json"
+  ],
+  "cleanup_clean": true,
+  "exception_info": null,
+  "harbor_version": "0.22.0",
+  "model_track_summary": {
+    "coverage_label": "estimated_time_limited",
+    "error_class": null,
+    "malformed_call_count": 0,
+    "provider_retry_count": 0,
+    "reported_model": "fake-reference-model-v1",
+    "requested_model": "spike-requested-model",
+    "steps_taken": 4,
+    "stop_reason": "submitted",
+    "submitted": true,
+    "unsupported_settings": [],
+    "usage_receipts": [ /* 4 UsageReceipt entries, one per scripted provider call */ ]
+  },
+  "reward": 1.0,
+  "state": "completed",
+  "trial_dir": "D:\\AI-Engineer-Bench\\.cache\\eng023-runs\\eng023-a9250a077c"
+}
+```
+
+This is the concrete, executed proof that the new per-trial-safe config mechanism works
+through the real Harbor dispatch path, not just in isolated unit tests:
+`requested_model: "spike-requested-model"` came from `ExecutionSpec.model_name` →
+`AgentConfig.model_name` → `self.model_name` (no env var), and the fake provider was
+selected via `agent_kwargs={"provider_kind": "fake"}` → `AgentConfig.kwargs` → the
+constructor's `provider_kind` parameter (no env var either). `coverage_label` is
+`estimated_time_limited` because the scripted `reported_model`
+(`"fake-reference-model-v1"`) legitimately differs from the requested one — exactly the
+disclosed-profile behavior this loop is supposed to produce, not a defect.
+
+### Still explicitly NOT claimed (unchanged, plus one new item)
+
+Everything in "What is explicitly NOT claimed" above still holds. In addition: **usage
+accounting is not connected to `services/api`'s authoritative ledger for either track**
+(Finding 2 above) — this was true before ENG-023 and remains true after it; it is not
+presented as something this pass fixed.

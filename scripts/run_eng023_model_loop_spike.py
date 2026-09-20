@@ -6,13 +6,24 @@ via `ExecutionSpec.agent_import_path` - the exact mechanism the independent
 review found broken (the module didn't exist / didn't import). This is the
 concrete, executed proof that it now does.
 
-Forces the loop's provider to FakeProviderAdapter (AIEB_MODEL_TRACK_PROVIDER
-is left unset, which defaults to "fake") so this costs no real money and
-needs no real credentials, while still exercising the real
-BaseInstalledAgent contract end-to-end inside a genuine Docker container:
-install(), get_version_command(), and a full run() tool-calling loop that
-lists/patches/reads files and runs a command via real environment.exec()
-calls dispatched into the container, then submits.
+Config wiring (2026-09-21 review follow-up): this now configures the loop
+through the real, per-trial-safe mechanism - `ExecutionSpec.model_name` and
+`ExecutionSpec.agent_kwargs`, which `HarborBackend.launch()` threads straight
+into Harbor's own `AgentConfig.model_name`/`AgentConfig.kwargs`, which
+`harbor/agents/factory.py::create_agent_from_config` passes as ordinary
+per-INSTANCE Python constructor arguments to `ModelTrackReferenceLoop.__init__`
+- NOT process-wide `os.environ`, which a review found unsafe for real
+concurrent campaign dispatch (`HarborBackend.launch()` runs each trial as its
+own `asyncio.create_task`, so concurrent trials with different requested
+models could race each other's env-var reads). `agent_kwargs={"provider_kind":
+"fake", ...}` is the explicit opt-in this loop now requires under real
+dispatch (no more implicit "fake" default) - forcing the provider to
+FakeProviderAdapter so this costs no real money and needs no real
+credentials, while still exercising the real BaseInstalledAgent contract
+end-to-end inside a genuine Docker container: install(), get_version_command(),
+and a full run() tool-calling loop that lists/patches/reads files and runs a
+command via real environment.exec() calls dispatched into the container,
+then submits.
 
 Fixture choice: this uses a NEW minimal fixture,
 tests/fixtures/eng023_model_loop/task, rather than reusing
@@ -121,10 +132,13 @@ def _register_scripted_provider() -> None:
 
 
 async def run_spike() -> dict[str, object]:
-    # Explicit opt-in stays OFF: no AIEB_MODEL_TRACK_PROVIDER is set, so the
-    # loop defaults to FakeProviderAdapter (no network, no credentials).
-    os.environ.pop("AIEB_MODEL_TRACK_PROVIDER", None)
-    os.environ["AIEB_MODEL_TRACK_REQUESTED_MODEL"] = "spike-requested-model"
+    # Explicit opt-in, via the real per-trial-safe config mechanism (not os.environ):
+    # ExecutionSpec.agent_kwargs={"provider_kind": "fake", ...} flows through
+    # HarborBackend.launch() into Harbor's real AgentConfig.kwargs, which
+    # harbor/agents/factory.py passes straight into ModelTrackReferenceLoop.__init__ as
+    # ordinary per-instance constructor keyword arguments. This is the loop's new
+    # fail-closed contract: provider_kind must always be explicit under real dispatch,
+    # there is no implicit "fake" default any more.
     _register_scripted_provider()
 
     backend = HarborBackend()
@@ -140,6 +154,15 @@ async def run_spike() -> dict[str, object]:
             trial_name=trial_name,
             agent_import_path="aieb_runner.model_loop:ModelTrackReferenceLoop",
             agent_timeout_sec=90.0,
+            # AgentConfig.model_name (per-instance, per-trial-safe) - not an env var.
+            model_name="spike-requested-model",
+            # AgentConfig.kwargs (per-instance, per-trial-safe) - not an env var. The
+            # scripted adapter itself is still handed off via the
+            # AIEB_MODEL_TRACK_FAKE_SCRIPT_ID registry seam (a live Python object cannot
+            # round-trip through AgentConfig.kwargs' JSON-serializable dict either), but
+            # WHICH provider kind to construct is now real per-trial config, not an
+            # env var read at run() time.
+            agent_kwargs={"provider_kind": "fake"},
         )
     )
 

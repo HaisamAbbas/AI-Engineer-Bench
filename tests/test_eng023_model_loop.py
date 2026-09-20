@@ -15,14 +15,18 @@ tests/test_eng019_sandbox_threat_model.py): stdlib
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _find_real_bash() -> str:
@@ -52,6 +56,81 @@ def _find_real_bash() -> str:
 
 
 _BASH = _find_real_bash()
+
+
+def _rmtree_windows_safe(path: str) -> None:
+    """Remove a tree, tolerating Windows' occasional PermissionError on rmtree.
+
+    Reused verbatim from `tests/test_eng021_bundle_exclusions.py`'s established
+    mitigation: a file copied/created can inherit a read-only bit, and
+    antivirus/indexer processes can transiently hold a handle open on a
+    just-written file; both cause shutil.rmtree to raise PermissionError
+    ([WinError 5]) on that path. This clears the read-only bit and retries
+    the failed operation rather than silently swallowing the error.
+    """
+
+    def _on_error(func, target, exc_info):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    shutil.rmtree(path, onerror=_on_error)
+
+
+def _make_test_tmp_dir() -> str:
+    """Create a writable scratch directory for this test run.
+
+    Reused verbatim (same idiom, same reasoning) from
+    `tests/test_eng021_bundle_exclusions.py::_make_test_tmp_dir`: a reviewer
+    reported "6 tests passed; 13 tests failed/error during TemporaryDirectory
+    workspace creation/cleanup with WinError 5" running this exact file. That
+    matches the ENG-021 finding this mirrors: `AIEB_TEST_TMP_ROOT` lets a
+    sandboxed/CI environment point this at a location it actually has write
+    access to; failing that, default to `<repo>/.cache/test-tmp` (already
+    gitignored, a location this checkout must be writable under) instead of
+    the OS temp root, since a restricted-ACL global TEMP is the exact failure
+    this works around.
+    """
+    preferred_root = os.environ.get("AIEB_TEST_TMP_ROOT") or str(ROOT / ".cache" / "test-tmp")
+    last_error: OSError | None = None
+    for root in (preferred_root, None):  # None = final fallback to the OS default temp root
+        try:
+            if root is not None:
+                os.makedirs(root, exist_ok=True)
+            return tempfile.mkdtemp(dir=root)
+        except OSError as exc:
+            last_error = exc
+    raise last_error  # type: ignore[misc]
+
+
+def _tmp_dir_supports_nested_ops(tmp_dir: str) -> tuple[bool, str]:
+    """Probe whether `tmp_dir` actually supports creating/removing a CHILD path.
+
+    Reused verbatim (same idiom) from
+    `tests/test_eng021_bundle_exclusions.py::_tmp_dir_supports_nested_ops`:
+    on at least one Windows host, `tempfile.mkdtemp()` itself succeeds, but
+    every subsequent operation INSIDE the directory it just returned raises
+    `PermissionError: [WinError 5]`, for reasons outside this repository's
+    control. No relocation of the temp root can work around that - this
+    detects it directly and skips with a precise reason instead of a
+    misleading failure that looks like a code defect.
+    """
+    probe_dir = os.path.join(tmp_dir, "probe")
+    try:
+        os.mkdir(probe_dir)
+        (Path(probe_dir) / "probe.txt").write_text("x", encoding="utf-8")
+        shutil.rmtree(probe_dir)
+        return True, ""
+    except OSError as exc:
+        return False, (
+            f"cannot create/remove a child path inside a freshly created temp directory "
+            f"({tmp_dir}): {exc!r}. This host cannot do nested create/delete inside a "
+            f"directory this test process itself just created - not a path-selection "
+            f"issue. Verifying this test suite requires an environment where directories "
+            f"created by this process support normal child create/delete."
+        )
 
 from aieb_runner import model_loop
 from aieb_runner.model_loop import (
@@ -197,9 +276,16 @@ class CredentialProtectionTest(unittest.TestCase):
 
 class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        self._tmpdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmpdir.cleanup)
-        self.tmp_path = Path(self._tmpdir.name)
+        self._tmp = _make_test_tmp_dir()
+        supported, reason = _tmp_dir_supports_nested_ops(self._tmp)
+        if not supported:
+            try:
+                _rmtree_windows_safe(self._tmp)
+            except OSError:
+                pass  # the same restriction being reported may also block this cleanup
+            self.skipTest(reason)
+        self.addCleanup(_rmtree_windows_safe, self._tmp)
+        self.tmp_path = Path(self._tmp)
         self.env = _FakeEnvironment(self.tmp_path / "workspace")
         self._env_overrides: list[str] = []
 
@@ -208,8 +294,27 @@ class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
         self._env_overrides.append(key)
         self.addCleanup(os.environ.pop, key, None)
 
-    def _make_loop(self, provider=None) -> ModelTrackReferenceLoop:
-        return ModelTrackReferenceLoop(logs_dir=self.tmp_path / "logs", provider=provider)
+    def _make_loop(
+        self,
+        provider=None,
+        *,
+        provider_kind=None,
+        requested_model=None,
+        base_url=None,
+        settings=None,
+        expected_settings_digest=None,
+        model_name=None,
+    ) -> ModelTrackReferenceLoop:
+        return ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            model_name=model_name,
+            provider=provider,
+            provider_kind=provider_kind,
+            requested_model=requested_model,
+            base_url=base_url,
+            settings=settings,
+            expected_settings_digest=expected_settings_digest,
+        )
 
     async def _run(self, loop: ModelTrackReferenceLoop, instruction: str = "do the task") -> None:
         await loop.run(instruction, self.env, context=None)
@@ -325,7 +430,6 @@ class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
     # -- no silent fallback --------------------------------------------------------
 
     async def test_reported_model_mismatch_is_disclosed_not_silent(self) -> None:
-        self._set_env(model_loop.ENV_REQUESTED_MODEL, "requested-model-x")
         provider = FakeProviderAdapter(
             script=[
                 _response(
@@ -334,14 +438,13 @@ class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
                 )
             ]
         )
-        await self._run(self._make_loop(provider=provider))
+        await self._run(self._make_loop(provider=provider, requested_model="requested-model-x"))
         summary = _summary(self.env)
         self.assertEqual(summary["requested_model"], "requested-model-x")
         self.assertEqual(summary["reported_model"], "a-different-model-y")
         self.assertEqual(summary["coverage_label"], "estimated_time_limited")
 
     async def test_matching_reported_model_with_no_declined_settings_is_full_match(self) -> None:
-        self._set_env(model_loop.ENV_REQUESTED_MODEL, "same-model")
         provider = FakeProviderAdapter(
             script=[
                 _response(
@@ -350,7 +453,7 @@ class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
                 )
             ]
         )
-        await self._run(self._make_loop(provider=provider))
+        await self._run(self._make_loop(provider=provider, requested_model="same-model"))
         summary = _summary(self.env)
         self.assertEqual(summary["coverage_label"], "full_match")
 
@@ -416,6 +519,161 @@ class ModelTrackReferenceLoopTest(unittest.IsolatedAsyncioTestCase):
         summary = _summary(self.env)
         self.assertTrue(summary["submitted"])
         self.assertEqual((self.env.root / "submission" / "out.txt").read_text(), "hello world\n")
+
+
+# ---------------------------------------------------------------------------
+# Per-trial-safe config wiring: fail-closed provider/model identity, and real
+# settings-digest verification (review findings #1 and #3, 2026-09-21).
+# ---------------------------------------------------------------------------
+
+
+class ConfigWiringFailClosedTest(unittest.IsolatedAsyncioTestCase):
+    """No os.environ identity/config reads any more: `provider_kind` and
+    `requested_model` come only from constructor kwargs (which is what
+    `AgentConfig.kwargs`/`AgentConfig.model_name` become - see
+    `backends/harbor/backend.py`) or from direct `provider=` injection. A
+    real-dispatch entrant (no `provider=` injected) that omits `provider_kind`
+    - or that has no resolvable model identity at all - must fail hard, never
+    silently default to a fake provider or an "unspecified" model."""
+
+    def setUp(self) -> None:
+        self._tmp = _make_test_tmp_dir()
+        supported, reason = _tmp_dir_supports_nested_ops(self._tmp)
+        if not supported:
+            try:
+                _rmtree_windows_safe(self._tmp)
+            except OSError:
+                pass
+            self.skipTest(reason)
+        self.addCleanup(_rmtree_windows_safe, self._tmp)
+        self.tmp_path = Path(self._tmp)
+        self.env = _FakeEnvironment(self.tmp_path / "workspace")
+
+    async def test_real_dispatch_without_provider_kind_fails_closed(self) -> None:
+        loop = ModelTrackReferenceLoop(logs_dir=self.tmp_path / "logs")
+        with self.assertRaisesRegex(RuntimeError, "provider_kind"):
+            await loop.run("do the task", self.env, context=None)
+
+    async def test_unknown_provider_kind_fails_closed(self) -> None:
+        loop = ModelTrackReferenceLoop(logs_dir=self.tmp_path / "logs", provider_kind="not-a-real-kind")
+        with self.assertRaisesRegex(RuntimeError, "unknown provider_kind"):
+            await loop.run("do the task", self.env, context=None)
+
+    async def test_openai_compatible_without_base_url_fails_closed(self) -> None:
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs", provider_kind="openai_compatible", requested_model="m"
+        )
+        with self.assertRaisesRegex(RuntimeError, "base_url"):
+            await loop.run("do the task", self.env, context=None)
+
+    async def test_real_dispatch_without_resolvable_requested_model_fails_closed(self) -> None:
+        # provider_kind is explicit ("fake" dispatches cleanly), but neither requested_model
+        # nor Harbor's AgentConfig.model_name (model_name=) was ever supplied.
+        loop = ModelTrackReferenceLoop(logs_dir=self.tmp_path / "logs", provider_kind="fake")
+        with self.assertRaisesRegex(RuntimeError, "requested_model"):
+            await loop.run("do the task", self.env, context=None)
+
+    async def test_provider_kind_fake_dispatches_through_real_config_wiring(self) -> None:
+        # No provider= direct injection at all: provider_kind="fake" alone (the same value
+        # a real ExecutionSpec.agent_kwargs={'provider_kind': 'fake'} would carry through
+        # AgentConfig.kwargs) is enough to run cleanly end to end.
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            provider_kind="fake",
+            requested_model="wired-via-agent-kwargs",
+        )
+        await loop.run("do the task", self.env, context=None)
+        summary = _summary(self.env)
+        self.assertEqual(summary["requested_model"], "wired-via-agent-kwargs")
+
+    async def test_model_name_from_harbor_agent_config_is_used_as_requested_model(self) -> None:
+        # `model_name=` is exactly the keyword `AgentFactory.create_agent_from_config`
+        # passes from the real `AgentConfig.model_name` (see harbor/agents/factory.py) -
+        # BaseAgent.__init__ stores it as self.model_name, which _resolve_requested_model
+        # falls back to when no explicit requested_model override is given.
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            model_name="harbor-agent-config-model",
+            provider_kind="fake",
+        )
+        await loop.run("do the task", self.env, context=None)
+        summary = _summary(self.env)
+        self.assertEqual(summary["requested_model"], "harbor-agent-config-model")
+
+
+class SettingsDigestVerificationTest(unittest.IsolatedAsyncioTestCase):
+    """`settings` is a real payload the loop must verify against
+    `expected_settings_digest` before proceeding (never decode a hash back
+    into settings - that's not how ModelProfile.settings_digest works), then
+    thread the REAL settings into the provider - not the previously
+    hardcoded `settings = {}`."""
+
+    def setUp(self) -> None:
+        self._tmp = _make_test_tmp_dir()
+        supported, reason = _tmp_dir_supports_nested_ops(self._tmp)
+        if not supported:
+            try:
+                _rmtree_windows_safe(self._tmp)
+            except OSError:
+                pass
+            self.skipTest(reason)
+        self.addCleanup(_rmtree_windows_safe, self._tmp)
+        self.tmp_path = Path(self._tmp)
+        self.env = _FakeEnvironment(self.tmp_path / "workspace")
+
+    @staticmethod
+    def _digest(settings: dict) -> str:
+        return hashlib.sha256(json.dumps(settings, sort_keys=True).encode("utf-8")).hexdigest()
+
+    async def test_mismatched_settings_digest_fails_closed(self) -> None:
+        provider = FakeProviderAdapter(
+            script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))]
+        )
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            provider=provider,
+            settings={"temperature": 0.2},
+            expected_settings_digest="0" * 64,
+        )
+        with self.assertRaisesRegex(RuntimeError, "settings-digest mismatch"):
+            await loop.run("do the task", self.env, context=None)
+        self.assertEqual(provider.call_count, 0)
+
+    async def test_matching_settings_digest_proceeds(self) -> None:
+        settings = {"temperature": 0.2}
+        provider = FakeProviderAdapter(
+            script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))]
+        )
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            provider=provider,
+            settings=settings,
+            expected_settings_digest=self._digest(settings),
+        )
+        await loop.run("do the task", self.env, context=None)
+        summary = _summary(self.env)
+        self.assertTrue(summary["submitted"])
+
+    async def test_real_settings_are_threaded_into_unsupported_settings_check(self) -> None:
+        # declined_settings makes the FakeProviderAdapter genuinely decline "logprobs" -
+        # this only shows up if the loop passes the REAL settings dict through to
+        # provider.unsupported_settings(), not the old hardcoded settings = {}.
+        settings = {"logprobs": True}
+        provider = FakeProviderAdapter(
+            declined_settings=("logprobs",),
+            script=[_response(tool_calls=(ToolCall(id="1", name="submit", arguments={}),))],
+        )
+        loop = ModelTrackReferenceLoop(
+            logs_dir=self.tmp_path / "logs",
+            provider=provider,
+            requested_model="m",
+            settings=settings,
+            expected_settings_digest=self._digest(settings),
+        )
+        await loop.run("do the task", self.env, context=None)
+        summary = _summary(self.env)
+        self.assertEqual(summary["unsupported_settings"], ["logprobs"])
+        self.assertEqual(summary["coverage_label"], "estimated_time_limited")
 
 
 if __name__ == "__main__":

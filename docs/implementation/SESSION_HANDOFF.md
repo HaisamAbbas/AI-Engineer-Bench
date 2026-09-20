@@ -1088,3 +1088,81 @@ the actual deliverable.
 Status: **ENG-023 IN_PROGRESS** (code real and tested; P0-gated live readiness
 unchanged), **ENG-024 BLOCKED** (manifest defect fixed; authorization gate unchanged),
 **ENG-001 BLOCKED** (untouched).
+
+## ENG-023 review follow-up 2: per-trial-safe config wiring, fail-closed dispatch, real settings-digest verification (2026-09-21)
+
+A second independent review accepted the loop's mechanics but found three real gaps in
+how it is configured/accounted for. Full detail is in
+`docs/implementation/evidence/ENG-023/README.md`'s "Review follow-up 2" section; summary:
+
+**Finding 1 (HIGH), fixed** — the loop read provider/model identity from process-wide
+`os.environ` at `run()` time. `HarborBackend.launch()` dispatches each trial as its own
+`asyncio.create_task`, so concurrent trials in the same worker process could race each
+other's env-var reads — a real correctness bug, not just "not wired up." Fixed using
+Harbor's own real per-trial-safe mechanism: `ExecutionSpec` gained additive
+`model_name: str | None` / `agent_kwargs: dict[str, Any]` fields
+(`backends/base.py`); `HarborBackend.launch()` threads them into
+`AgentConfig(model_name=..., kwargs=...)` (`backends/harbor/backend.py`), which
+`harbor/agents/factory.py::create_agent_from_config` passes as ordinary per-INSTANCE
+`__init__` keyword arguments — confirmed by reading the real Harbor source, not assumed.
+`ModelTrackReferenceLoop.__init__` now takes `provider_kind`, `requested_model`
+(falls back to `self.model_name`), `base_url`, `api_key_env_var`, `settings`,
+`expected_settings_digest` as real constructor parameters; `provider=` direct injection
+is kept for tests/smoke (a live Python object can't round-trip through
+`AgentConfig.kwargs`, which must stay JSON-serializable). **Fail-closed**: real dispatch
+(no directly-injected `provider`) without an explicit `provider_kind` now raises
+`RuntimeError` immediately — no implicit "fake" default any more; same for
+`requested_model` with no resolvable identity ("unspecified" is no longer silently
+reported for real dispatch). `AIEB_MODEL_TRACK_DEADLINE_SEC`/`AIEB_MODEL_TRACK_MAX_STEPS`
+were deliberately kept as env-var testing hooks (they're test-tuning knobs, not
+per-entrant identity, so they carry none of the race risk the removed vars had).
+`scripts/run_eng023_model_loop_spike.py` now configures the loop via
+`ExecutionSpec(model_name=..., agent_kwargs={"provider_kind": "fake"})` and was RE-RUN
+against real Docker: `state: completed`, `reward: 1.0`,
+`model_track_summary.requested_model: "spike-requested-model"` (correctly sourced from
+`ExecutionSpec.model_name`, no env var). `examples/model-track-campaign.json` gained an
+informational (non-authorizing) `dispatch_config_hint` per entrant showing what a real
+dispatcher would supply; `state`/`execution_blocker` untouched.
+
+**Finding 2 (HIGH), honestly NOT fixed, and correctly out of scope** — usage accounting
+is not connected to `services/api`'s authoritative ledger, for EITHER track. Independently
+re-verified by grep: `UsageRequestRow(` is constructed only in
+`services/api/src/aieb_api/models.py` (its own class definition) and
+`tests/test_api_service.py` (fixtures) — zero production call sites for either track.
+`aieb_runner.accounting.UsageLedger` is a purely local in-process ledger with no DB
+connection. This is a genuine, pre-existing, system-wide gap (not an ENG-023 defect);
+closing it needs a real worker-to-API usage-reporting/budget-broker integration that has
+never been built for any track. It is documented as a real open blocker (see
+`docs/implementation/evidence/ENG-023/README.md` Finding 2), not claimed fixed, and not
+attributed to ENG-023 alone — the agent track has never had it either.
+
+**Finding 3 (MEDIUM), fixed** — settings-digest enforcement was decorative
+(`settings = {}` hardcoded, never verified). The loop now accepts a real `settings: dict`
+payload plus `expected_settings_digest: str | None`; at the start of `run()` it computes
+`sha256(json.dumps(settings, sort_keys=True))` and compares — mismatch raises
+`RuntimeError` immediately (fail-closed, matching `scripts/build_release_bundle.py`'s
+`digest_mismatches` philosophy). The real `settings` dict is threaded into
+`provider.complete()`/`provider.unsupported_settings()` instead of the old hardcoded `{}`.
+
+**Test-infrastructure finding, fixed** — a reviewer hit Windows `WinError 5` failures
+("6 tests passed; 13 tests failed/error") from raw `tempfile.TemporaryDirectory()` in
+`tests/test_eng023_model_loop.py`. Reused the exact ENG-021 idiom verbatim
+(`_make_test_tmp_dir`/`_tmp_dir_supports_nested_ops`/`_rmtree_windows_safe`, copied from
+`tests/test_eng021_bundle_exclusions.py`) rather than inventing a new approach.
+
+**Verification, this environment**:
+`D:\AI-Engineer-Bench\.venv\Scripts\python.exe -m pytest tests/test_eng023_model_loop.py -q`
+→ before: `19 passed`; after: `28 passed`.
+`D:\AI-Engineer-Bench\.venv\Scripts\python.exe -m pytest tests/test_eng019_sandbox_threat_model.py tests/test_accounting_and_cli.py -q`
+→ `45 passed` (no regressions from the `ExecutionSpec` field additions).
+Real Harbor Docker smoke re-run (new wiring): `state: completed`, `reward: 1.0`,
+`model_track_summary.submitted: true` — full JSON in
+`docs/implementation/evidence/ENG-023/README.md`.
+
+**Not changed**: ENG-024's live-campaign authorization gate, ENG-001's P0 precondition
+(`STATUS.md` still `BLOCKED`), and no live paid-provider execution occurred at any point.
+
+Status: **ENG-023 IN_PROGRESS** (config wiring now per-trial-safe and fail-closed,
+settings-digest verification real, 28/28 tests green, real Docker re-run proven; usage
+accounting remains a disclosed, pre-existing, cross-track gap; P0-gated live readiness
+unchanged), **ENG-024 BLOCKED** (unchanged), **ENG-001 BLOCKED** (untouched).

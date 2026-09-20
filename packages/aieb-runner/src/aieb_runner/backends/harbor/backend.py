@@ -553,6 +553,15 @@ class HarborBackend:
             agent=AgentConfig(
                 import_path=spec.agent_import_path,
                 override_timeout_sec=spec.agent_timeout_sec,
+                # Per-trial-safe agent configuration (ENG-023 review finding #1):
+                # `model_name` and `kwargs` are real `AgentConfig` fields that
+                # `AgentFactory.create_agent_from_config` passes straight into the agent
+                # class's own `__init__` as ordinary per-instance constructor arguments
+                # (see harbor/agents/factory.py) - never a process-wide env var, so
+                # concurrent trials (HarborBackend runs each as its own asyncio task; see
+                # `launch()` below) never race each other's identity/config.
+                model_name=spec.model_name,
+                kwargs=dict(spec.agent_kwargs),
                 # The AIEB egress allowlist becomes the trial's network-layer allowlist so
                 # Harbor's ALLOWLIST enforcement (not just the app-layer proxy) constrains
                 # egress. Under a task-declared PUBLIC baseline these are ignored by Harbor
