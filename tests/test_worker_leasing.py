@@ -1112,6 +1112,38 @@ class WorkerLeasingTests(unittest.TestCase):
             self.assertEqual(repository.current_fence_epoch(session), 2)
             self.assertTrue(repository.is_kill_switch_active(session))
 
+    def test_check_fails_closed_when_fence_row_missing_even_with_an_active_barrier(self) -> None:
+        """ENG-020 gap 4 accepted round-3 follow-up (reviewer): a database whose `system_fence`
+        singleton row is missing (e.g. restored from a backup predating the fence migration) must
+        NOT preflight-green. `--check` previously reported epoch 0 and, combined with an ACTIVE
+        kill switch, exited 0 - while the actual advance would fail (RuntimeError, no row to
+        bump). It must fail CLOSED (exit 3, 'UNKNOWN (system_fence row missing)'); the mutating
+        form must fail cleanly (exit 2) with a message naming the missing row, never a raw
+        traceback."""
+        import contextlib
+        import io
+
+        _fence_advance = self._load_fence_advance_script()
+        with self.session_factory() as session:
+            session.execute(text("DELETE FROM system_fence WHERE id = 1"))
+            session.commit()
+        with self.session_factory() as session:
+            repository.activate_kill_switch(session, activated_by_user_id=None, reason="test: barrier up")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            check_exit = _fence_advance.main(["--check"])
+        self.assertEqual(check_exit, 3, stdout.getvalue())
+        self.assertIn("UNKNOWN (system_fence row missing)", stdout.getvalue())
+        self.assertIn("kill switch ACTIVE", stdout.getvalue())
+
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            advance_exit = _fence_advance.main(["--reason", "test: fence row missing"])
+        self.assertEqual(advance_exit, 2, stderr.getvalue())
+        self.assertIn("fence-advance FAILED", stderr.getvalue())
+        self.assertIn("system_fence singleton row", stderr.getvalue())
+
     # ---- 6. verifier outage (trusted scorer crash, not a candidate defect) --
 
     def test_verifier_outage_is_infrastructure_invalid_not_a_scored_fail(self) -> None:

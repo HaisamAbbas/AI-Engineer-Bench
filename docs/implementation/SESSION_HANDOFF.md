@@ -110,10 +110,19 @@ repository's missing-row self-heal INSERT); and `--by-user` is validated against
 clean REFUSED (exit 3, epoch unchanged) instead of a raw IntegrityError traceback. Round-3
 verification: worker-leasing 46/46 (incl. the deterministic lock-timeout ordering-B, the
 script-seam concurrent-command regression, and the repository-seam pair-return regression),
-credentials 15/15, backup/restore drill 5/5 through the command. The round-3 fix is being staged
-with the ledger updates for RE-REVIEW; gap 5
-(operator kill-switch API/CLI - the repository knob exists, the operator surface does not) and gap 6
-(Prometheus `/metrics` + alerting) have NOT started; gap 5 is next after gap 4 accepts. PG-gated
+credentials 15/15, backup/restore drill 5/5 through the command, by-user refusal clean at exit 3
+with no epoch change. GAP 4 IS ACCEPTED: the final re-review of `049d824` re-verified the
+concurrent transitions (0 -> 1 and 1 -> 2, no post-commit failure), the atomic barrier/deactivation
+ordering, the invalid-`--by-user` clean refusal, **61 passed** worker-leasing + credentials, the drill
+**5/5** through the real CLI, and a clean diff at `HEAD == origin/main == 049d824`, and recorded Gap 4
+COMPLETE. Its two non-blocking follow-ups are logged and fixed here: (a) `--check` now FAILS CLOSED
+for a MISSING `system_fence` singleton row - it previously reported `fence epoch 0` and, with an
+ACTIVE barrier, exited 0 even though the advance would fail; it now labels the epoch `UNKNOWN
+(system_fence row missing)` and exits 3, and the mutating form fails cleanly at exit 2 naming the
+row instead of a raw traceback (regression `test_check_fails_closed_when_fence_row_missing_even_with_an_active_barrier`
+- red pre-fix reproducing the reviewer's observation, green post-fix); (b) the stale ledger wording
+this sentence fixes. Gap 5 (operator kill-switch API/CLI - the repository knob exists, the
+operator surface does not) is next; gap 6 (Prometheus `/metrics` + alerting) follows. PG-gated
 execution is no longer blocked here: the `aieb-test-postgres` container
 (postgres:16, port 5544, `aieb_test_password`) is what the recent runs of the PG suites
 (credential 10/10) used; the other existing ENG-015/016/017/020 PG suites (worker leasing, API

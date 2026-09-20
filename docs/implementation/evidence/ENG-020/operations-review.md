@@ -491,3 +491,25 @@ SHARE atomicity test), credentials 15/15, and the backup/restore drill 5/5 throu
 - Object storage/observability deployment (Prometheus, alerting) is documented in intent
   (spec section 39's targets) but not deployed - no monitoring infrastructure exists to deploy
   it to.
+
+## Re-review round 3 - ACCEPTED (Gap 4 recorded COMPLETE)
+
+The final re-review of `049d824` accepted the restore-fencing mechanism: re-verified concurrent
+operator commands each return their own locked transition (0 -> 1, 1 -> 2) with no post-commit
+failure; atomic barrier/deactivation ordering; invalid active-barrier `--by-user` clean refusal at
+exit 3 with the epoch unchanged; worker-leasing + credentials **61 passed**; backup/restore drill
+**5/5** through the real CLI; `HEAD == origin/main == 049d824`; tracked tree and diff checks clean.
+Gap 4 is recorded COMPLETE; ENG-020 remains IN_PROGRESS for gaps 5-6.
+
+Two non-blocking follow-ups from the acceptance were logged and closed:
+
+1. **`--check` must fail CLOSED when the `system_fence` singleton row is missing.** With an active
+   kill switch and no fence row, `--check` previously reported `fence epoch 0` and exited 0 even
+   though the actual advance would fail (RuntimeError - no row to bump). Fixed: the epoch is
+   reported as `UNKNOWN (system_fence row missing)` and `--check` exits 3 unless both the barrier is
+   active AND the fence row exists; the mutating form fails cleanly at exit 2 naming the missing row
+   rather than tracing back. Regression: `test_check_fails_closed_when_fence_row_missing_even_with_an_active_barrier`
+   (red pre-fix - `fence epoch 0; kill switch ACTIVE` exit 0, exactly the reviewer's observation -
+   green post-fix).
+2. **Ledger wording.** STATUS.md / SESSION_HANDOFF.md said the round-3 fix was staged despite being
+   committed and pushed at `049d824`; corrected, and re-corrected here after acceptance.

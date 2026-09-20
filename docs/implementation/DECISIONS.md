@@ -1173,3 +1173,23 @@ Per section 14, engineer model calls use an authenticated budget broker; applica
   4. **Low - ledgers stale**: STATUS.md/SESSION_HANDOFF.md still said the round-2 fixes were staged uncommitted; corrected to committed/pushed at `8ea56af` and to the round-3 findings in this entry.
   5. **Test rigor (internal pass, not a review finding) - ordering B proved the deferred deactivation could not slip in with `time.sleep(0.4)`, which a slow CI host can make vacuous** (deactivation thread merely starting late also satisfies `assertFalse(landed.is_set())`). FIXED: the same property is proven deterministically with the `SET LOCAL lock_timeout` pattern the other concurrency regressions use - while the advance's transaction is open a concurrent `deactivate_kill_switch` must raise a lock-timeout `OperationalError`; after the advance commits a fresh deactivate lands.
 - Consequence: `tests/test_worker_leasing.py` grows to **46 tests** (two new concurrent regressions raised the worker count from 44; ordering B rewritten deterministic) and `tests/test_attempt_credentials.py` stays at 15, so worker-leasing + credentials = **61 passed**. The backup/restore drill still passes ALL FIVE assertions through `scripts/fence_advance.py` (its command output format is unchanged). The script-seam concurrent regression is RED on `8ea56af` (verified) and GREEN on this round. Gaps 5 and 6 remain open in order.
+
+### ENG020-011 (gap 4 closure): accepted - Gap 4 COMPLETE; two non-blocking follow-ups closed
+- Status: Gap 4 recorded COMPLETE at `049d824`; ENG-020 remains IN_PROGRESS for gaps 5-6.
+- Background: the re-review of `049d824` accepted the restore-fencing mechanism and verified the
+  concurrent-transition / atomic-barrier / by-user-refusal / 61-passed / drill-5-of-5 evidence on a
+  clean tree at `HEAD == origin/main == 049d824`.
+- Decision: two non-blocking follow-ups were logged and fixed:
+  1. `--check` FAILS CLOSED when the `system_fence` singleton row is missing. Pre-fix it reported
+     `fence epoch 0` and - with an ACTIVE barrier - exited 0 although the advance would fail.
+     Fixed in `scripts/fence_advance.py`: `_check` reports `fence_epoch: None`,
+     `system_fence_missing: true`; `main` prints `fence epoch UNKNOWN (system_fence row missing)`
+     and `--check` exits 3 unless the barrier is active AND a fence row exists (fail-closed); the
+     mutating form catches the helper's RuntimeError and fails cleanly at exit 2 naming the missing
+     row (previously a traceback). Regression `test_check_fails_closed_when_fence_row_missing_even_with_an_active_barrier`
+     was RED pre-fix (reproducing the reviewer's exact observation) and GREEN post-fix.
+  2. Ledger wording claiming the round-3 fix was still staged; corrected to committed + pushed at
+     `049d824` (STATUS.md, SESSION_HANDOFF.md) and maintained here.
+- Consequence: worker-leasing grows to **47 tests**; combined worker-leasing + credentials = **62
+  passed**; the drill still passes 5/5 through the command. Gap 5 (operator kill-switch API/CLI) is
+  next; gap 6 (Prometheus metrics/alerts) remains open.

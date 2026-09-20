@@ -40,7 +40,11 @@ Rounds 2 + 3 summary: (a) the barrier check is ATOMIC with the epoch bump (one t
 (b) a command reports the (previous, new) transition read under the SAME locks - it never reads
 the epoch up front or reports FAILED after its own mutation committed, and (c) `--check` performs
 no writes at all (it reads the fence row directly rather than triggering the repository's
-missing-row self-heal), so an operator pre-flight never mutates the database.
+missing-row self-heal), so an operator pre-flight never mutates the database. Accepted round-3
+follow-up: `--check` FAILS CLOSED when the `system_fence` singleton row is MISSING - it reports
+`fence epoch UNKNOWN (system_fence row missing)` and exits 3 EVEN WITH an active barrier (the
+advance would itself fail), never a green `fence epoch 0`; the mutating form fails cleanly (exit
+2) naming the missing row instead of tracing back.
 """
 from __future__ import annotations
 
@@ -80,12 +84,18 @@ def _check(session_factory) -> dict[str, object]:
     with session_factory() as session:
         # Read the epoch DIRECTLY so `--check` performs no writes at all: the repository's
         # current_fence_epoch() self-heals a missing singleton row with an INSERT (rolled back on
-        # close, but a write during a pre-flight check is still a write).
+        # close, but a write during a pre-flight check is still a write). A MISSING row must FAIL
+        # CLOSED the preflight (accepted round-3 follow-up): the advance would raise, so `--check`
+        # must not green-light "fence epoch 0" just because the barrier happens to be active.
         fence = session.get(api_models.SystemFenceRow, 1)
-        epoch = 0 if fence is None else fence.lease_fence_epoch
         kill_switch_active = repository.is_kill_switch_active(session)
         db_user = _current_user(session)
-    return {"fence_epoch": epoch, "kill_switch_active": kill_switch_active, "db_user": db_user}
+    return {
+        "fence_epoch": None if fence is None else fence.lease_fence_epoch,
+        "system_fence_missing": fence is None,
+        "kill_switch_active": kill_switch_active,
+        "db_user": db_user,
+    }
 
 
 def _advance(session_factory, *, reason: str, by_user: uuid.UUID | None) -> dict[str, object]:
@@ -102,6 +112,9 @@ def _advance(session_factory, *, reason: str, by_user: uuid.UUID | None) -> dict
         except ValueError as exc:
             print(f"fence-advance REFUSED: {exc}", file=sys.stderr)
             return {"advanced": False, "refused": str(exc)}
+        except RuntimeError as exc:
+            print(f"fence-advance FAILED: {exc}", file=sys.stderr)
+            return {"advanced": False, "failed": str(exc)}
         db_user = _current_user(session)
     return {"advanced": True, "fence_epoch_before": before, "fence_epoch_after": after, "db_user": db_user}
 
@@ -124,17 +137,20 @@ def main(argv: list[str] | None = None) -> int:
 
     session_factory = _session_factory()
     state = _check(session_factory)
+    epoch_label = "UNKNOWN (system_fence row missing)" if state["fence_epoch"] is None else str(state["fence_epoch"])
     print(
-        f"fence epoch {state['fence_epoch']}; kill switch "
+        f"fence epoch {epoch_label}; kill switch "
         f"{'ACTIVE' if state['kill_switch_active'] else 'inactive'}; db user {state['db_user']}"
     )
     if args.check:
-        return 0 if state["kill_switch_active"] else 3
+        # Preflight barrier gate: green ONLY when the barrier is up AND a fence row exists to
+        # advance (fail-closed accepted round-3 follow-up).
+        return 0 if (state["kill_switch_active"] and not state["system_fence_missing"]) else 3
     if not args.reason:
         parser.error("--reason is required (the advance is an audited operator action)")
     result = _advance(session_factory, reason=args.reason, by_user=args.by_user)
     if not result["advanced"]:
-        return 3
+        return 2 if result.get("failed") else 3
     print(
         f"fence epoch advanced: {result['fence_epoch_before']} -> {result['fence_epoch_after']} "
         f"(db user {result['db_user']})"
