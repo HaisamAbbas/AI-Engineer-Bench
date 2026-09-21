@@ -21,6 +21,8 @@ from aieb_runner.artifacts import FilesystemArtifactStore
 from aieb_runner.lifecycle import AttemptConfig, EngineeringCommand, LocalAttemptRunner
 from pydantic import ValidationError
 
+from . import operator as operator_cli
+
 EXIT_INVALID = 2
 EXIT_MISSING_CAPABILITY = 3
 EXIT_INFRASTRUCTURE_INCOMPLETE = 4
@@ -334,6 +336,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aieb")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-color", action="store_true")
+    parser.add_argument("--api-url", default=None)
+    parser.add_argument("--access-token", default=None)
+    parser.add_argument("--idempotency-key", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
     task = sub.add_parser("task").add_subparsers(dest="task_command", required=True)
@@ -344,9 +349,12 @@ def main(argv: list[str] | None = None) -> int:
     resume = sub.add_parser("resume"); resume.add_argument("campaign_id"); resume.add_argument("--campaign", type=Path, required=True)
     inspect = sub.add_parser("inspect"); inspect.add_argument("--trial", required=True)
     report = sub.add_parser("report"); report.add_argument("--campaign", required=True); report.add_argument("--format", choices=("html",), default="html")
+    operator_cli.add_operator_parsers(sub)
     args = parser.parse_args(argv)
     try:
         root = _root()
+        if args.command == "operator":
+            return operator_cli.dispatch(args)[0]
         if args.command == "doctor":
             _emit({"message": f"Python {platform.python_version()}; local deterministic capability available; real-agent capability blocked", "capabilities": {"local_rag01": True, "real_agent": False, "hard_cost_reservation": False}}, args); return 0
         if args.command == "task":

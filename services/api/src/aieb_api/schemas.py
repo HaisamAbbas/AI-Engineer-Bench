@@ -795,6 +795,27 @@ class InvalidAttemptEntry(BaseModel):
     terminal_status: str
 
 
+class CampaignApproveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = None
+
+
+class CampaignApprovalSummary(BaseModel):
+    """The single campaign-approval fact: which independent reviewer approved
+    this frozen campaign (or that none ever did). Derived from the recorded
+    ReviewRow, never recomputed from a rule."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: UUID
+    approved: bool
+    approved_by_user_id: UUID | None = None
+    approved_at: str | None = None
+    reason: str | None = None
+    review_id: UUID | None = None
+
+
 # ---- ENG-018: publication preparation, review, corrections -----------------
 
 

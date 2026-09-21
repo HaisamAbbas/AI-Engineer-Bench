@@ -7,6 +7,7 @@ section 13/14).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from aieb_core.models import CampaignDraft, EntrantRevision, TaskRevision
@@ -23,12 +24,14 @@ from ..errors import conflict, forbidden, invalid_request, not_found, stale_revi
 from ..idempotency import check_or_reserve, finalize, principal_scope
 from ..models import (
     AttemptRow,
+    AuditEventRow,
     BudgetReservationRow,
     CampaignRow,
     CandidateRow,
     EntrantRevisionRow,
     EvaluationRow,
     ProtocolRevisionRow,
+    ReviewRow,
     TaskRevisionRow,
     TrialRow,
     User,
@@ -36,6 +39,8 @@ from ..models import (
 from ..revisions import validate_stored_manifest
 from ..schemas import (
     BudgetReservationSummary,
+    CampaignApproveRequest,
+    CampaignApprovalSummary,
     CampaignCreateRequest,
     CampaignPatchRequest,
     CampaignProgress,
@@ -562,6 +567,97 @@ def get_campaign(
     if row is None:
         raise not_found()
     return _state_response(session, row)
+
+
+_CAMPAIGN_APPROVAL_TARGET = "campaign_approval"
+
+
+@router.get("/{campaign_id}/approval", response_model=CampaignApprovalSummary)
+def campaign_approval(
+    campaign_id: UUID,
+    identity: Identity = Depends(require_role("operator", "reviewer", "administrator")),
+    session: Session = Depends(get_session),
+) -> CampaignApprovalSummary:
+    """The campaign's approval fact. An unapproved frozen campaign reads
+    `approved: false` - distinct from missing; the operator CLI's `run`
+    gate refuses before ever issuing a start."""
+    row = session.get(CampaignRow, campaign_id)
+    if row is None:
+        raise not_found()
+    review = session.execute(
+        select(ReviewRow).where(
+            ReviewRow.target_type == _CAMPAIGN_APPROVAL_TARGET,
+            ReviewRow.target_id == campaign_id,
+            ReviewRow.decision == "approve",
+        ).order_by(ReviewRow.created_at.desc(), ReviewRow.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if review is None:
+        return CampaignApprovalSummary(campaign_id=campaign_id, approved=False)
+    return CampaignApprovalSummary(
+        campaign_id=campaign_id, approved=True, approved_by_user_id=review.reviewer_id,
+        approved_at=review.created_at.isoformat().replace("+00:00", "Z"),
+        reason=review.evidence.get("reason"), review_id=review.id,
+    )
+
+
+@router.post("/{campaign_id}/approve", response_model=CampaignApprovalSummary)
+def approve_campaign(
+    campaign_id: UUID,
+    body: CampaignApproveRequest = CampaignApproveRequest(),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    identity: Identity = Depends(require_role("reviewer", "administrator")),
+    session: Session = Depends(get_session),
+) -> CampaignApprovalSummary:
+    """Reviewer-only independent approval of a FROZEN campaign.
+
+    Anti-bypass rules:
+    - reviewer must be distinct from the campaign's creator (no self-approval);
+    - the campaign must be `frozen` (approval is meaningless pre-freeze, and a
+      running/ended campaign cannot subsequently be 'approved');
+    - a replay-safe mutation like everything else: same key replays the same
+      summary, a reused key with different body is 409.
+    Approval only records a durable decision; it does not start the campaign
+    (authoritative start remains POST .../start with its own gates).
+    """
+    row = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+    ).scalar_one_or_none()
+    if row is None:
+        raise not_found()
+    reviewer_id = session.execute(
+        select(User.id).where(User.oidc_issuer == identity.issuer, User.oidc_subject == identity.subject)
+    ).scalar_one_or_none()
+    if reviewer_id is None:
+        raise forbidden("approval requires a provisioned reviewer")
+    if row.created_by_user_id is not None and reviewer_id == row.created_by_user_id:
+        raise forbidden("the campaign creator cannot approve their own campaign")
+    request_body = body.model_dump(mode="json")
+    scope = principal_scope(f"POST /v1/campaigns/{campaign_id}/approve", str(reviewer_id))
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+    if cached is not None:
+        return CampaignApprovalSummary.model_validate(cached)
+    if row.state != "frozen":
+        raise conflict(f"only a frozen campaign can be approved, not one in state {row.state}")
+    now = datetime.now(timezone.utc)
+    review = ReviewRow(
+        reviewer_id=reviewer_id, target_type=_CAMPAIGN_APPROVAL_TARGET, target_id=campaign_id,
+        decision="approve", created_at=now,
+        evidence={"reason": body.reason, "campaign_id": str(campaign_id)},
+    )
+    session.add(review)
+    session.flush()
+    session.add(AuditEventRow(
+        actor_user_id=reviewer_id, target_type="campaign", target_id=campaign_id,
+        action="campaign_approved", created_at=now,
+        evidence={"review_id": str(review.id), "reason": body.reason},
+    ))
+    summary = CampaignApprovalSummary(
+        campaign_id=campaign_id, approved=True, approved_by_user_id=reviewer_id,
+        approved_at=now.isoformat().replace("+00:00", "Z"), reason=body.reason, review_id=review.id,
+    )
+    replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
+                      status_code=200, response_body=summary.model_dump(mode="json"))
+    return summary if replay is None else CampaignApprovalSummary.model_validate(replay)
 
 
 @router.get("/{campaign_id}/progress", response_model=CampaignProgress)

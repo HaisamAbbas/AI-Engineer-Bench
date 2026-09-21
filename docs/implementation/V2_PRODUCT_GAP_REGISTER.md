@@ -34,13 +34,24 @@ described as official benchmark results.
 
 ### V2-GAP-002 — v2 operator CLI
 
-- Status: OPEN.
-- Current evidence: packages/aieb-cli/src/aieb_cli/main.py provides the local
-  task/campaign vertical.
-- Gap: the specified release prepare, campaign plan/run/inspect/approve, and
-  publish commands are not implemented as one scriptable workflow.
-- Closure: consume frozen manifests, call private authenticated APIs, emit
-  stable JSON, enforce authorization/idempotency, and expose no public mutation.
+- Status: PARTIAL.
+- Current evidence: a scriptable operator workflow now exists and consumes
+  private authenticated APIs:
+  - `aieb operator release prepare --campaign <id> --manifest <path> [--publication-class ranked|non_ranked] [--supersedes <id>] [--correction-reason <text>]` → verifies the supplied frozen manifest against the server (`GET /v1/campaigns/{id}` with `expected_manifest_digest`, refusing stale manifests, changed task revisions, and changed cohorts via `manifest_digest_mismatch`/`cohort_drift`), then `POST /v1/campaigns/{id}/publications/prepare`; the envelope reports `manifest_digest`, `server_manifest_digest`, `cohort_digest`, and `digest_verified`
+  - `aieb operator release inspect --preparation <id>` → `GET /v1/publications/preparations/{id}`
+  - `aieb operator campaign plan --campaign <id> --manifest <path>` (read-only)
+  - `aieb operator campaign run --campaign <id> --manifest <path> --confirm-run` (gates, then `POST /v1/campaigns/{id}/start`)
+  - `aieb operator campaign inspect --campaign <id>`
+  - `aieb operator campaign approve --campaign <id> [--reason <text>]` → `POST /v1/campaigns/{id}/approve`
+  - `aieb operator publication publish --preparation <id> [--independence-attestation] [--notes <text>]` → `POST /v1/publications/preparations/{id}/review`
+  - Stable `aieb.operator-cli/v1` JSON envelopes, `--json/--api-url/--access-token/--idempotency-key`, env fallbacks `AIEB_API_URL`/`AIEB_API_TOKEN`.
+  - Private transport/client: `packages/aieb-cli/src/aieb_cli/private_api.py` (bearer auth, required idempotency keys on all mutations, socket-bound timeouts, mutation redirects refused, same-key-only retry). Error bodies are redacted (secret-shaped keys such as `token`/`password`/`secret`/`credential`/`authorization`, plus JWT/bearer/URL-userinfo/`sk-*`/`ghp_*` value shapes) before store/print, so `--json` can never leak a server-supplied credential.
+  - New API surface: `POST /v1/campaigns/{id}/approve` + `GET /v1/campaigns/{id}/approval` (`services/api/src/aieb_api/routes/campaigns.py`), reviewer-only, no self-approval, frozen-only, replay-safe.
+  - Frozen-manifest identity: plan/run and release prepare require `--manifest`; the local digest is verified against the server's stored `manifest_digest`/`cohort_digest` and anchored campaigns require valid 64-character values for BOTH, so any drift (stale manifest, changed task revision, changed cohort, missing/malformed cohort digest, non-frozen server anchor) refuses to proceed; read-only `plan` reports unanchored states honestly instead of pretending.
+  - Tests: `tests/test_operator_cli_unit.py` (29 fake-transport tests: auth, idempotency, digest identity incl. stale-manifest/cohort-drift/task-revision/non-frozen refusals for release prepare, error-body secret redaction, read-only planning, approval-gated runs, 409/412/422/503/timeout mapping, no token/secret leakage, private-route-only traffic; manifests are written to the repository `.cache/test-tmp` convention with a nested-create probe skip, as in the Harbor normalization tests); `tests/test_operator_cli_integration.py` (real PostgreSQL + uvicorn end-to-end create→freeze→plan→approve→run→inspect→release prepare→inspect→publish, plus self-approval and key-absence refusals; DB-gated via `AIEB_DATABASE_URL`).
+- Gap (why not CLOSED): the integration suite has not been executed against a live disposable PostgreSQL yet; V2-GAP-001 (Harbor dispatch) and ENG-024 (authorized live campaign) remain open, so an end-to-end operator release of a REAL campaign has not been demonstrated; the local runner bridge is still the execution path.
+- Closure: run the integration suite green against disposable PostgreSQL; then reclassify per the closure evidence below.
+- Closure evidence (remaining proofs): (1) all seven commands exist and are scriptable; (2) stable JSON on every path; (3) no public website route or unauthenticated mutation is reachable through the operator CLI; (4) frozen-manifest digest identity enforced by plan/run and release prepare (stale manifest, task revision, cohort, and non-frozen drift all refused); (5) authorization and idempotency enforced client-side and server-side; (6) `plan` issues no mutation; (7) `run` cannot bypass the approval/confirm gates; (8) publication commands never touch a public read path; (9) retries never double-apply a mutation (same idempotency key, safe network failures only) and error responses never leak server-supplied secrets.
 
 ### V2-GAP-003 — Complete task admission state machine
 

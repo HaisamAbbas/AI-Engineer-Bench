@@ -417,6 +417,80 @@
         "title": "AttemptCoverageDisclosure",
         "type": "object"
       },
+      "AuthoredTaskDraftRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluator_code_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluator Code Digest",
+            "type": "string"
+          },
+          "evaluator_contract_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Evaluator Contract Version",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "repository_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Repository Url",
+            "type": "string"
+          },
+          "source_content_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Content Digest",
+            "type": "string"
+          },
+          "source_license_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source License Id",
+            "type": "string"
+          },
+          "source_provenance_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Provenance Digest",
+            "type": "string"
+          },
+          "source_revision": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source Revision",
+            "type": "string"
+          },
+          "source_strategy": {
+            "const": "authored",
+            "default": "authored",
+            "title": "Source Strategy",
+            "type": "string"
+          },
+          "ticket_text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Ticket Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "ticket_text",
+          "evaluator_code_digest",
+          "evaluator_contract_version",
+          "repository_url",
+          "source_revision",
+          "source_content_digest",
+          "source_license_id",
+          "source_provenance_digest"
+        ],
+        "title": "AuthoredTaskDraftRequest",
+        "type": "object"
+      },
       "BudgetProfile": {
         "additionalProperties": false,
         "description": "`aieb.budget/v1` - UNCHANGED byte-compatible contract.\n\nDo not add fields here: canonical digests hash explicit nulls\n(`canonical._normalise`), so any new field - even one defaulted to null -\nwould change the digest of every existing frozen `aieb.budget/v1`\nmanifest and invalidate stored campaign identities. Environment cost\nbounds arrived with `aieb.budget/v2` (see `BudgetProfileV2`).",
@@ -592,6 +666,91 @@
         ],
         "title": "BudgetRole",
         "type": "string"
+      },
+      "CampaignApprovalSummary": {
+        "additionalProperties": false,
+        "description": "The single campaign-approval fact: which independent reviewer approved\nthis frozen campaign (or that none ever did). Derived from the recorded\nReviewRow, never recomputed from a rule.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By User Id"
+          },
+          "campaign_id": {
+            "format": "uuid",
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "approved"
+        ],
+        "title": "CampaignApprovalSummary",
+        "type": "object"
+      },
+      "CampaignApproveRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "CampaignApproveRequest",
+        "type": "object"
       },
       "CampaignCreateRequest": {
         "additionalProperties": false,
@@ -2196,6 +2355,114 @@
         "title": "KillSwitchStatus",
         "type": "object"
       },
+      "LiveWindowTaskDraftRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "cohort_id": {
+            "pattern": "^mvp2-live-[a-z0-9-]+$",
+            "title": "Cohort Id",
+            "type": "string"
+          },
+          "collected_at": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Collected At",
+            "type": "string"
+          },
+          "evaluator_code_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluator Code Digest",
+            "type": "string"
+          },
+          "evaluator_contract_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Evaluator Contract Version",
+            "type": "string"
+          },
+          "expires_at": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Expires At",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "model_cutoff": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Model Cutoff",
+            "type": "string"
+          },
+          "released_at": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Released At",
+            "type": "string"
+          },
+          "repository_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Repository Url",
+            "type": "string"
+          },
+          "source_content_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Content Digest",
+            "type": "string"
+          },
+          "source_license_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source License Id",
+            "type": "string"
+          },
+          "source_provenance_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Provenance Digest",
+            "type": "string"
+          },
+          "source_revision": {
+            "maxLength": 128,
+            "minLength": 7,
+            "title": "Source Revision",
+            "type": "string"
+          },
+          "source_strategy": {
+            "const": "live_window",
+            "default": "live_window",
+            "title": "Source Strategy",
+            "type": "string"
+          },
+          "ticket_text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Ticket Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "ticket_text",
+          "evaluator_code_digest",
+          "evaluator_contract_version",
+          "repository_url",
+          "source_revision",
+          "source_content_digest",
+          "source_license_id",
+          "source_provenance_digest",
+          "collected_at",
+          "released_at",
+          "model_cutoff",
+          "expires_at",
+          "cohort_id"
+        ],
+        "title": "LiveWindowTaskDraftRequest",
+        "type": "object"
+      },
       "MatrixPreview": {
         "additionalProperties": false,
         "properties": {
@@ -2370,6 +2637,117 @@
           "created_at"
         ],
         "title": "MethodologyRevisionSummary",
+        "type": "object"
+      },
+      "MinedPrTaskDraftRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "base_commit": {
+            "maxLength": 128,
+            "minLength": 7,
+            "title": "Base Commit",
+            "type": "string"
+          },
+          "contamination_cutoff": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Contamination Cutoff",
+            "type": "string"
+          },
+          "evaluator_code_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluator Code Digest",
+            "type": "string"
+          },
+          "evaluator_contract_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Evaluator Contract Version",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "patch_commit": {
+            "maxLength": 128,
+            "minLength": 7,
+            "title": "Patch Commit",
+            "type": "string"
+          },
+          "pull_request_number": {
+            "exclusiveMinimum": 0.0,
+            "title": "Pull Request Number",
+            "type": "integer"
+          },
+          "pull_request_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Pull Request Url",
+            "type": "string"
+          },
+          "repository_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Repository Url",
+            "type": "string"
+          },
+          "source_content_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Content Digest",
+            "type": "string"
+          },
+          "source_license_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source License Id",
+            "type": "string"
+          },
+          "source_provenance_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Provenance Digest",
+            "type": "string"
+          },
+          "source_strategy": {
+            "const": "mined_pr",
+            "default": "mined_pr",
+            "title": "Source Strategy",
+            "type": "string"
+          },
+          "split": {
+            "enum": [
+              "public",
+              "held_out",
+              "restricted"
+            ],
+            "title": "Split",
+            "type": "string"
+          },
+          "ticket_text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Ticket Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "ticket_text",
+          "evaluator_code_digest",
+          "evaluator_contract_version",
+          "repository_url",
+          "base_commit",
+          "patch_commit",
+          "pull_request_url",
+          "pull_request_number",
+          "source_content_digest",
+          "source_license_id",
+          "source_provenance_digest",
+          "split",
+          "contamination_cutoff"
+        ],
+        "title": "MinedPrTaskDraftRequest",
         "type": "object"
       },
       "ModelProfile": {
@@ -4070,6 +4448,129 @@
         "title": "TaskCellStats",
         "type": "object"
       },
+      "TaskDraftCreateRequest": {
+        "additionalProperties": false,
+        "description": "Maintainer task authoring input. Admission/publication are separate.",
+        "properties": {
+          "evaluator_code_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluator Code Digest",
+            "type": "string"
+          },
+          "evaluator_contract_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Evaluator Contract Version",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "ticket_text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Ticket Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "ticket_text",
+          "evaluator_code_digest",
+          "evaluator_contract_version"
+        ],
+        "title": "TaskDraftCreateRequest",
+        "type": "object"
+      },
+      "TaskDraftResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluator_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revision_digest": {
+            "title": "Revision Digest",
+            "type": "string"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "frozen",
+              "pending-independent-review"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "version",
+          "revision_digest",
+          "status"
+        ],
+        "title": "TaskDraftResponse",
+        "type": "object"
+      },
+      "TaskDraftUpdateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "evaluator_code_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evaluator Code Digest",
+            "type": "string"
+          },
+          "evaluator_contract_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Evaluator Contract Version",
+            "type": "string"
+          },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "ticket_text": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "title": "Ticket Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "manifest",
+          "ticket_text",
+          "evaluator_code_digest",
+          "evaluator_contract_version"
+        ],
+        "title": "TaskDraftUpdateRequest",
+        "type": "object"
+      },
       "TaskRateDelta": {
         "additionalProperties": false,
         "description": "A per-task rate difference between two entrants IN THE SAME\npublication, computed from each entrant's own aggregated `per_task` rate\ncell. Deliberately NOT named \"paired difference\"/\"paired task outcome\"\n(review finding #5, second pass: the API had already disclosed this\nwasn't real pairing, but the field/UI naming still called it \"paired,\"\nwhich overclaims by name even with an accurate docstring) - this is NOT\nthe project/family-resampled, repetition-matched statistic spec section\n28 describes (\"resampling projects/families then repetitions according\nto the declared hierarchical model\") - that requires per-repetition\nobservations grouped by underlying project, which the persisted\npublication snapshot does not retain (only aggregated per-task rate/n).\nBuilding that is real future work (the existing\n`aieb_analysis.paired_project_difference` implements the correct\nhierarchical procedure already, but nothing in the hosted persistence\nschema populates the `project_id` it requires yet - disclosed, not\nsilently claimed here). Review finding #1 (2026-09-16).",
@@ -4666,6 +5167,120 @@
           }
         },
         "summary": "Patch Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/approval": {
+      "get": {
+        "description": "The campaign's approval fact. An unapproved frozen campaign reads\n`approved: false` - distinct from missing; the operator CLI's `run`\ngate refuses before ever issuing a start.",
+        "operationId": "campaign_approval_v1_campaigns__campaign_id__approval_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignApprovalSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Approval",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/v1/campaigns/{campaign_id}/approve": {
+      "post": {
+        "description": "Reviewer-only independent approval of a FROZEN campaign.\n\nAnti-bypass rules:\n- reviewer must be distinct from the campaign's creator (no self-approval);\n- the campaign must be `frozen` (approval is meaningless pre-freeze, and a\n  running/ended campaign cannot subsequently be 'approved');\n- a replay-safe mutation like everything else: same key replays the same\n  summary, a reused key with different body is 409.\nApproval only records a durable decision; it does not start the campaign\n(authoritative start remains POST .../start with its own gates).",
+        "operationId": "approve_campaign_v1_campaigns__campaign_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignApproveRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignApprovalSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Campaign",
         "tags": [
           "campaigns"
         ]
@@ -5907,6 +6522,373 @@
         "summary": "Deactivate Kill Switch",
         "tags": [
           "kill_switch"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts": {
+      "post": {
+        "operationId": "create_task_draft_v1_maintainer_task_drafts_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDraftCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Task Draft",
+        "tags": [
+          "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts/authored": {
+      "post": {
+        "description": "Create a draft from an authored, pinned repository source.\n\nThis adapter intentionally accepts only authored sources; mined-PR and\nlive-window metadata require separate adapters and cohorts.",
+        "operationId": "create_authored_task_draft_v1_maintainer_task_drafts_authored_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthoredTaskDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Authored Task Draft",
+        "tags": [
+          "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts/live-window": {
+      "post": {
+        "description": "Register a time-windowed snapshot with explicit expiry and cutoff.",
+        "operationId": "create_live_window_task_draft_v1_maintainer_task_drafts_live_window_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveWindowTaskDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Live Window Task Draft",
+        "tags": [
+          "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts/mined-pr": {
+      "post": {
+        "description": "Register a mined PR as a development draft with explicit provenance.\n\nThe patch and PR metadata are retained for contamination and split review;\nthis endpoint never implies that the task is admitted or official.",
+        "operationId": "create_mined_pr_task_draft_v1_maintainer_task_drafts_mined_pr_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MinedPrTaskDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Mined Pr Task Draft",
+        "tags": [
+          "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts/{draft_id}": {
+      "patch": {
+        "operationId": "update_task_draft_v1_maintainer_task_drafts__draft_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDraftUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Task Draft",
+        "tags": [
+          "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-drafts/{draft_id}/freeze": {
+      "post": {
+        "operationId": "freeze_task_draft_v1_maintainer_task_drafts__draft_id__freeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDraftResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Freeze Task Draft",
+        "tags": [
+          "maintainer-authoring"
         ]
       }
     },
