@@ -1,0 +1,372 @@
+{
+  "matrix": [
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": false,
+        "deleted-content-absent": false,
+        "equal-version-conflict": false,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": false,
+        "incremental-write-scope": true,
+        "latest-version-visible": false,
+        "lower-version-rejected": false,
+        "metadata-filter-respected": true,
+        "stale-version-absent": false,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {
+        "citation-version-mapping": "published HTTP contract outcome did not match the held-out fixture",
+        "deleted-content-absent": "published HTTP contract outcome did not match the held-out fixture",
+        "equal-version-conflict": "published HTTP contract outcome did not match the held-out fixture",
+        "idempotent-event-replay": "published HTTP contract outcome did not match the held-out fixture",
+        "latest-version-visible": "published HTTP contract outcome did not match the held-out fixture",
+        "lower-version-rejected": "published HTTP contract outcome did not match the held-out fixture",
+        "stale-version-absent": "published HTTP contract outcome did not match the held-out fixture"
+      },
+      "fixture_version": "rag05-heldout/v1",
+      "pass": false,
+      "seed": 5309,
+      "variant": "baseline"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "alternative"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": false,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {
+        "incremental-write-scope": "published HTTP contract outcome did not match the held-out fixture"
+      },
+      "fixture_version": "rag05-heldout/v1",
+      "pass": false,
+      "seed": 5309,
+      "variant": "global-rebuild"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": false,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {
+        "metadata-filter-respected": "published HTTP contract outcome did not match the held-out fixture"
+      },
+      "fixture_version": "rag05-heldout/v1",
+      "pass": false,
+      "seed": 5309,
+      "variant": "ignore-metadata-filter"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": false,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {
+        "deleted-content-absent": "published HTTP contract outcome did not match the held-out fixture"
+      },
+      "fixture_version": "rag05-heldout/v1",
+      "pass": false,
+      "seed": 5309,
+      "variant": "stale-resurrection"
+    }
+  ],
+  "reference_resets": [
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-0"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-1"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-2"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-3"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-4"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-5"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-6"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-7"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-8"
+    },
+    {
+      "checks": {
+        "api-ready": true,
+        "citation-version-mapping": true,
+        "deleted-content-absent": true,
+        "equal-version-conflict": true,
+        "full-text-match": true,
+        "higher-version-recreation": true,
+        "idempotent-event-replay": true,
+        "incremental-write-scope": true,
+        "latest-version-visible": true,
+        "lower-version-rejected": true,
+        "metadata-filter-respected": true,
+        "stale-version-absent": true,
+        "unaffected-documents-preserved": true
+      },
+      "diagnostics": {},
+      "fixture_version": "rag05-heldout/v1",
+      "pass": true,
+      "seed": 5309,
+      "variant": "reference-reset-9"
+    }
+  ]
+}
