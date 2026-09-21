@@ -53,6 +53,69 @@ class CampaignCreateRequest(BaseModel):
     draft: CampaignDraft
 
 
+class TaskDraftCreateRequest(BaseModel):
+    """Maintainer task authoring input. Admission/publication are separate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: dict
+    ticket_text: str = Field(min_length=1, max_length=100_000)
+    evaluator_code_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluator_contract_version: str = Field(min_length=1, max_length=64)
+
+
+class TaskDraftUpdateRequest(TaskDraftCreateRequest):
+    pass
+
+
+class AuthoredTaskDraftRequest(TaskDraftCreateRequest):
+    source_strategy: Literal["authored"] = "authored"
+    repository_url: str = Field(min_length=1, max_length=2048)
+    source_revision: str = Field(min_length=1, max_length=128)
+    source_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_license_id: str = Field(min_length=1, max_length=128)
+    source_provenance_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class MinedPrTaskDraftRequest(TaskDraftCreateRequest):
+    source_strategy: Literal["mined_pr"] = "mined_pr"
+    repository_url: str = Field(min_length=1, max_length=2048)
+    base_commit: str = Field(min_length=7, max_length=128)
+    patch_commit: str = Field(min_length=7, max_length=128)
+    pull_request_url: str = Field(min_length=1, max_length=2048)
+    pull_request_number: int = Field(gt=0)
+    source_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_license_id: str = Field(min_length=1, max_length=128)
+    source_provenance_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    split: Literal["public", "held_out", "restricted"]
+    contamination_cutoff: str = Field(min_length=1, max_length=64)
+
+
+class LiveWindowTaskDraftRequest(TaskDraftCreateRequest):
+    source_strategy: Literal["live_window"] = "live_window"
+    repository_url: str = Field(min_length=1, max_length=2048)
+    source_revision: str = Field(min_length=7, max_length=128)
+    source_content_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_license_id: str = Field(min_length=1, max_length=128)
+    source_provenance_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    collected_at: str = Field(min_length=1, max_length=64)
+    released_at: str = Field(min_length=1, max_length=64)
+    model_cutoff: str = Field(min_length=1, max_length=64)
+    expires_at: str = Field(min_length=1, max_length=64)
+    cohort_id: str = Field(pattern=r"^mvp2-live-[a-z0-9-]+$")
+
+
+class TaskDraftResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    slug: str
+    version: str
+    revision_digest: str
+    evaluator_id: UUID | None = None
+    status: Literal["draft", "frozen", "pending-independent-review"]
+
+
 class CampaignPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

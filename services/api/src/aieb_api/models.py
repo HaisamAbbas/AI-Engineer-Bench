@@ -104,6 +104,37 @@ class TaskRevisionRow(Base):
     )
 
 
+class TaskDraftRow(Base):
+    """Mutable maintainer draft; freezing creates the immutable revision row."""
+
+    __tablename__ = "task_draft"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    ticket_text: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluator_code_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluator_contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_strategy: Mapped[str] = mapped_column(String(32), nullable=False, default="authored")
+    repository_url: Mapped[str] = mapped_column(Text, nullable=False, default="local://unspecified")
+    source_revision: Mapped[str] = mapped_column(String(128), nullable=False, default="unspecified")
+    source_content_digest: Mapped[str] = mapped_column(String(64), nullable=False, default="0" * 64)
+    source_license_id: Mapped[str] = mapped_column(String(128), nullable=False, default="unspecified")
+    source_provenance_digest: Mapped[str] = mapped_column(String(64), nullable=False, default="0" * 64)
+    source_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
+    created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    frozen_revision_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status in ('draft','frozen')", name="ck_task_draft_status"),
+        UniqueConstraint("slug", "version", name="uq_task_draft_slug_version"),
+    )
+
+
 class EvaluatorRevisionRow(Base):
     __tablename__ = "evaluator_revision"
 

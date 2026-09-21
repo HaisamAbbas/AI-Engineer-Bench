@@ -50,6 +50,7 @@ class MigrationCompatibilityTests(unittest.TestCase):
         up_first = _alembic("upgrade", "head")
         self.assertEqual(up_first.returncode, 0, up_first.stderr)
         self.assertIn("upgrade", up_first.stderr.lower())
+        self._assert_task_authoring_schema()
         self._assert_backfilled(legacy_rows)
 
         down_one = _alembic("downgrade", "-1")
@@ -62,6 +63,16 @@ class MigrationCompatibilityTests(unittest.TestCase):
         current = _alembic("current")
         self.assertEqual(current.returncode, 0, current.stderr)
         self.assertIn("(head)", current.stdout)
+
+    def _assert_task_authoring_schema(self) -> None:
+        engine = create_engine(DATABASE_URL)
+        with engine.connect() as connection:
+            columns = set(connection.execute(text("""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'task_draft'
+            """)).scalars())
+        engine.dispose()
+        self.assertTrue({"manifest", "ticket_text", "source_strategy", "source_metadata", "status"}.issubset(columns))
 
     def _seed_legacy_artifacts(self) -> dict[str, str]:
         engine = create_engine(DATABASE_URL)
