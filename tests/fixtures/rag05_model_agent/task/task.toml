@@ -1,0 +1,30 @@
+schema_version = "1.4"
+artifacts = [
+  { source = "/workspace/submission", destination = "candidate" },
+]
+
+[metadata]
+kind = "aieb-rag05-real-repo-model-agent-fixture"
+scientific_task = false
+
+[agent]
+timeout_sec = 1500.0
+network_mode = "no-network"
+
+[verifier]
+timeout_sec = 300.0
+environment_mode = "separate"
+network_mode = "no-network"
+
+[verifier.environment]
+build_timeout_sec = 300.0
+network_mode = "no-network"
+cpus = 1
+memory_mb = 512
+
+[environment]
+build_timeout_sec = 300.0
+network_mode = "no-network"
+cpus = 1
+memory_mb = 512
+workdir = "/workspace"

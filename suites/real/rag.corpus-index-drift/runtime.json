@@ -1,0 +1,7 @@
+{
+  "schema_version": "aieb.task-runtime/v1",
+  "source_dir": "knowledge_service",
+  "evaluator_module": "tests.maintainer.rag05.evaluator",
+  "admission_module": "scripts.run_rag05_admission",
+  "admission_function": "evaluate_variant"
+}

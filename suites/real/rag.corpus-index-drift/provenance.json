@@ -1,0 +1,7 @@
+{
+  "source": "sqlite-utils 3.38 (https://github.com/simonw/sqlite-utils, commit 9d7da06), sqlite-fts4 1.0.3 (https://github.com/simonw/sqlite-fts4, commit f86b449), and the subset of sqlite-utils' declared runtime dependency closure needed by its library import path (click 8.5.0, pluggy, python-dateutil 2.9.0.post0, six), all vendored unmodified",
+  "license": "Apache-2.0",
+  "contains_customer_data": false,
+  "adaptation_note": "The task repository vendors the real upstream sqlite_utils/ package at the pinned commit plus the real library-path dependency closure (sqlite_fts4, click, pluggy, dateutil, six) so it runs fully offline; knowledge_service/ (HTTP wrapper and deliberately broken backend) and dev_tests/ were written for RAG-05. The held-out evaluation corpus consists of verbatim upstream README excerpts (link-bearing lines used with link syntax stripped, noted in tests/maintainer/rag05/fixture.py)."
+}
+

@@ -1,0 +1,6 @@
+{
+  "schema_version": "aieb.local-campaign/v1",
+  "id": "rag05-real-baseline-local",
+  "task_dir": "suites/real/rag.corpus-index-drift",
+  "candidate": "baseline"
+}

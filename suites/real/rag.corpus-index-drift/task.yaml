@@ -1,0 +1,47 @@
+# Real-source task candidate; not an admitted or released benchmark result.
+# Built from vendored upstream code: sqlite-utils 3.38 (commit 9d7da06).
+schema_version: aieb.task/v1
+id: rag.corpus-index-drift
+version: 0.1.0
+family_id: knowledge-service-real-a
+category: rag
+activity: repair
+source:
+  repository_digest: "0e55378bd4ccb01a34b03f182b56cb1fdc01082982954d5e59406b5832dc837f"
+  commit: 9d7da06
+  license: Apache-2.0
+  provenance_digest: "c72a24a55d7a80c3e1fa1d595fcec77153efe4e2498b1d37ba7a612198cc485b"
+environment:
+  official_image: registry.example/aieb/rag05@sha256:7777777777777777777777777777777777777777777777777777777777777777
+  engineer_cpu: 1
+  engineer_memory_mb: 512
+  service_topology_digest: "79f99a242457a78c0728d045b845aabb2a59dfdc13077073adb18d0a75490257"
+  egress_policy: none
+application:
+  dependency_mode: fixture
+  entrypoint: [python, -m, knowledge_service.server]
+  contract_digest: "65b87d642953af978ff85624a67247bb052199f4a8f9338e58dd46984b5dffda"
+  model_profile_id: deterministic-rag-fixture-v1
+submission:
+  include: [knowledge_service/**]
+  protected: [dev_tests/**]
+  max_artifact_bytes: 52428800
+requirements:
+  - {id: api-ready, severity: mandatory, description: Health returns ready status.}
+  - {id: latest-version-visible, severity: mandatory, description: Higher versions replace stale searchable text before success response.}
+  - {id: stale-version-absent, severity: mandatory, description: Superseded version text is no longer searchable.}
+  - {id: idempotent-event-replay, severity: mandatory, description: Identical accepted events do not duplicate hits.}
+  - {id: lower-version-rejected, severity: mandatory, description: Lower versions cannot supersede newer state.}
+  - {id: equal-version-conflict, severity: mandatory, description: Equal version with a different payload conflicts.}
+  - {id: deleted-content-absent, severity: mandatory, description: Tombstones prevent stale resurrection.}
+  - {id: higher-version-recreation, severity: mandatory, description: A higher version may recreate a deleted document.}
+  - {id: metadata-filter-respected, severity: mandatory, description: Supplied metadata filters restrict hits exactly.}
+  - {id: full-text-match, severity: mandatory, description: Multi-token queries match documents containing all tokens.}
+  - {id: unaffected-documents-preserved, severity: mandatory, description: Unrelated current records remain searchable.}
+  - {id: incremental-write-scope, severity: mandatory, description: A mutation may not rebuild unrelated backend records.}
+  - {id: citation-version-mapping, severity: mandatory, description: Hits cite the current version and chunk ID.}
+evaluator:
+  evaluator_digest: "8975800cb8cd4d9d50f2fa0b528f4785087bfcb0af7766972c40de4cb333e74c"
+  development_fixture: rag05-dev-v1
+  official_fixture_ref: maintainer-only:rag05-heldout-v1
+profile_compatibility: [cpu-fixture-standard-v1]
