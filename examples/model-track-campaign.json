@@ -15,7 +15,7 @@
     "application_model_profile": {
       "dependency_mode": "fixture",
       "entrypoint": ["python", "-m", "uvicorn", "knowledge_service:app", "--host", "0.0.0.0", "--port", "8000"],
-      "contract_digest": "021b4f0e8a3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2",
+      "contract_digest": "ab8143092eeb02e340576453b499b37a0cc8a1e8df307f476c0fe63253e187c2",
       "model_profile_id": "claude-3-5-sonnet-20250122-application"
     },
     "hardware_class": "local",
@@ -34,7 +34,10 @@
       {"role": "dev_application", "limit_usd": "0.00"},
       {"role": "verifier_application", "limit_usd": "0.00"},
       {"role": "verifier_judge", "limit_usd": "0.50"}
-    ],
+    ]
+  },
+  "budget_enforcement_hint": {
+    "_note": "Informational only, NOT part of the frozen aieb.budget/v2 record above - BudgetProfileV2.model_validate() forbids extra fields by design (canonical digests hash explicit nulls, so any added field would change every existing frozen budget's digest; see aieb_core.models.BudgetProfile's docstring). This annotates the reservation.enforcement value services/api's BudgetReservationRow would carry at freeze time, per aieb_runner.accounting.BudgetEnforcement.",
     "enforcement": "estimated_time_limited",
     "enforcement_reason": "No provider reservation integration (ENG-008); time-limited estimate only, not a hard hold."
   },
@@ -63,20 +66,22 @@
       "prompt_digest": "172f424d7ba343d26598c48a78713c8cfa366e6c29815374db208edde82479fd",
       "tools_digest": "901846f39fcc3b45a3044bd02fc3983e962c1fc9b8f0d1c136ea9bd5f267e569",
       "capabilities": ["python-3.12", "docker-isolation", "shell-exec", "read-only-files", "bounded-retry"],
-      "credential_ref_type": "broker",
-      "dispatch_config_hint": {
-        "_note": "Informational only, not consumed by any dispatcher yet - documents what a real dispatcher must supply per-trial once this manifest is authorized (2026-09-21 review follow-up: ModelTrackReferenceLoop no longer reads process os.environ for provider/model identity - see docs/implementation/evidence/ENG-023/README.md 'Per-trial-safe config wiring'). A real dispatcher would set ExecutionSpec.model_name = engineer_model.requested_model and ExecutionSpec.agent_kwargs = the object below; both flow into Harbor's own AgentConfig.model_name/AgentConfig.kwargs (backends/harbor/backend.py), which harbor/agents/factory.py passes as ordinary per-instance constructor arguments to ModelTrackReferenceLoop - safe under HarborBackend's concurrent per-trial asyncio dispatch, unlike a shared env var.",
-        "execution_spec_model_name": "claude-sonnet-4-20250514",
-        "execution_spec_agent_kwargs": {
-          "provider_kind": "openai_compatible",
-          "base_url": "<resolved at dispatch from the engineer model's authenticated budget broker identity, per credential_ref_type>",
-          "api_key_env_var": "AIEB_MODEL_TRACK_API_KEY",
-          "settings": {},
-          "expected_settings_digest": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6"
-        }
-      }
+      "credential_ref_type": "broker"
     }
   ],
+  "dispatch_config_hints": {
+    "_note": "Informational only, keyed by entrant id, and NOT part of any entrant's frozen aieb.entrant/v1 record (EntrantRevision.model_validate() forbids extra fields - this must stay a manifest-level sibling of `entrants`, never nested inside one, or a real freeze/validate pass on this file breaks). Documents what a real dispatcher must supply per-trial once this manifest is authorized (2026-09-21 review follow-up: ModelTrackReferenceLoop no longer reads process os.environ for provider/model identity - see docs/implementation/evidence/ENG-023/README.md 'Per-trial-safe config wiring'). A real dispatcher would set ExecutionSpec.model_name = engineer_model.requested_model and ExecutionSpec.agent_kwargs = the object below; both flow into Harbor's own AgentConfig.model_name/AgentConfig.kwargs (backends/harbor/backend.py), which harbor/agents/factory.py passes as ordinary per-instance constructor arguments to ModelTrackReferenceLoop - safe under HarborBackend's concurrent per-trial asyncio dispatch, unlike a shared env var.",
+    "model-claude-sonnet-4-6": {
+      "execution_spec_model_name": "claude-sonnet-4-20250514",
+      "execution_spec_agent_kwargs": {
+        "provider_kind": "openai_compatible",
+        "base_url": "<resolved at dispatch from the engineer model's authenticated budget broker identity, per credential_ref_type>",
+        "api_key_env_var": "AIEB_MODEL_TRACK_API_KEY",
+        "settings": {},
+        "expected_settings_digest": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6"
+      }
+    }
+  },
   "repetitions": 3,
   "order_seed": 18,
   "max_concurrent_trials": 5,
