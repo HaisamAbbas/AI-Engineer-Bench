@@ -18,10 +18,20 @@ from .models import (
     Trial,
 )
 from .planner import freeze_campaign, resolve_campaign
+from .contracts_v2 import (
+    AgentConfiguration, ModelConfiguration, PublicationSnapshot, ReleaseManifest,
+    TrackAProtocol, TrackBProtocol, V2Campaign, V2TaskRevision, VerdictRecord,
+)
+from .bugfinding_v2 import (
+    BugRepositorySnapshot, FindingEvidence, BugFinding, BugPatch,
+    BugSubmission, BugTaskRevision, BugReleaseManifest,
+)
 
 __all__ = [
     "Attempt", "BudgetProfile", "CampaignDraft", "CandidateManifest", "Cohort",
     "EntrantRevision", "EvaluationPlan", "EvaluationResult", "EventEnvelope",
     "ProtocolRevision", "PublicationManifest", "ResolvedCampaign", "TaskRevision",
     "Trial", "canonical_bytes", "content_hash", "freeze_campaign", "resolve_campaign",
+    "AgentConfiguration", "ModelConfiguration", "PublicationSnapshot", "ReleaseManifest",
+    "TrackAProtocol", "TrackBProtocol", "V2Campaign", "V2TaskRevision", "VerdictRecord",
 ]

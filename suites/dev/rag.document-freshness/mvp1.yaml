@@ -1,0 +1,26 @@
+schema_version: aieb.mvp1-task/v1
+ticket: RAG-MVP1-001
+covered_capabilities: [indexing, retrieval, metadata, citations, freshness]
+application_family: retrieval-grounded knowledge service
+application_surface:
+  - versioned indexing
+  - metadata-filtered retrieval
+  - citation span mapping
+  - freshness and tombstone handling
+public_fixture: dev_data/events.json
+hidden_cases:
+  - maintainer-only:rag.document-freshness/version-ordering
+  - maintainer-only:rag.document-freshness/stale-resurrection
+regression_requirements:
+  - accepted events are idempotent
+  - higher versions replace stale indexed content
+  - deletions cannot resurrect
+operational_edge_case: incremental writes must not rebuild unrelated records
+shortcut_controls:
+  - counterexamples/hardcoded-output.py
+  - counterexamples/global-rebuild.py
+reference: reference/backend.py
+baseline: repo/knowledge_service/backend.py
+alternative: alternative/backend.py
+provenance_status: synthetic-redistributable
+independent_review: pending

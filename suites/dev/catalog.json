@@ -2,17 +2,17 @@
   "schema_version": "aieb.dev-catalog/v1",
   "review_status": "pending-independent-review",
   "tasks": [
-    {"id":"rag.document-freshness","path":"rag.document-freshness","family_id":"knowledge-service-a","local_status":"validated"},
-    {"id":"rag.metadata-filter-topk","path":"rag.metadata-filter-topk","family_id":"knowledge-service-b","local_status":"validated"},
-    {"id":"rag.citation-current-span","path":"rag.citation-current-span","family_id":"knowledge-service-c","local_status":"validated"},
-    {"id":"rag.embedding-version","path":"rag.embedding-version","family_id":"knowledge-service-d","local_status":"validated"},
-    {"id":"ext.missingness","path":"ext.missingness","family_id":"extraction-service-a","local_status":"validated"},
-    {"id":"ext.batch-alignment","path":"ext.batch-alignment","family_id":"extraction-service-c","local_status":"validated"},
-    {"id":"ext.unit-normalization","path":"ext.unit-normalization","family_id":"extraction-service-b","local_status":"validated"},
-    {"id":"ext.partial-batch","path":"ext.partial-batch","family_id":"extraction-service-d","local_status":"validated"},
-    {"id":"tool.false-completion","path":"tool.false-completion","family_id":"assistant-service-e","local_status":"validated"},
-    {"id":"tool.idempotent-write","path":"tool.idempotent-write","family_id":"assistant-service-f","local_status":"validated"},
-    {"id":"tool.session-isolation","path":"tool.session-isolation","family_id":"assistant-service-g","local_status":"validated"},
-    {"id":"tool.corrected-arguments","path":"tool.corrected-arguments","family_id":"assistant-service-h","local_status":"validated"}
+    {"id":"rag.document-freshness","path":"rag.document-freshness","family_id":"knowledge-service-a","local_status":"development-only"},
+    {"id":"rag.metadata-filter-topk","path":"rag.metadata-filter-topk","family_id":"knowledge-service-b","local_status":"development-only"},
+    {"id":"rag.citation-current-span","path":"rag.citation-current-span","family_id":"knowledge-service-c","local_status":"development-only"},
+    {"id":"rag.embedding-version","path":"rag.embedding-version","family_id":"knowledge-service-d","local_status":"development-only"},
+    {"id":"ext.missingness","path":"ext.missingness","family_id":"extraction-service-a","local_status":"development-only"},
+    {"id":"ext.batch-alignment","path":"ext.batch-alignment","family_id":"extraction-service-c","local_status":"development-only"},
+    {"id":"ext.unit-normalization","path":"ext.unit-normalization","family_id":"extraction-service-b","local_status":"development-only"},
+    {"id":"ext.partial-batch","path":"ext.partial-batch","family_id":"extraction-service-d","local_status":"development-only"},
+    {"id":"tool.false-completion","path":"tool.false-completion","family_id":"assistant-service-e","local_status":"development-only"},
+    {"id":"tool.idempotent-write","path":"tool.idempotent-write","family_id":"assistant-service-f","local_status":"development-only"},
+    {"id":"tool.session-isolation","path":"tool.session-isolation","family_id":"assistant-service-g","local_status":"development-only"},
+    {"id":"tool.corrected-arguments","path":"tool.corrected-arguments","family_id":"assistant-service-h","local_status":"development-only"}
   ]
 }

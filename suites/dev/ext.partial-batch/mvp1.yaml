@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: EXT-MVP1-004
+covered_capabilities: [schema, batching, malformed-item, partial-results]
+application_surface: batch extraction, per-item schema validation, malformed-item isolation, and partial success
+public_fixture: dev_data
+hidden_cases:
+  - malformed item between valid items
+  - duplicate item identifiers
+  - all-invalid and empty batches
+regression_requirements: [api-readiness, per-item-status, valid-result-retention, exactly-once-output]
+operational_edge_case: one malformed item must not discard valid neighboring results
+shortcut_controls: [whole-batch-abort, dropped-invalid-item, positional-misalignment]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:ext04-v1
+independent_review: pending

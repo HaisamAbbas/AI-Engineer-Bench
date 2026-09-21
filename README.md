@@ -64,7 +64,10 @@ npm install
 npm run dev
 ```
 
-Admin/publication workflows (`/admin/*`) are ENG-017/018 scope, not implemented in this website.
-See [STATUS.md](docs/implementation/STATUS.md) for what each hosted page can and cannot show yet
-given the current API surface. The recommended next implementation phase is ENG-017 (admin
-campaigns and budget reservations) and ENG-015's directed leasing-granularity split (ENG015-007).
+The `/admin/*` routes are private operator/reviewer workflows layered beside
+the public read-only site; they require server authorization and are intended
+for staging/fixture use until an explicitly authorized v2 campaign exists.
+See [STATUS.md](docs/implementation/STATUS.md) for historical v1 evidence and
+the current v2 redesign gates. The v2 redesign is now governed by the v2.0
+specification and prompt pack; no official campaign or publication is implied
+by the local implementation.

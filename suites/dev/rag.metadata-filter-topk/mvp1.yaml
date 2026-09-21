@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: RAG-MVP1-002
+covered_capabilities: [indexing, retrieval, metadata-filtering, top-k]
+application_surface: metadata-aware indexing, retrieval, filter-before-ranking, and bounded top-k search
+public_fixture: dev_data
+hidden_cases:
+  - cross-filter result exclusion
+  - filter-before-top-k ordering
+  - empty and overlarge top-k
+regression_requirements: [api-readiness, metadata-filter-correctness, top-k-bound]
+operational_edge_case: unavailable metadata index must fail closed without cross-filter leakage
+shortcut_controls: [post-rank-filtering, hard-coded-document-list, ignored-top-k]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:rag02-v1
+independent_review: pending

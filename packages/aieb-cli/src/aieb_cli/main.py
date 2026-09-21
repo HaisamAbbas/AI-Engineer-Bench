@@ -9,21 +9,17 @@ import importlib
 import json
 import os
 import platform
-import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 import yaml
-
-from pydantic import ValidationError
-
 from aieb_core.canonical import content_hash
 from aieb_core.models import SubmissionPolicy, TaskRevision
 from aieb_runner.artifacts import FilesystemArtifactStore
 from aieb_runner.lifecycle import AttemptConfig, EngineeringCommand, LocalAttemptRunner
-
+from pydantic import ValidationError
 
 EXIT_INVALID = 2
 EXIT_MISSING_CAPABILITY = 3
@@ -128,6 +124,34 @@ def hash_evaluator_closure(evaluator_module: str) -> str:
     return hashlib.sha256(b"\0".join(entries)).hexdigest()
 
 
+def _runtime_descriptor(task: Path) -> tuple[str, str, str, str] | None:
+    """Task-local runtime descriptor for tasks outside the curated development
+    registry (e.g. real-source tasks under suites/real/). Carries the same
+    4-tuple shape as a TASK_RUNTIMES entry, so a self-describing task needs no
+    curated mapping entry; the curated 12 dev tasks never carry runtime.json."""
+    path = task / "runtime.json"
+    if not path.exists():
+        return None
+    value = _load_json(path)
+    try:
+        source_dir = str(value["source_dir"])
+        evaluator_module = str(value["evaluator_module"])
+        admission_module = str(value["admission_module"])
+        admission_function = str(value["admission_function"])
+    except KeyError as exc:
+        raise CliError(f"runtime descriptor missing field: {exc.args[0]}") from exc
+    if not source_dir or source_dir in {".", ".."} or "/" in source_dir or "\\" in source_dir:
+        raise CliError("runtime descriptor source_dir must be a single package directory name")
+    return (source_dir, evaluator_module, admission_module, admission_function)
+
+
+def _runtime_for(task: Path, task_id: str) -> tuple[str, str, str, str]:
+    runtime = TASK_RUNTIMES.get(task_id) or _runtime_descriptor(task)
+    if runtime is None:
+        raise CliError("task has no supported local evaluator")
+    return runtime
+
+
 def _verify_content_digests(task: Path, revision: TaskRevision) -> None:
     """Review finding #2: repository_digest/provenance_digest/contract_digest/
     service_topology_digest name real on-disk content this repo actually
@@ -145,6 +169,8 @@ def _verify_content_digests(task: Path, revision: TaskRevision) -> None:
         "service_topology_digest": (hash_file(task / "environment" / "README.md"), revision.environment.service_topology_digest),
     }
     runtime = TASK_RUNTIMES.get(revision.id)
+    if runtime is None:
+        runtime = _runtime_descriptor(task)
     if runtime is not None:
         expected["evaluator_digest"] = (hash_evaluator_closure(runtime[1]), revision.evaluator.evaluator_digest)
     mismatches = [field for field, (actual, claimed) in expected.items() if actual != claimed]
@@ -256,9 +282,7 @@ def _run(root: Path, state: Path, frozen: dict[str, object]) -> dict[str, object
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
     task_id = str(_task_check(task)["task_id"])
-    runtime = TASK_RUNTIMES.get(task_id)
-    if runtime is None:
-        raise CliError("task has no supported local evaluator")
+    runtime = _runtime_for(task, task_id)
     source_dir, evaluator_module, _, _ = runtime
     evaluate = importlib.import_module(evaluator_module).evaluate
 
@@ -313,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("doctor")
     task = sub.add_parser("task").add_subparsers(dest="task_command", required=True)
-    for name in ("validate", "verify"):
+    for name in ("validate", "verify", "admit"):
         command = task.add_parser(name); command.add_argument("directory", type=Path); command.add_argument("--candidate", default="reference")
     for name in ("plan", "run"):
         command = sub.add_parser(name); command.add_argument("--campaign", type=Path, required=True); command.add_argument("--fail-on-unsolved", action="store_true")
@@ -327,13 +351,22 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"message": f"Python {platform.python_version()}; local deterministic capability available; real-agent capability blocked", "capabilities": {"local_rag01": True, "real_agent": False, "hard_cost_reservation": False}}, args); return 0
         if args.command == "task":
             info = _task_check(args.directory.resolve())
+            if args.task_command == "admit":
+                # Admission is maintainer tooling, intentionally separate from
+                # publication. It reports evidence and leaves independent human
+                # review pending; it never starts a campaign or publishes.
+                repo = _repo_root()
+                if str(repo) not in sys.path:
+                    sys.path.insert(0, str(repo))
+                from scripts.admit_task import inspect_task
+                admission = inspect_task(args.directory.resolve())
+                _emit({"message": "task admission evidence collected", **admission}, args); return 0
             if args.task_command == "verify":
                 if args.candidate not in {"reference", "baseline"}: raise CliError("only baseline/reference supported")
                 if str(root) not in sys.path:
                     sys.path.insert(0, str(root))
                 task_id = str(info["task_id"])
-                runtime = TASK_RUNTIMES.get(task_id)
-                if runtime is None: raise CliError("task has no supported local evaluator")
+                runtime = _runtime_for(args.directory.resolve(), task_id)
                 _, _, admission_module, admission_function = runtime
                 evaluate_variant = getattr(importlib.import_module(admission_module), admission_function)
                 if admission_function == "run_matrix":

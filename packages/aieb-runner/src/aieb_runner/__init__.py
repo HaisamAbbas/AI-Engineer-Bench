@@ -33,10 +33,18 @@ from .lifecycle import (
     LocalAttemptRunner,
     ReplacementPolicy,
 )
+from .campaign import (
+    CampaignAttempt, FrozenCampaignEvidence, TrackAMetrics,
+    append_attempt, canonical_ranking_eligible, freeze_campaign_evidence,
+    selected_attempts,
+)
 
 __all__ = [
     "FilesystemArtifactStore", "collect_candidate", "reconstruct_candidate",
     "AttemptConfig", "AttemptOutcome", "AttemptPhase", "EngineeringCommand",
     "FailureAttribution", "LocalAttemptRunner",
     "ReplacementPolicy",
+    "CampaignAttempt", "FrozenCampaignEvidence", "TrackAMetrics",
+    "append_attempt", "canonical_ranking_eligible", "freeze_campaign_evidence",
+    "selected_attempts",
 ]

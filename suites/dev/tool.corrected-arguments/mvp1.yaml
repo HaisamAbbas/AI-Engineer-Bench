@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: TOOL-MVP1-004
+covered_capabilities: [state, confirmation, corrected-arguments, recovery]
+application_surface: stateful tool correction, confirmation, corrected-target selection, and stale-argument recovery
+public_fixture: dev_data
+hidden_cases:
+  - correction before execute
+  - execute with stale original target
+  - correction rejection and retry
+regression_requirements: [api-readiness, corrected-target-use, original-target-preservation]
+operational_edge_case: a corrected request must replace stale tool arguments before execution
+shortcut_controls: [stale-argument-reuse, original-target-execution, correction-ignored]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:tool04-v1
+independent_review: pending

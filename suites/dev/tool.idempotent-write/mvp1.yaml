@@ -1,0 +1,25 @@
+schema_version: aieb.mvp1-task/v1
+ticket: TOOL-MVP1-001
+covered_capabilities: [state, confirmation, idempotency, ambiguity, recovery]
+application_family: stateful confirmation and write workflow
+application_surface:
+  - durable workflow state
+  - explicit confirmation
+  - idempotency keys
+  - ambiguous retry recovery
+public_fixture: dev_data/jobs.json
+hidden_cases:
+  - maintainer-only:tool.idempotent-write/ambiguous-timeout
+  - maintainer-only:tool.idempotent-write/duplicate-effect
+regression_requirements:
+  - ambiguous retries deduplicate the external effect
+  - confirmation is required before mutation
+  - completed state survives recovery
+operational_edge_case: timeout after a write must not duplicate the write
+shortcut_controls:
+  - counterexamples/hardcoded.py
+reference: reference/backend.py
+baseline: repo/write_service/backend.py
+alternative: alternative/backend.py
+provenance_status: synthetic-redistributable
+independent_review: pending

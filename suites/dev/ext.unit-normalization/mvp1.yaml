@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: EXT-MVP1-003
+covered_capabilities: [schema, unit-conversion, decimal-tolerance, evidence]
+application_surface: structured extraction with declared unit conversions, decimal tolerances, and source evidence
+public_fixture: dev_data
+hidden_cases:
+  - kg/g/mg conversion
+  - decimal tolerance boundary
+  - invalid or missing unit
+regression_requirements: [api-readiness, declared-conversion-use, tolerance-bound, evidence-preservation]
+operational_edge_case: unsupported units are rejected or marked invalid without guessed conversion
+shortcut_controls: [unit-agnostic-number, hard-coded-conversion, rounded-output-only]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:ext03-v1
+independent_review: pending

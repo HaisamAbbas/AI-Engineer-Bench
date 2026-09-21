@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: EXT-MVP1-002
+covered_capabilities: [schema, missingness, value-preservation]
+application_surface: schema-constrained extraction with explicit missingness, null handling, and value preservation
+public_fixture: dev_data
+hidden_cases:
+  - absent field versus zero
+  - empty string and explicit null
+  - unknown optional field
+regression_requirements: [api-readiness, absent-not-invented, supplied-value-preservation]
+operational_edge_case: malformed optional fields must be reported without default fabrication
+shortcut_controls: [default-filling, truthiness-collapse, field-invention]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:ext01-v1
+independent_review: pending

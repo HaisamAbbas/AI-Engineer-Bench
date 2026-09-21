@@ -14,48 +14,18 @@ import { ReleaseDetail } from "./pages/ReleaseDetail";
 import { Corrections } from "./pages/Corrections";
 import { RunLocally } from "./pages/RunLocally";
 import { NotFound } from "./pages/NotFound";
-import { AuthCallback } from "./pages/AuthCallback";
-import { CampaignAdmin } from "./pages/CampaignAdmin";
-import { CampaignProgress } from "./pages/CampaignProgress";
-import { PublicationReview } from "./pages/PublicationReview";
 
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 1 } } });
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-    },
-  },
-});
-
+/** Public explorer only: no campaign, upload, evaluator, publication, or auth mutation routes. */
 export function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<Layout />}>
-            <Route index element={<Home />} />
-            <Route path="results" element={<Results />} />
-            <Route path="compare" element={<Compare />} />
-            <Route path="entrants/:slug" element={<EntrantProfile />} />
-            <Route path="tasks" element={<TaskCatalog />} />
-            <Route path="tasks/:slug/:version" element={<TaskDetail />} />
-            <Route path="runs/:trialId" element={<RunEvidence />} />
-            <Route path="methodology" element={<Methodology />} />
-            <Route path="methodology/:version" element={<Methodology />} />
-            <Route path="releases" element={<ReleasesList />} />
-            <Route path="releases/:publicationId" element={<ReleaseDetail />} />
-            <Route path="corrections" element={<Corrections />} />
-            <Route path="docs" element={<RunLocally />} />
-            <Route path="auth/callback" element={<AuthCallback />} />
-            <Route path="admin/campaigns" element={<CampaignAdmin />} />
-            <Route path="admin/campaigns/:campaignId" element={<CampaignAdmin />} />
-            <Route path="admin/campaigns/:campaignId/progress" element={<CampaignProgress />} />
-            <Route path="admin/campaigns/:campaignId/publications" element={<PublicationReview />} />
-            <Route path="*" element={<NotFound />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </QueryClientProvider>
-  );
+  return <QueryClientProvider client={queryClient}><BrowserRouter><Routes><Route element={<Layout />}>
+    <Route index element={<Home />} /><Route path="results" element={<Results />} />
+    <Route path="compare" element={<Compare />} /><Route path="entrants/:slug" element={<EntrantProfile />} />
+    <Route path="tasks" element={<TaskCatalog />} /><Route path="tasks/:slug/:version" element={<TaskDetail />} />
+    <Route path="runs/:trialId" element={<RunEvidence />} /><Route path="methodology" element={<Methodology />} />
+    <Route path="methodology/:version" element={<Methodology />} /><Route path="releases" element={<ReleasesList />} />
+    <Route path="releases/:publicationId" element={<ReleaseDetail />} /><Route path="corrections" element={<Corrections />} />
+    <Route path="docs" element={<RunLocally />} /><Route path="*" element={<NotFound />} />
+  </Route></Routes></BrowserRouter></QueryClientProvider>;
 }

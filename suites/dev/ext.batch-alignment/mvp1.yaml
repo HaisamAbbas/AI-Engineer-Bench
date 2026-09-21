@@ -1,0 +1,26 @@
+schema_version: aieb.mvp1-task/v1
+ticket: EXT-MVP1-001
+covered_capabilities: [schema, batching, malformed-item, partial-failure]
+application_family: schema-driven batch extraction service
+application_surface:
+  - declared output schema validation
+  - shuffled batch correspondence
+  - malformed-item isolation
+  - partial success and duplicate resolution
+public_fixture: dev_data/documents.json
+hidden_cases:
+  - maintainer-only:ext.batch-alignment/malformed-record
+  - maintainer-only:ext.batch-alignment/duplicate-id
+regression_requirements:
+  - valid records survive malformed items
+  - output retains source document identity
+  - repeated identifiers resolve deterministically
+operational_edge_case: one malformed item must not discard a valid batch
+shortcut_controls:
+  - counterexamples/drops-valid.py
+  - counterexamples/hardcoded.py
+reference: reference/backend.py
+baseline: repo/extraction_service/backend.py
+alternative: alternative/backend.py
+provenance_status: synthetic-redistributable
+independent_review: pending

@@ -1,0 +1,9 @@
+{
+  "schema_version": "aieb.mvp2-bug-catalog/v1",
+  "track": "mvp2-public-repository-bug-finding",
+  "cohort_id": "mvp2-bugfinding-development-v1",
+  "status": "development-only",
+  "tasks": [],
+  "official_release_eligible": false,
+  "reason": "No compatible repository snapshot has been independently admitted yet."
+}

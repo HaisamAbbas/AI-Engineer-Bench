@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: RAG-MVP1-003
+covered_capabilities: [indexing, retrieval, citations, freshness]
+application_surface: versioned document indexing, current-source retrieval, citation spans, and freshness updates
+public_fixture: dev_data
+hidden_cases:
+  - stale version exclusion
+  - span boundary correctness
+  - update visibility after reindex
+regression_requirements: [api-readiness, current-version-citation, source-span-preservation]
+operational_edge_case: update and search interleaving must never cite superseded content
+shortcut_controls: [latest-text-only, fabricated-span, version-agnostic-search]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:rag03-v1
+independent_review: pending

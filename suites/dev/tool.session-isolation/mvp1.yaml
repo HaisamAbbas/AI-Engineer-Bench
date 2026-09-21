@@ -1,0 +1,19 @@
+schema: aieb.mvp1-task/v1
+ticket: TOOL-MVP1-003
+covered_capabilities: [state, session-isolation, ambiguity, recovery]
+application_surface: session-scoped tool state, identity isolation, interleaving, and recovery of saved values
+public_fixture: dev_data
+hidden_cases:
+  - two users interleaved
+  - missing session identity
+  - cross-session read attempt
+regression_requirements: [api-readiness, identity-scoped-state, own-session-recovery]
+operational_edge_case: concurrent users must not overwrite or read one another's state
+shortcut_controls: [global-state, last-user-wins, session-id-ignored]
+reference: reference
+baseline: baseline
+alternative: alternative
+provenance: synthetic-redistributable
+license: Apache-2.0
+official_fixture_ref: maintainer-only:tool03-v1
+independent_review: pending
