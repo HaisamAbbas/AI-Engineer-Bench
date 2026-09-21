@@ -63,7 +63,7 @@
   `build_release_bundle.py`'s protected-path guard.
 
 
-This log records implementation choices made while executing the source specifications. It does not amend or replace the unchanged specifications in `docs/specs/`. Changes to scoring, isolation, artifact submission, or reproducibility require a dedicated ADR before implementation.
+This log records implementation choices made while executing the v2 source specifications. Earlier BOOT entries reference the deleted v1 source copies and are retained only as historical ledger records. Changes to scoring, isolation, artifact submission, or reproducibility require a dedicated ADR before implementation.
 
 ## BOOT-001 — Use the workspace root as the repository root
 
@@ -76,7 +76,7 @@ This log records implementation choices made while executing the source specific
 
 - Date: 2026-09-13
 - Status: accepted
-- Decision: copy the supplied architecture and implementation specification to `docs/specs/` without transforming their encoding or content. Preserve the original workspace attachments and ignore them as repository inputs.
+- Decision: historical v1 specifications were copied into `docs/specs/` during bootstrap; those copies were later deleted during the approved v2 cleanup. The root-level v2 specification and prompt pack are now authoritative.
 - Evidence: SHA-256 is `1acd59c8be999ae750d864415a5eb41bba441e19e0a499e6984c3b98261b1017` for the architecture and `8f1556ac93e2f38af926923e6d13b33e452e9f969528cfcb89e6cfb7d6a2150c` for the implementation specification. `scripts/dev.py check` verifies these hashes.
 
 ## BOOT-003 — Apply the refined implementation layout

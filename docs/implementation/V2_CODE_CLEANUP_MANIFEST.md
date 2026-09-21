@@ -33,19 +33,17 @@ and tests are part of the redesign's reproducibility boundary.
 
 ## Historical documentation boundary
 
-The pinned copies under `docs/specs/` are retained because `scripts/dev.py` and
-`tests/test_dev_bootstrap.py` verify their digests as repository source inputs.
-They are historical references, not active v2 specifications, but removing
-them would break the integrity gate. The ignored root-level duplicates were
-removed from the active root and are represented by the archive index:
+The pinned v1 copies under `docs/specs/` were removed during the v2 cleanup.
+They were historical references, not active v2 specifications. The ignored
+root-level duplicates were also removed from the active root:
 
 - `AI-Engineer-Bench-Architecture-v0.1.md`
 - `AI-Engineer-Bench-Implementation-Spec-v1.0.md`
 - `AI-Engineer-Bench-Codex-Prompt-Pack.md`
 - historical `docs/implementation/evidence/` and old ENG ledger entries
 
-The tracked `docs/specs/` copies remain the canonical historical source;
-`docs/legacy-v1/README.md` records this distinction.
+The root-level v2 redesign specification and prompt pack are now the active
+governing documents.
 
 ## Do not touch in cleanup
 
@@ -57,10 +55,8 @@ The tracked `docs/specs/` copies remain the canonical historical source;
 
 ## Required sequence
 
-1. Rewrite links and labels for historical v1 documents.
-2. Move historical documents into `docs/legacy-v1/` with a manifest and
-   redirect/index page.
-3. Add v2 catalog labels to development fixtures and scripts.
+1. Rewrite links and labels for any remaining historical v1 references.
+2. Add v2 catalog labels to development fixtures and scripts.
 4. Introduce a Harbor-backed v2 execution entrypoint.
 5. Only after import/test tracing and replacement tests pass, retire the local
    `LocalAttemptRunner` campaign path.

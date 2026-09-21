@@ -57,7 +57,7 @@ Planned evidence paths below are destinations, not claims that evidence exists. 
 
 ## Bootstrap evidence
 
-- Immutable source copies: `docs/specs/`
+- Active governing sources: root `AI-Engineer-Bench-Redesign-Spec-v2.0.md` and `AI-Engineer-Bench-Codex-Prompt-Pack-v2.0.md`
 - Tool observations and provisional pins: `toolchain.json`
 - Reproducible local checks: `scripts/dev.py`, `tests/test_dev_bootstrap.py`
 - Bootstrap verification command: `./dev.ps1 check`

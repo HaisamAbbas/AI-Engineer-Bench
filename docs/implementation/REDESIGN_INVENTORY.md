@@ -69,7 +69,7 @@ reviewed.
 | `campaigns/` | ADAPT if present/needed | v2.0 operator campaign manifests and frozen trial matrices. Verify whether current campaign data is old hosted scope or reusable operator material. |
 | `manifests/` | RETAIN / ADAPT | Existing release/schema material. Map it to v2.0 immutable release and publication manifests; do not delete older manifests. |
 | `docs/implementation` | RETAIN / ARCHIVE historical sections | Evidence, status, decisions, and handoff are unique historical records. Add v2.0 inventory/evidence; do not rewrite old claims to look like v2.0 acceptance. |
-| `docs/specs` and root v1 specs | RETAIN as historical references | v1 architecture/implementation/prompt documents explain current code and prior decisions. Keep them labeled historical when v2.0 supersedes them. |
+| `docs/specs` and root v1 specs | REMOVED | v1 architecture/implementation/prompt copies were deleted after v2.0 cleanup approval; root v2 documents are authoritative. |
 | `scripts/` | RETAIN / ADAPT | Admission, analysis, bundle, smoke, migration, seed, and operator scripts. Trace imports and authorization behavior before removing any. |
 | `deploy/` and `infra/` | ADAPT / retain evidence | CI, deployment, alerts, and environment documentation. Official deployment remains authorization-gated; do not infer production readiness from local files. |
 | `.github/` | RETAIN / ADAPT | CI and artifact checks. Audit triggers, permissions, generated-artifact checks, and v2.0 clean-checkout commands. |

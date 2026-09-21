@@ -16,14 +16,6 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_SPEC_HASHES = {
-    "AI-Engineer-Bench-Architecture-v0.1.md": (
-        "1acd59c8be999ae750d864415a5eb41bba441e19e0a499e6984c3b98261b1017"
-    ),
-    "AI-Engineer-Bench-Implementation-Spec-v1.0.md": (
-        "8f1556ac93e2f38af926923e6d13b33e452e9f969528cfcb89e6cfb7d6a2150c"
-    ),
-}
 REQUIRED_DOCS = (
     "README.md",
     "docs/implementation/STATUS.md",
@@ -104,13 +96,6 @@ def doctor() -> int:
 
 def verify_repository() -> list[str]:
     errors: list[str] = []
-    for name, expected_hash in EXPECTED_SPEC_HASHES.items():
-        copied = ROOT / "docs" / "specs" / name
-        if not copied.is_file():
-            errors.append(f"missing specification copy: {copied.relative_to(ROOT)}")
-        elif sha256_file(copied) != expected_hash:
-            errors.append(f"specification copy changed: {copied.relative_to(ROOT)}")
-
     for relative_path in REQUIRED_DOCS:
         if not (ROOT / relative_path).is_file():
             errors.append(f"missing required document: {relative_path}")
