@@ -1,0 +1,542 @@
+{
+  "admission_evidence_verified": false,
+  "blockers": [
+    "curated-task-count-not-in-12-20",
+    "curated-category-diversity-incomplete",
+    "curated-project-diversity-incomplete",
+    "curated-task-depth-incomplete",
+    "verified-admission-export-unavailable"
+  ],
+  "catalog_category_count": 3,
+  "catalog_category_coverage_satisfied": true,
+  "catalog_errors": [],
+  "catalog_review_status": "curated-development-only",
+  "catalog_task_count": 12,
+  "category_count": 0,
+  "category_diversity_satisfied": false,
+  "curated_candidate_count": 0,
+  "curation_policy": "aieb.track-a-curation/v2",
+  "depth_diversity_satisfied": false,
+  "depth_policy": {
+    "excluded_source_parts": [
+      ".venv",
+      "__pycache__",
+      "alternative",
+      "build",
+      "counterexamples",
+      "dev_data",
+      "dev_tests",
+      "dist",
+      "fixtures",
+      "generated",
+      "migrations",
+      "reference",
+      "test",
+      "tests",
+      "vendor"
+    ],
+    "interpretation": "Rejection pre-screen only; accepted structure never substitutes for behavioral admission or human review.",
+    "max_suite_tasks": 20,
+    "min_domain_branch_points": 4,
+    "min_domain_logic_lines": 40,
+    "min_domain_source_files": 2,
+    "min_domain_symbols": 4,
+    "min_project_deep_tasks": 2,
+    "min_project_logic_lines": 180,
+    "min_project_tasks": 3,
+    "min_suite_tasks": 12,
+    "near_duplicate_threshold": 0.92
+  },
+  "near_duplicate_groups": [],
+  "official_release_eligible": false,
+  "projects": [
+    {
+      "aggregate_domain_logic_lines": 0,
+      "catalog_task_ids": [
+        "tool.false-completion",
+        "tool.idempotent-write",
+        "tool.session-isolation",
+        "tool.corrected-arguments"
+      ],
+      "deep_task_count": 0,
+      "distinct_engineering_mechanisms": 0,
+      "distinct_normalised_implementations": 0,
+      "findings": [
+        "task-count<3",
+        "aggregate-domain-logic-lines<180",
+        "deep-task-count<2"
+      ],
+      "id": "assistant-service",
+      "rejected_task_ids": [
+        "tool.false-completion",
+        "tool.idempotent-write",
+        "tool.session-isolation",
+        "tool.corrected-arguments"
+      ],
+      "status": "shallow-or-incomplete",
+      "task_count": 0,
+      "task_ids": []
+    },
+    {
+      "aggregate_domain_logic_lines": 0,
+      "catalog_task_ids": [
+        "ext.missingness",
+        "ext.batch-alignment",
+        "ext.unit-normalization",
+        "ext.partial-batch"
+      ],
+      "deep_task_count": 0,
+      "distinct_engineering_mechanisms": 0,
+      "distinct_normalised_implementations": 0,
+      "findings": [
+        "task-count<3",
+        "aggregate-domain-logic-lines<180",
+        "deep-task-count<2"
+      ],
+      "id": "extraction-service",
+      "rejected_task_ids": [
+        "ext.missingness",
+        "ext.batch-alignment",
+        "ext.unit-normalization",
+        "ext.partial-batch"
+      ],
+      "status": "shallow-or-incomplete",
+      "task_count": 0,
+      "task_ids": []
+    },
+    {
+      "aggregate_domain_logic_lines": 0,
+      "catalog_task_ids": [
+        "rag.document-freshness",
+        "rag.metadata-filter-topk",
+        "rag.citation-current-span",
+        "rag.embedding-version"
+      ],
+      "deep_task_count": 0,
+      "distinct_engineering_mechanisms": 0,
+      "distinct_normalised_implementations": 0,
+      "findings": [
+        "task-count<3",
+        "aggregate-domain-logic-lines<180",
+        "deep-task-count<2"
+      ],
+      "id": "knowledge-service",
+      "rejected_task_ids": [
+        "rag.document-freshness",
+        "rag.metadata-filter-topk",
+        "rag.citation-current-span",
+        "rag.embedding-version"
+      ],
+      "status": "shallow-or-incomplete",
+      "task_count": 0,
+      "task_ids": []
+    }
+  ],
+  "reason": "All twelve legacy thin fixtures are explicitly rejected from the curated suite. They remain available as development controls; new deep application tasks and independent admission evidence are required.",
+  "rejected_task_count": 12,
+  "required_categories": [
+    "extraction",
+    "rag",
+    "tool_app"
+  ],
+  "schema_version": "aieb.mvp1-suite-audit/v2",
+  "suite_admission_eligible": false,
+  "suite_size_satisfied": false,
+  "tasks": [
+    {
+      "admission_state": "not-verified",
+      "application_project": "knowledge-service",
+      "category": "rag",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Single-module synthetic service; useful control fixture but not a deep application repository.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 3,
+      "domain_logic_lines": 25,
+      "domain_source_files": 1,
+      "domain_symbols": 7,
+      "engineering_mechanism": null,
+      "family_id": "knowledge-service-a",
+      "id": "rag.document-freshness",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "7b86eda8076451fe319b9c8df33072e1140d349e2a843ad56ecfab2ad1fa50b5",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "knowledge-service",
+      "category": "rag",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Four-line synthetic backend; filter-ordering mechanism is not embedded in a substantial application.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 3,
+      "domain_logic_lines": 4,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "knowledge-service-b",
+      "id": "rag.metadata-filter-topk",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "edc1db70340fb9342a35a6b876ba5db1a1b13fac76d35590ca755555f67e663b",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "knowledge-service",
+      "category": "rag",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Single-file in-memory fixture with insufficient indexing, persistence, and citation surface.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 1,
+      "domain_logic_lines": 4,
+      "domain_source_files": 1,
+      "domain_symbols": 2,
+      "engineering_mechanism": null,
+      "family_id": "knowledge-service-c",
+      "id": "rag.citation-current-span",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "d5baf3a7098466534eb54ea512345085e4a1c36be158cccd2b1791f82d88e264",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "knowledge-service",
+      "category": "rag",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Two-line static index fixture; no defensible embedding lifecycle or application integration depth.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 0,
+      "domain_logic_lines": 2,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "knowledge-service-d",
+      "id": "rag.embedding-version",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "57da23ac0fd770047a746aff73da84e8f4a0ad6c04b3a3a0f8d41a7fa8f17f22",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "extraction-service",
+      "category": "extraction",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "One-function synthetic transformation without a realistic schema or extraction pipeline.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 0,
+      "domain_logic_lines": 2,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "extraction-service-a",
+      "id": "ext.missingness",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "15f127fe983c860927a7e81b56ad887f223b60a81f9e42025a638d40f03620ce",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "extraction-service",
+      "category": "extraction",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Thin list transformation; package metadata is complete but application depth is insufficient.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 2,
+      "domain_logic_lines": 6,
+      "domain_source_files": 1,
+      "domain_symbols": 2,
+      "engineering_mechanism": null,
+      "family_id": "extraction-service-c",
+      "id": "ext.batch-alignment",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "1c4a3a56a23204a9312072621c0be087c5a032b7a306b1f7c683947a1eed0cf6",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "extraction-service",
+      "category": "extraction",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Single-function conversion fixture without a realistic schema, evidence, or validation subsystem.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 0,
+      "domain_logic_lines": 2,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "extraction-service-b",
+      "id": "ext.unit-normalization",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "f5bd2383a1cdef9512a830361f3c699cb15141500657196ab877bac6a3c86122",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "extraction-service",
+      "category": "extraction",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Four-line batch fixture; failure isolation is not situated in a substantial extraction application.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 3,
+      "domain_logic_lines": 3,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "extraction-service-d",
+      "id": "ext.partial-batch",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "6179606dead73b270bdff7cb1748c7120bdb828a00f85143eb8f44f0be321186",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "assistant-service",
+      "category": "tool_app",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Single request wrapper without durable workflow, ledger, reconciliation, or recovery subsystems.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 0,
+      "domain_logic_lines": 6,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "assistant-service-e",
+      "id": "tool.false-completion",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "c49f65818ef62e5761293f48ae0829177d64f22d4a9f0f5cf94a20e06890d9d6",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "assistant-service",
+      "category": "tool_app",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Retry demonstration is useful as a control but is not a deep stateful tool application.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 2,
+      "domain_logic_lines": 11,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "assistant-service-f",
+      "id": "tool.idempotent-write",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "55a5184a48af357ee45f0c181d3365567d82fc950719e287ae503b31c475f29c",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "assistant-service",
+      "category": "tool_app",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Five-line global-state fixture without authentication, persistence, or concurrent session lifecycle.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 1,
+      "domain_logic_lines": 5,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "assistant-service-g",
+      "id": "tool.session-isolation",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "bedbae7e5247befcb87e5746d0f1ef56556d9b77ab565f6e135904e711724411",
+      "official": false,
+      "status": "rejected"
+    },
+    {
+      "admission_state": "not-verified",
+      "application_project": "assistant-service",
+      "category": "tool_app",
+      "change_surface": null,
+      "curation_decision": "reject",
+      "curation_reason": "Six-line pending-value fixture without a defensible confirmation or execution state machine.",
+      "depth_findings": [
+        "domain-source-files<2",
+        "domain-logic-lines<40",
+        "domain-symbols<4",
+        "domain-branch-points<4"
+      ],
+      "depth_status": "shallow",
+      "domain_branch_points": 2,
+      "domain_logic_lines": 6,
+      "domain_source_files": 1,
+      "domain_symbols": 1,
+      "engineering_mechanism": null,
+      "family_id": "assistant-service-h",
+      "id": "tool.corrected-arguments",
+      "independent_review": "pending",
+      "missing_depth_indicators": [],
+      "missing_mvp1_metadata": [
+        "engineering_mechanism",
+        "change_surface",
+        "difficulty_rationale"
+      ],
+      "missing_package_parts": [],
+      "normalised_fingerprint": "62d8b6621146bcc16875d9fef4c9d41a6cd55f851c8a982e1898b13d2956ce1e",
+      "official": false,
+      "status": "rejected"
+    }
+  ]
+}

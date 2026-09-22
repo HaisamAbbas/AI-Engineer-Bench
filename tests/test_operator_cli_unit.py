@@ -574,14 +574,17 @@ class OperatorCliCommandTests(unittest.TestCase):
         code, out, _ = _run_cli(
             transport,
             ["--json", "--api-url", BASE, "--access-token", "tok", "--idempotency-key", "ap-1",
-             "operator", "campaign", "approve", "--campaign", self.campaign_id, "--reason", "reviewed"],
+             "operator", "campaign", "approve", "--campaign", self.campaign_id, "--reason", "reviewed",
+             "--independence-declaration"],
         )
         self.assertEqual(code, 0, out)
         self.assertEqual(transport.paths(), [f"/v1/campaigns/{self.campaign_id}/approve"])
         self.assertEqual(transport.methods(), ["POST"])
         body_bytes = transport.calls[0][3]
         self.assertIsNotNone(body_bytes)
-        self.assertEqual(json.loads(body_bytes)["reason"], "reviewed")
+        request_body = json.loads(body_bytes)
+        self.assertEqual(request_body["reason"], "reviewed")
+        self.assertTrue(request_body["independence_declaration"])
 
     def test_release_prepare_verifies_supplied_manifest_before_preparing(self) -> None:
         detail = _campaign_body(self.resolved, campaign_id=self.campaign_id, state="completed")
@@ -720,7 +723,8 @@ class OperatorCliCommandTests(unittest.TestCase):
         code, out, _ = _run_cli(
             transport,
             ["--json", "--api-url", BASE, "--access-token", "tok", "--idempotency-key", "pub-1",
-             "operator", "publication", "publish", "--preparation", "prep-1", "--independence-attestation"],
+             "operator", "publication", "publish", "--preparation", "prep-1", "--independence-attestation",
+             "--notes", "independent publication review"],
         )
         self.assertEqual(code, 0, out)
         self.assertEqual(transport.paths(), ["/v1/publications/preparations/prep-1/review"])
@@ -735,7 +739,7 @@ class OperatorCliCommandTests(unittest.TestCase):
         code, out, _ = _run_cli(
             transport,
             ["--json", "--api-url", BASE, "--access-token", "tok",
-             "operator", "publication", "publish", "--preparation", "prep-1"],
+             "operator", "publication", "publish", "--preparation", "prep-1", "--notes", "review"],
         )
         self.assertEqual(code, 2)
         self.assertEqual(transport.calls, [])

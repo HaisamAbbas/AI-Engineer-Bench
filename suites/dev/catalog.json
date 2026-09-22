@@ -1,18 +1,19 @@
 {
   "schema_version": "aieb.dev-catalog/v1",
-  "review_status": "pending-independent-review",
+  "review_status": "curated-development-only",
+  "curation_policy": "aieb.track-a-curation/v2",
   "tasks": [
-    {"id":"rag.document-freshness","path":"rag.document-freshness","family_id":"knowledge-service-a","local_status":"development-only"},
-    {"id":"rag.metadata-filter-topk","path":"rag.metadata-filter-topk","family_id":"knowledge-service-b","local_status":"development-only"},
-    {"id":"rag.citation-current-span","path":"rag.citation-current-span","family_id":"knowledge-service-c","local_status":"development-only"},
-    {"id":"rag.embedding-version","path":"rag.embedding-version","family_id":"knowledge-service-d","local_status":"development-only"},
-    {"id":"ext.missingness","path":"ext.missingness","family_id":"extraction-service-a","local_status":"development-only"},
-    {"id":"ext.batch-alignment","path":"ext.batch-alignment","family_id":"extraction-service-c","local_status":"development-only"},
-    {"id":"ext.unit-normalization","path":"ext.unit-normalization","family_id":"extraction-service-b","local_status":"development-only"},
-    {"id":"ext.partial-batch","path":"ext.partial-batch","family_id":"extraction-service-d","local_status":"development-only"},
-    {"id":"tool.false-completion","path":"tool.false-completion","family_id":"assistant-service-e","local_status":"development-only"},
-    {"id":"tool.idempotent-write","path":"tool.idempotent-write","family_id":"assistant-service-f","local_status":"development-only"},
-    {"id":"tool.session-isolation","path":"tool.session-isolation","family_id":"assistant-service-g","local_status":"development-only"},
-    {"id":"tool.corrected-arguments","path":"tool.corrected-arguments","family_id":"assistant-service-h","local_status":"development-only"}
+    {"id":"rag.document-freshness","path":"rag.document-freshness","family_id":"knowledge-service-a","application_project":"knowledge-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Single-module synthetic service; useful control fixture but not a deep application repository."}},
+    {"id":"rag.metadata-filter-topk","path":"rag.metadata-filter-topk","family_id":"knowledge-service-b","application_project":"knowledge-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Four-line synthetic backend; filter-ordering mechanism is not embedded in a substantial application."}},
+    {"id":"rag.citation-current-span","path":"rag.citation-current-span","family_id":"knowledge-service-c","application_project":"knowledge-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Single-file in-memory fixture with insufficient indexing, persistence, and citation surface."}},
+    {"id":"rag.embedding-version","path":"rag.embedding-version","family_id":"knowledge-service-d","application_project":"knowledge-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Two-line static index fixture; no defensible embedding lifecycle or application integration depth."}},
+    {"id":"ext.missingness","path":"ext.missingness","family_id":"extraction-service-a","application_project":"extraction-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"One-function synthetic transformation without a realistic schema or extraction pipeline."}},
+    {"id":"ext.batch-alignment","path":"ext.batch-alignment","family_id":"extraction-service-c","application_project":"extraction-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Thin list transformation; package metadata is complete but application depth is insufficient."}},
+    {"id":"ext.unit-normalization","path":"ext.unit-normalization","family_id":"extraction-service-b","application_project":"extraction-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Single-function conversion fixture without a realistic schema, evidence, or validation subsystem."}},
+    {"id":"ext.partial-batch","path":"ext.partial-batch","family_id":"extraction-service-d","application_project":"extraction-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Four-line batch fixture; failure isolation is not situated in a substantial extraction application."}},
+    {"id":"tool.false-completion","path":"tool.false-completion","family_id":"assistant-service-e","application_project":"assistant-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Single request wrapper without durable workflow, ledger, reconciliation, or recovery subsystems."}},
+    {"id":"tool.idempotent-write","path":"tool.idempotent-write","family_id":"assistant-service-f","application_project":"assistant-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Retry demonstration is useful as a control but is not a deep stateful tool application."}},
+    {"id":"tool.session-isolation","path":"tool.session-isolation","family_id":"assistant-service-g","application_project":"assistant-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Five-line global-state fixture without authentication, persistence, or concurrent session lifecycle."}},
+    {"id":"tool.corrected-arguments","path":"tool.corrected-arguments","family_id":"assistant-service-h","application_project":"assistant-service","local_status":"rejected-shallow","curation":{"decision":"reject","reason":"Six-line pending-value fixture without a defensible confirmation or execution state machine."}}
   ]
 }

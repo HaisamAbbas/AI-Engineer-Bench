@@ -14,6 +14,20 @@ are implemented in the current worktree. PostgreSQL migration/integration
 execution, real executor evidence, and genuine independent review remain
 pending; no task is being called officially admitted.
 
+V2-GAP-005 is PARTIAL/BLOCKED: the private holdout registry, immutable
+family/evaluator-bound manifests, four-part review records, capability-scoped
+digest-verified development adapter, scoped access audit, and holdout release
+gate are implemented, but no real private official corpus, provider IAM
+evidence, production storage adapter, or independent human holdout approval
+exists yet.
+
+Review follow-up: release eligibility now performs exact object-digest lookup
+and full frozen-manifest revalidation; failed holdout reads use an independent
+audit transaction; review/freeze/retire operations serialize on the manifest
+row; path components, idempotency headers, and ORM/migration constraints are
+also hardened. These changes do not create the external private corpus or
+human approval, so V2-GAP-005 remains PARTIAL/BLOCKED.
+
 ## Status vocabulary
 
 - `READY`: dependencies are satisfied and the ticket can be started.
@@ -341,3 +355,91 @@ support ordinary child create/delete, which is outside this repository's control
 
 **Not touched**: gaps 1, 2, 4, 5, 6 remain blocked for the same reasons as rounds 1–3.
 **ENG-021 remains IN_PROGRESS, ENG-022 remains BLOCKED.**
+## V2-GAP-007 implementation follow-up (2026-09-22)
+
+Added a deterministic Track A depth/diversity pre-admission audit in
+`scripts/validate_mvp1_suite.py`. Audit schema v2 excludes generic servers,
+tests, fixtures, generated/vendor/reference/control material and counts authored
+modules, statement starts, symbols and branch points. It requires explicit
+application projects, distinct engineering mechanisms, cross-project source
+diversity, and 12-20 curated tasks. The generated report is
+`docs/implementation/evidence/V2-GAP-007/mvp1-depth-audit.json`.
+
+All twelve legacy thin fixtures now carry explicit rejection decisions and
+reasons. Zero are counted as curated candidates; broad category labels no
+longer satisfy diversity. The release builder excludes rejected tasks by
+default and refuses an empty candidate bundle. `depth_diversity_satisfied` and
+`suite_admission_eligible` are **false**. V2-GAP-007 remains **PARTIAL** until
+12-20 defensible tasks across at least three deep applications pass runtime
+admission/reset evidence and independent review.
+
+## V2-GAP-008 implementation follow-up (2026-09-22)
+
+The separate MVP-2 bug-finding track now has a digest-pinned development task
+catalog entry for the Apache-2.0 RAG corpus repository, with baseline,
+reference, alternative, adversarial, public self-check, and no-bug controls.
+Core contracts now bind private label sets and enforce finding-only versus patch
+release separation. Evaluator-side scoring reports true positives, false
+positives, duplicates, severity accuracy, reproduction quality, precision and
+recall without rewarding speculative lists.
+
+The fail-closed audit is recorded at
+`docs/implementation/evidence/V2-GAP-008/bugfinding-track-audit.json` and
+reports zero admitted tasks: the hidden-label digest is a placeholder,
+Harbor/evaluator end-to-end evidence is absent, and independent
+review/authorization has not occurred. V2-GAP-008 remains **PARTIAL**; no
+official MVP-2 cohort is claimed.
+
+## V2-GAP-009 implementation follow-up (2026-09-22)
+
+Added `ModelExecutionAuthorization` as a non-secret, positive-spend-cap
+contract and a read-only readiness audit at
+`scripts/audit_model_track_authorization.py`. The checked-in model-track plan
+pins the actual reference-loop, system-prompt, and tool-schema digests and
+uses a separate `mvp2-model-*` cohort. The audit never calls a provider or
+prints credential values.
+
+The generated evidence is
+`docs/implementation/evidence/V2-GAP-009/model-track-readiness.json`.
+It correctly reports `ready_for_real_execution: false`: the plan has no
+authorization, credential, concrete model, spend cap, protocol digest, or real
+provider-call/usage evidence. V2-GAP-009 remains **BLOCKED**; the fake Docker
+smoke is not treated as a real model execution.
+
+Review follow-up: MVP-2 scoring now binds the task revision, repository,
+private label-set digest, evaluator digest, and evaluator-produced evidence
+digests. Patch bytes are hashed before scoring, and reproduction/patch outcomes
+cannot be supplied as direct scoring arguments. Model-track readiness evidence
+references are verified as repository-local digest-bound files; private URIs do
+not count as proof. These are software-boundary fixes only: V2-GAP-008 stays
+**PARTIAL** pending genuine private labels/isolated evaluator evidence and
+V2-GAP-009 stays **BLOCKED** pending authorization and a real provider run.
+
+## V2-GAP-006 implementation follow-up (2026-09-22)
+
+The software portion of independent admission/release review is now explicit:
+task admission keeps its append-only review rows, while campaign approvals and
+publication preparations persist first-class `independent_review` records
+(reviewer/subject identities, scope, decision, evidence digest, declaration,
+reason, and timestamp). Target-derived digest checks, self-review rejection,
+database constraints/triggers, and start/publication revalidation are in
+place. See `docs/implementation/evidence/V2-GAP-006/independent-review.md`.
+
+This does **not** manufacture a human review. V2-GAP-006 remains **BLOCKED**
+until independent human reviewers record and independently verify approvals for
+every admitted task revision and release. PostgreSQL integration/migration
+execution is also pending in this environment (`AIEB_DATABASE_URL` is unset).
+
+Review follow-up: migration `f0a1b2c3d4e5` adds database-level reviewer-role
+and review-target-state guards for task admission and campaign/publication
+reviews. This prevents direct SQL from assigning a review to an unauthorized
+user or stale target, but does not create the required independent human
+decisions. V2-GAP-006 remains **BLOCKED**.
+
+Further hardening is in additive migration `h1a2b3c4d5e6`: unknown task authors
+cannot be reviewed/admitted; publication review locks and checks both preparer
+and campaign creator for either decision; fixture admission provisions a real
+global reviewer binding; and every new review records its role-binding identity
+with a database-assigned timestamp. Referenced grants are protected from later
+mutation/deletion. PostgreSQL migration, direct-SQL, and concurrency tests are
+still pending because `AIEB_DATABASE_URL` is not configured.

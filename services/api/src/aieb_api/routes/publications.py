@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Header
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import aggregation, signing
+from .. import aggregation, release_reviews, signing
 from ..auth import Identity, require_role, resolve_roles
 from ..db import get_session
 from ..errors import conflict, forbidden, invalid_request, not_found
@@ -17,7 +17,7 @@ from ..evidence_integrity import evidence_digest
 from ..idempotency import check_or_reserve, finalize, principal_scope
 from ..models import (
     AttemptEventRow, AttemptRow, AuditEventRow, CampaignRow, CandidateRow, CorrectionRunRow, EvaluationRow, PublicationPreparationRow,
-    PublicationRow, ReviewRow, TrialRow,
+    IndependentReviewRow, PublicationRow, TrialRow,
 )
 from ..publication_evidence import build_evidence_manifest
 from ..publication_export import build_publication_export
@@ -36,13 +36,26 @@ router = APIRouter(prefix="/v1", tags=["publications"])
 _TRACE_REQUIRED_PHASES = ("engineering", "verification")
 
 
-def _summary(row: PublicationPreparationRow) -> PublicationPreparationSummary:
+def _summary(session: Session, row: PublicationPreparationRow) -> PublicationPreparationSummary:
+    review = session.execute(
+        select(IndependentReviewRow).where(
+            IndependentReviewRow.target_type == "publication_preparation",
+            IndependentReviewRow.target_id == row.id,
+        ).order_by(IndependentReviewRow.created_at.desc(), IndependentReviewRow.id.desc()).limit(1)
+    ).scalar_one_or_none()
     return PublicationPreparationSummary(
         id=row.id, campaign_id=row.campaign_id, status=row.status,
         snapshot_digest=row.snapshot_digest, evidence_manifest_digest=row.evidence_manifest_digest,
         review_kind=row.review_kind, supersedes_publication_id=row.supersedes_publication_id,
         published_publication_id=row.published_publication_id, created_at=row.created_at.isoformat(),
         publication_class=row.publication_class,
+        reviewer_user_id=review.reviewer_user_id if review else None,
+        review_scope=review.scope if review else None,
+        review_decision=review.decision if review else None,
+        review_evidence_digest=review.evidence_digest if review else None,
+        independence_declaration=review.independence_declaration if review else None,
+        review_reason=review.reason if review else None,
+        reviewed_at=review.created_at.isoformat() if review else None,
     )
 
 
@@ -267,7 +280,7 @@ def prepare_publication(
         )
         session.add(row)
         session.flush()
-    summary = _summary(row)
+    summary = _summary(session, row)
     replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
         status_code=200, response_body=summary.model_dump(mode="json"))
     return summary if replay is None else PublicationPreparationSummary.model_validate(replay)
@@ -293,7 +306,7 @@ def get_preparation(
         reason = "The preparer and campaign creator cannot approve their own publication."
     elif not set(resolve_roles(session, identity)) & {"reviewer", "administrator"}:
         reason = "A reviewer or administrator role is required."
-    return PublicationPreparationDetail(preparation=_summary(row), snapshot=row.snapshot,
+    return PublicationPreparationDetail(preparation=_summary(session, row), snapshot=row.snapshot,
         evidence_manifest=row.evidence_manifest, correction_reason=row.correction_reason,
         can_approve=reason is None, approval_blocked_reason=reason)
 
@@ -327,20 +340,23 @@ def review_publication(
         return PublicationPreparationSummary.model_validate(cached)
     if row.status != "prepared":
         raise conflict("preparation has already been reviewed")
-    if body.decision == "approve" and reviewer_id in {row.prepared_by_user_id, campaign.created_by_user_id}:
-        raise forbidden("preparer and campaign creator cannot approve their own publication")
-    # review_kind is derived SERVER-SIDE from recorded identities; the client
-    # never selects it. The reviewer may attest organizational independence -
-    # that attestation is an INPUT to the derivation, not the label itself.
-    # Server policy (recorded in the review evidence and audit trail):
-    #   - reviewer is the preparer or campaign creator: approval forbidden
-    #     outright (official self-approval stays prohibited);
-    #   - distinct identity + attestation of organizational independence:
-    #     `independent`;
-    #   - distinct identity WITHOUT attestation: `single_maintainer` - a
-    #     technically-distinct OIDC identity does not by itself prove
-    #     organizational independence, so the honest label is kept.
-    review_kind = "independent" if body.independence_attestation else "single_maintainer"
+    if reviewer_id in {row.prepared_by_user_id, campaign.created_by_user_id}:
+        raise forbidden("preparer and campaign creator cannot review their own publication")
+    # A release decision is an independent review, not merely a distinct OIDC
+    # identity. Require an explicit human declaration and a nonblank reason;
+    # otherwise the preparation remains unpublished.
+    if not body.independence_attestation:
+        raise forbidden("publication approval/rejection requires an explicit independence declaration")
+    if not body.notes or not body.notes.strip():
+        raise invalid_request("publication review requires a nonblank reason")
+    review_kind = "independent"
+    review_digest = release_reviews.publication_review_digest(row)
+    release_review = release_reviews.record_release_review(
+        session, target_type="publication_preparation", target_id=row.id,
+        reviewer_id=reviewer_id, decision=body.decision,
+        scope="publication-review", evidence_digest_value=review_digest,
+        independence_declaration=body.independence_attestation, reason=body.notes,
+    )
     if body.decision == "approve":
         if row.supersedes_publication_id and not (row.correction_reason or "").strip():
             raise conflict("superseding requires a nonblank correction reason; prepare again")
@@ -401,17 +417,14 @@ def review_publication(
         session.add(AuditEventRow(
             actor_user_id=reviewer_id, target_type="publication", target_id=publication.id,
             action="publication_published", evidence={"preparation_id": str(row.id), "review_kind": review_kind,
-                                                      "independence_attestation": body.independence_attestation},
+                                                      "independence_attestation": body.independence_attestation,
+                                                      "review_id": str(release_review.id),
+                                                      "evidence_digest": release_review.evidence_digest},
         ))
     else:
         row.status = "rejected"
     row.review_kind = review_kind
-    session.add(ReviewRow(
-        reviewer_id=reviewer_id, target_type="publication_preparation", target_id=row.id,
-        decision=body.decision, evidence={"notes": body.notes, "review_kind": review_kind,
-                                          "independence_attestation": body.independence_attestation},
-    ))
-    summary = _summary(row)
+    summary = _summary(session, row)
     replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
         status_code=200, response_body=summary.model_dump(mode="json"))
     return summary if replay is None else PublicationPreparationSummary.model_validate(replay)
@@ -469,4 +482,3 @@ def publication_signature(publication_id: UUID, session: Session = Depends(get_s
         publication_id=row.id, signed_manifest=row.signed_manifest, manifest_signature=row.manifest_signature,
         signing_public_key=row.signing_public_key, signing_key_id=row.signing_key_id, review_kind=row.review_kind,
     )
-

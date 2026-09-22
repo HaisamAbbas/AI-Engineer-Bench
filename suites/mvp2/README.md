@@ -13,6 +13,12 @@ The two modes are distinct:
 - `patch`: applies the same finding schema but additionally scores patch
   correctness and regression safety.
 
-No task in this directory is official or publication-eligible without
-independent review, hidden-label protection, admission evidence, and explicit
-campaign authorization.
+The development catalog currently references one digest-pinned Apache-2.0
+repository task under `suites/real/rag.corpus-index-drift/`. It has public
+controls and an example, but its hidden label set and evaluator remain private
+placeholders until provisioned outside this repository. Run
+`scripts/validate_bugfinding_track.py` before any release operation.
+
+No task in this track is official or publication-eligible without independent
+review, hidden-label protection, admission evidence, and explicit campaign
+authorization.

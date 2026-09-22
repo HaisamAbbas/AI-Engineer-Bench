@@ -969,6 +969,28 @@
       "BudgetReservationSummary": {
         "additionalProperties": false,
         "properties": {
+          "authorized_cap_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorized Cap Usd"
+          },
+          "budget_profile_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Profile Digest"
+          },
           "enforcement": {
             "enum": [
               "hard",
@@ -976,6 +998,18 @@
             ],
             "title": "Enforcement",
             "type": "string"
+          },
+          "reservation_formula": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Formula"
           },
           "reservation_id": {
             "title": "Reservation Id",
@@ -1023,7 +1057,7 @@
       },
       "CampaignApprovalSummary": {
         "additionalProperties": false,
-        "description": "The single campaign-approval fact: which independent reviewer approved\nthis frozen campaign (or that none ever did). Derived from the recorded\nReviewRow, never recomputed from a rule.",
+        "description": "The single campaign-approval fact: which independent reviewer approved\nthis frozen campaign (or that none ever did). Derived from the recorded\nIndependentReviewRow, never recomputed from a rule.",
         "properties": {
           "approved": {
             "title": "Approved",
@@ -1057,6 +1091,28 @@
             "title": "Campaign Id",
             "type": "string"
           },
+          "evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Digest"
+          },
+          "independence_declaration": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independence Declaration"
+          },
           "reason": {
             "anyOf": [
               {
@@ -1079,6 +1135,28 @@
               }
             ],
             "title": "Review Id"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
           }
         },
         "required": [
@@ -1091,18 +1169,30 @@
       "CampaignApproveRequest": {
         "additionalProperties": false,
         "properties": {
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "decision": {
+            "default": "approve",
+            "enum": [
+              "approve",
+              "reject"
             ],
-            "title": "Reason"
+            "title": "Decision",
+            "type": "string"
+          },
+          "independence_declaration": {
+            "title": "Independence Declaration",
+            "type": "boolean"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
           }
         },
+        "required": [
+          "reason",
+          "independence_declaration"
+        ],
         "title": "CampaignApproveRequest",
         "type": "object"
       },
@@ -1363,6 +1453,17 @@
               }
             ],
             "title": "Manifest Digest"
+          },
+          "matrix_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matrix Digest"
           },
           "name": {
             "title": "Name",
@@ -2329,6 +2430,357 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HoldoutManifestCreateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "access_scope": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Access Scope",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "object_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Object Digest",
+            "type": "string"
+          },
+          "object_length": {
+            "minimum": 0.0,
+            "title": "Object Length",
+            "type": "integer"
+          },
+          "overlap_review_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overlap Review Digest"
+          },
+          "protocol_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "retention_class": {
+            "default": "official",
+            "enum": [
+              "official",
+              "development",
+              "ephemeral"
+            ],
+            "title": "Retention Class",
+            "type": "string"
+          },
+          "split": {
+            "default": "official",
+            "enum": [
+              "official",
+              "development"
+            ],
+            "title": "Split",
+            "type": "string"
+          },
+          "storage_uri": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Storage Uri",
+            "type": "string"
+          },
+          "task_revision_id": {
+            "format": "uuid",
+            "title": "Task Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_revision_id",
+          "storage_uri",
+          "object_digest",
+          "object_length",
+          "protocol_version",
+          "access_scope"
+        ],
+        "title": "HoldoutManifestCreateRequest",
+        "type": "object"
+      },
+      "HoldoutManifestSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "access_scope": {
+            "title": "Access Scope",
+            "type": "string"
+          },
+          "approved_review_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Approved Review Kinds",
+            "type": "array"
+          },
+          "created_by_user_id": {
+            "format": "uuid",
+            "title": "Created By User Id",
+            "type": "string"
+          },
+          "evaluator_revision_digest": {
+            "title": "Evaluator Revision Digest",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "family_id": {
+            "title": "Family Id",
+            "type": "string"
+          },
+          "frozen_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen At"
+          },
+          "frozen_by_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen By User Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "object_digest": {
+            "title": "Object Digest",
+            "type": "string"
+          },
+          "object_length": {
+            "title": "Object Length",
+            "type": "integer"
+          },
+          "overlap_review_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overlap Review Digest"
+          },
+          "protocol_version": {
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "retention_class": {
+            "enum": [
+              "official",
+              "development",
+              "ephemeral"
+            ],
+            "title": "Retention Class",
+            "type": "string"
+          },
+          "split": {
+            "enum": [
+              "official",
+              "development"
+            ],
+            "title": "Split",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "draft",
+              "reviewed",
+              "frozen",
+              "retired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "storage_uri": {
+            "title": "Storage Uri",
+            "type": "string"
+          },
+          "task_revision_id": {
+            "format": "uuid",
+            "title": "Task Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_revision_id",
+          "family_id",
+          "evaluator_revision_digest",
+          "storage_uri",
+          "object_digest",
+          "object_length",
+          "manifest_digest",
+          "protocol_version",
+          "access_scope",
+          "split",
+          "retention_class",
+          "status",
+          "created_by_user_id"
+        ],
+        "title": "HoldoutManifestSummary",
+        "type": "object"
+      },
+      "HoldoutReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "reject",
+              "inconclusive"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          },
+          "review_kind": {
+            "enum": [
+              "overlap",
+              "storage",
+              "isolation",
+              "manifest"
+            ],
+            "title": "Review Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_kind",
+          "decision",
+          "evidence_digest",
+          "reason"
+        ],
+        "title": "HoldoutReviewRequest",
+        "type": "object"
+      },
+      "HoldoutReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approve",
+              "reject",
+              "inconclusive"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "holdout_manifest_id": {
+            "format": "uuid",
+            "title": "Holdout Manifest Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "review_kind": {
+            "enum": [
+              "overlap",
+              "storage",
+              "isolation",
+              "manifest"
+            ],
+            "title": "Review Kind",
+            "type": "string"
+          },
+          "reviewer_user_id": {
+            "format": "uuid",
+            "title": "Reviewer User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "holdout_manifest_id",
+          "reviewer_user_id",
+          "review_kind",
+          "decision",
+          "evidence_digest",
+          "reason",
+          "created_at"
+        ],
+        "title": "HoldoutReviewSummary",
         "type": "object"
       },
       "IncludedEvidenceSelection": {
@@ -3887,6 +4339,17 @@
             "title": "Id",
             "type": "string"
           },
+          "independence_declaration": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Independence Declaration"
+          },
           "publication_class": {
             "enum": [
               "ranked",
@@ -3907,6 +4370,32 @@
             ],
             "title": "Published Publication Id"
           },
+          "review_decision": {
+            "anyOf": [
+              {
+                "enum": [
+                  "approve",
+                  "reject"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Decision"
+          },
+          "review_evidence_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Evidence Digest"
+          },
           "review_kind": {
             "anyOf": [
               {
@@ -3917,6 +4406,51 @@
               }
             ],
             "title": "Review Kind"
+          },
+          "review_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Reason"
+          },
+          "review_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Scope"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "reviewer_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer User Id"
           },
           "snapshot_digest": {
             "title": "Snapshot Digest",
@@ -4273,6 +4807,91 @@
             "title": "Campaign Id",
             "type": "string"
           },
+          "campaign_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign State"
+          },
+          "cohort": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cohort"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage"
+          },
+          "frozen_identities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen Identities"
+          },
+          "limitations": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limitations"
+          },
+          "redaction_policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redaction Policy"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release"
+          },
           "schema_version": {
             "const": "aieb.published-evidence/v1",
             "title": "Schema Version",
@@ -4295,6 +4914,18 @@
           "snapshot_digest": {
             "title": "Snapshot Digest",
             "type": "string"
+          },
+          "usage_provenance": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Provenance"
           }
         },
         "required": [
@@ -5572,7 +6203,7 @@
     },
     "/v1/campaigns/{campaign_id}/approve": {
       "post": {
-        "description": "Reviewer-only independent approval of a FROZEN campaign.\n\nAnti-bypass rules:\n- reviewer must be distinct from the campaign's creator (no self-approval);\n- the campaign must be `frozen` (approval is meaningless pre-freeze, and a\n  running/ended campaign cannot subsequently be 'approved');\n- a replay-safe mutation like everything else: same key replays the same\n  summary, a reused key with different body is 409.\nApproval only records a durable decision; it does not start the campaign\n(authoritative start remains POST .../start with its own gates).",
+        "description": "Reviewer-only independent approval of a PLANNED campaign.\n\nAnti-bypass rules:\n- reviewer must be distinct from the campaign's creator (no self-approval);\n- the campaign must be `planned` - i.e. frozen AND its exact cell matrix\n  materialized and digest-pinned first - so what is approved is an\n  executable matrix, not an abstract draft, and a running/ended campaign\n  cannot subsequently be 'approved';\n- the recorded approval binds the exact frozen manifest, cohort, and\n  matrix digests, so an approval can never be read as covering different\n  content;\n- a replay-safe mutation like everything else: same key replays the same\n  summary, a reused key with different body is 409.\nThe endpoint records a durable independent decision. An approval transitions\nplanned -> approved; a rejection remains planned and is still retained as\nexplicit release-review evidence. Actually dispatching work remains POST\n.../start with its own matrix/budget gates.",
         "operationId": "approve_campaign_v1_campaigns__campaign_id__approve_post",
         "parameters": [
           {
@@ -5606,11 +6237,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CampaignApproveRequest",
-                "default": {}
+                "$ref": "#/components/schemas/CampaignApproveRequest"
               }
             }
-          }
+          },
+          "required": true
         },
         "responses": {
           "200": {
@@ -5642,7 +6273,7 @@
     },
     "/v1/campaigns/{campaign_id}/cancel": {
       "post": {
-        "description": "frozen/running/paused -> cancelling: stop new dispatch, keep the\nbudget reservation ACTIVE until the drain completes. Releasing at request\ntime would book the estimate back as available while leased work was\nstill capable of billing spend; the reservation is released only when no\nready/leased work remains. Already-leased work finishes or expires\nnaturally; the worker (or the idle sweep) finalizes the campaign to\n`cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.\ncancelling a frozen campaign that was never enqueued, or one whose last\nitem just finished - is finalized to `cancelled` directly in THIS\ntransaction, so it can never sit stuck in `cancelling` with no work item\nleft to trigger the worker's completion path.",
+        "description": "frozen/planned/approved/running/paused -> cancelling: stop new dispatch,\nkeep the budget reservation ACTIVE until the drain completes. Releasing at\nrequest time would book the estimate back as available while leased work\nwas still capable of billing spend; the reservation is released only when\nno ready/leased work remains. Already-leased work finishes or expires\nnaturally; the worker (or the idle sweep) finalizes the campaign to\n`cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.\ncancelling a planned campaign that was never started, or one whose last\nitem just finished - is finalized to `cancelled` directly in THIS\ntransaction, so it can never sit stuck in `cancelling` with no work item\nleft to trigger the worker's completion path.",
         "operationId": "cancel_campaign_route_v1_campaigns__campaign_id__cancel_post",
         "parameters": [
           {
@@ -6008,6 +6639,66 @@
         ]
       }
     },
+    "/v1/campaigns/{campaign_id}/plan": {
+      "post": {
+        "description": "frozen -> planned: expand the EXACT cell matrix from the frozen release\nmanifest and pin it (V2-GAP-004 plan sections 1/3/4).\n\nEvery `task_revision x entrant_revision x repetition_index` cell becomes a\npersisted trial row with the plan-required per-cell identity (the\ndeterministic trial id plus its contract cell digest), frozen order, worst-\ncase budget allocation, planned wall-clock deadline, and initial\n`planned` status. The campaign's `matrix_digest` - a canonical digest over\nthe full cell-identity set - is recorded here and re-verified before start\nand at aggregation, so a matrix altered after planning can never run.\n\nExpansion is idempotent (an already-materialized matrix is left as-is and\nre-verified) and shares the transaction with the state transition, so a\nfailure cannot leave half a matrix or a planned campaign without cells.\nOperator-authorized, replay-safe, and never public: `POST /preview` remains\nthe read-only dry run for drafts.",
+        "operationId": "plan_campaign_v1_campaigns__campaign_id__plan_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignStateResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/v1/campaigns/{campaign_id}/preview": {
       "post": {
         "description": "Exact trial matrix a freeze WOULD produce for this draft + registry,\ncomputed by the pure planner and NEVER persisted. Works on a draft campaign\nso an operator can preview coverage/cost before committing to a freeze.\n\nDeliberately NOT idempotency-keyed: this POST writes nothing, so it is a\nread in disguise (the OpenAPI mutation audit lists it as non-persisting)\nand there is no response to replay.",
@@ -6362,7 +7053,7 @@
     },
     "/v1/campaigns/{campaign_id}/start": {
       "post": {
-        "description": "frozen -> running: reserve the declared budget (estimated, not a hard\nprovider hold), enqueue the frozen trial matrix, then flip to running.\nAll writes, including the idempotent response, share one transaction.",
+        "description": "approved -> running: verify the exact matrix, reserve the declared\nbudget (estimated, not a hard provider hold), enqueue first attempts for\nevery cell, then flip to running. All writes, including the idempotent\nresponse, share one transaction.\n\nServer-side gates (V2-GAP-004 plan sections 3-5): the campaign must be\n`approved` - reachable only through freeze -> plan -> independent\napproval, so start cannot bypass the approval sequence - the persisted\nmatrix must exactly equal the frozen manifest matrix, the worst-case\nreservation must be known (a missing role cap or environment bound is\nrefused, never silently dropped from the total), and it must not exceed\nthe authorized cap (`AIEB_BUDGET_CAP_USD`) when one is configured.",
         "operationId": "start_campaign_v1_campaigns__campaign_id__start_post",
         "parameters": [
           {
@@ -7163,6 +7854,267 @@
         "summary": "Review Admission",
         "tags": [
           "maintainer-admission"
+        ]
+      }
+    },
+    "/v1/maintainer/holdouts": {
+      "post": {
+        "operationId": "create_holdout_v1_maintainer_holdouts_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldoutManifestCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldoutManifestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Holdout",
+        "tags": [
+          "maintainer-holdouts"
+        ]
+      }
+    },
+    "/v1/maintainer/holdouts/{holdout_id}": {
+      "get": {
+        "operationId": "get_holdout_v1_maintainer_holdouts__holdout_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "holdout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Holdout Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldoutManifestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Holdout",
+        "tags": [
+          "maintainer-holdouts"
+        ]
+      }
+    },
+    "/v1/maintainer/holdouts/{holdout_id}/freeze": {
+      "post": {
+        "operationId": "freeze_holdout_v1_maintainer_holdouts__holdout_id__freeze_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "holdout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Holdout Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldoutManifestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Freeze Holdout",
+        "tags": [
+          "maintainer-holdouts"
+        ]
+      }
+    },
+    "/v1/maintainer/holdouts/{holdout_id}/retire": {
+      "post": {
+        "operationId": "retire_holdout_v1_maintainer_holdouts__holdout_id__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "holdout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Holdout Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldoutManifestSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire Holdout",
+        "tags": [
+          "maintainer-holdouts"
+        ]
+      }
+    },
+    "/v1/maintainer/holdouts/{holdout_id}/reviews": {
+      "post": {
+        "operationId": "review_holdout_v1_maintainer_holdouts__holdout_id__reviews_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "holdout_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Holdout Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldoutReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldoutReviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Holdout",
+        "tags": [
+          "maintainer-holdouts"
         ]
       }
     },

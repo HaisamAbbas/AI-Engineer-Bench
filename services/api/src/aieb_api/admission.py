@@ -28,8 +28,8 @@ Design rules enforced here and in migration 6f2a9d5c1e73:
 from __future__ import annotations
 
 import json
-import os
 import re
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -43,8 +43,9 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .errors import conflict, invalid_request
+from .errors import ApiError, conflict, invalid_request
 from .evidence_integrity import evidence_digest, task_revision_digest
+from .holdouts import require_frozen
 from .models import (
     ADMISSION_GATE_STATUSES,
     EvaluatorRevisionRow,
@@ -54,6 +55,8 @@ from .models import (
     TaskAdmissionRunRow,
     TaskAdmissionStateRow,
     TaskRevisionRow,
+    HoldoutManifestRow,
+    RoleBinding,
     User,
 )
 
@@ -926,6 +929,26 @@ def cancel_run(session: Session, *, run: TaskAdmissionRunRow, actor_user_id: UUI
 # ---------------------------------------------------------------------------
 
 
+def _reviewer_role_binding(session: Session, reviewer_id: UUID) -> RoleBinding:
+    """Return the immutable global grant authorizing an admission reviewer.
+
+    Route authorization is intentionally not the source of durable provenance:
+    the exact role-binding row is copied onto the review so a later role change
+    cannot erase what authorized the decision.  Direct service callers and
+    PostgreSQL triggers use the same requirement.
+    """
+    binding = session.execute(
+        select(RoleBinding).where(
+            RoleBinding.user_id == reviewer_id,
+            RoleBinding.role.in_(("reviewer", "administrator")),
+            RoleBinding.scope == "global",
+        ).order_by(RoleBinding.created_at.asc(), RoleBinding.id.asc()).limit(1)
+    ).scalar_one_or_none()
+    if binding is None:
+        raise conflict("reviewer has no global reviewer or administrator role binding")
+    return binding
+
+
 def record_review(
     session: Session, *, run: TaskAdmissionRunRow, reviewer_id: UUID, decision: str,
     scope: str, evidence_digest_value: str, independence_declaration: bool,
@@ -935,6 +958,10 @@ def record_review(
         raise invalid_request("review decision must be approve or reject")
     if not independence_declaration:
         raise invalid_request("an independent review requires an explicit independence declaration")
+    if not scope or not scope.strip():
+        raise invalid_request("review scope must not be blank")
+    if not reason or not reason.strip():
+        raise invalid_request("review reason must not be blank")
     if evidence_digest_value != (run.result_digest or ""):
         raise invalid_request(
             "evidence_digest must be the admission run's result_digest; the review must bind "
@@ -953,6 +980,7 @@ def record_review(
         raise conflict("the task author cannot review their own admission")
     if reviewer_id == run.requested_by_user_id:
         raise conflict("the admission requester cannot review their own admission")
+    binding = _reviewer_role_binding(session, reviewer_id)
     if session.execute(
         select(TaskAdmissionReviewRow.id).where(TaskAdmissionReviewRow.admission_run_id == run.id)
     ).scalar_one_or_none() is not None:
@@ -962,13 +990,14 @@ def record_review(
         task_revision_id=run.task_revision_id,
         admission_run_id=run.id,
         reviewer_user_id=reviewer_id,
+        reviewer_role_binding_id=binding.id,
         author_user_id=state.author_user_id,
         requested_by_user_id=run.requested_by_user_id,
         decision=decision,
-        scope=scope,
+        scope=scope.strip(),
         evidence_digest=evidence_digest_value,
         independence_declaration=True,
-        reason=reason,
+        reason=reason.strip(),
     )
     session.add(review)
     session.flush()
@@ -1007,6 +1036,10 @@ def release_eligibility_error(session: Session, revision_ids: list[UUID]) -> str
             problems.append(f"revision {revision_id} does not exist")
             continue
         label = f"{revision.slug} {revision.version}"
+        evaluator_block = _holdout_release_error(session, revision)
+        if evaluator_block is not None:
+            problems.append(f"{label} {evaluator_block}")
+            continue
         state = admission_state(session, revision.id)
         if state is None:
             problems.append(f"{label} has no admission record")
@@ -1055,6 +1088,11 @@ def release_eligibility_error(session: Session, revision_ids: list[UUID]) -> str
             select(TaskAdmissionReviewRow).where(
                 TaskAdmissionReviewRow.admission_run_id == run.id,
                 TaskAdmissionReviewRow.decision == "approve",
+                TaskAdmissionReviewRow.independence_declaration.is_(True),
+                TaskAdmissionReviewRow.evidence_digest == run.result_digest,
+                TaskAdmissionReviewRow.author_user_id.is_not(None),
+                TaskAdmissionReviewRow.reviewer_role_binding_id.is_not(None),
+                TaskAdmissionReviewRow.reviewer_user_id != TaskAdmissionReviewRow.author_user_id,
             )
         ).scalar_one_or_none()
         if review is None:
@@ -1085,6 +1123,54 @@ def release_eligibility_error(session: Session, revision_ids: list[UUID]) -> str
     if len(problems) > 5:
         shown += f"; and {len(problems) - 5} more"
     return f"task revisions are not release-eligible: {shown}"
+
+
+def _holdout_release_error(session: Session, revision: TaskRevisionRow) -> str | None:
+    """Require a frozen private holdout only when the task explicitly claims
+    an official ``holdout://`` evaluator reference. Development fixtures remain
+    usable for development campaigns and are never silently upgraded to official
+    holdout status.
+    """
+    evaluator = revision.manifest.get("evaluator") if isinstance(revision.manifest, dict) else None
+    reference = evaluator.get("official_fixture_ref") if isinstance(evaluator, dict) else None
+    if not isinstance(reference, str) or not reference.startswith("holdout://"):
+        return None
+    object_digest = reference.removeprefix("holdout://")
+    if not re.fullmatch(r"[0-9a-f]{64}", object_digest):
+        return "official holdout reference is malformed; expected holdout://<sha256>"
+    # Select the exact object named by the frozen task revision.  Selecting the
+    # newest row and checking its digest afterward could accidentally authorize
+    # a different frozen corpus when multiple revisions exist.
+    matching_rows = session.execute(
+        select(HoldoutManifestRow).where(
+            HoldoutManifestRow.task_revision_id == revision.id,
+            HoldoutManifestRow.status == "frozen",
+            HoldoutManifestRow.object_digest == object_digest,
+        ).order_by(HoldoutManifestRow.frozen_at.desc())
+    ).scalars().all()
+    if not matching_rows:
+        return "claims an official holdout but has no matching frozen private holdout manifest"
+    if len(matching_rows) > 1:
+        return "official holdout reference matches multiple frozen manifests"
+    row = matching_rows[0]
+    try:
+        # Re-run the complete frozen-manifest gate, not only the release-specific
+        # split/retention checks below. This validates canonical manifest digest,
+        # latest review decisions, overlap binding, reviewer count, and freezer
+        # identity before any task can become release-eligible.
+        row = require_frozen(session, row.id, access_scope=row.access_scope)
+    except ApiError as exc:
+        return f"official holdout manifest failed frozen-integrity validation: {exc.message}"
+    if row.split != "official" or row.retention_class != "official":
+        return "official holdout reference is not backed by an official-retention manifest"
+    if row.expires_at is not None and row.expires_at <= datetime.now(timezone.utc):
+        return "official holdout manifest has expired"
+    evaluator = session.get(EvaluatorRevisionRow, revision.evaluator_id)
+    if evaluator is None or row.evaluator_revision_digest != evaluator.code_digest:
+        return "official holdout evaluator revision does not match the task revision"
+    if row.family_id != revision.family_id:
+        return "official holdout family does not match the task revision"
+    return None
 
 
 def _passing_reset_count(session: Session, run_id: UUID) -> int:
@@ -1131,6 +1217,19 @@ def seed_fixture_admission(
     reviewer = _fixture_user(session, reviewer_subject)
     if reviewer.id == author.id:
         raise conflict("fixture reviewer must differ from fixture author")
+    # The production review trigger requires a real global reviewer grant.  A
+    # fixture user is still a database user, so provision the same minimal
+    # server-side authorization rather than weakening the trigger for tests.
+    reviewer_binding = session.execute(
+        select(RoleBinding).where(
+            RoleBinding.user_id == reviewer.id,
+            RoleBinding.role == "reviewer",
+            RoleBinding.scope == "global",
+        )
+    ).scalar_one_or_none()
+    if reviewer_binding is None:
+        session.add(RoleBinding(user_id=reviewer.id, role="reviewer", scope="global"))
+        session.flush()
 
     state = admission_state(session, revision.id)
     if state is None:

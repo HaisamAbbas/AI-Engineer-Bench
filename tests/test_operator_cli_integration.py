@@ -315,6 +315,7 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         code, envelope, out, _ = self._cli(
             _token(("reviewer",), REVIEWER_SUBJECT),
             ["operator", "campaign", "approve", "--campaign", campaign_id, "--reason", "independently reviewed",
+             "--independence-declaration",
              "--idempotency-key", "approve-1"],
         )
         self.assertEqual(code, 0, out)
@@ -393,7 +394,8 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         code, envelope, out, _ = self._cli(
             _token(("reviewer",), REVIEWER_SUBJECT),
             ["operator", "publication", "publish", "--preparation", preparation_id,
-             "--independence-attestation", "--idempotency-key", "publish-1"],
+             "--independence-attestation", "--notes", "independent publication review",
+             "--idempotency-key", "publish-1"],
         )
         self.assertEqual(code, 0, out)
         self.assertTrue(envelope["data"]["review"]["published_publication_id"], envelope)
@@ -406,7 +408,9 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         campaign_id = self._create_frozen_campaign()
         code, envelope, out, _ = self._cli(
             _token(("operator",), OPERATOR_SUBJECT),
-            ["operator", "campaign", "approve", "--campaign", campaign_id, "--idempotency-key", "self-approve"],
+            ["operator", "campaign", "approve", "--campaign", campaign_id,
+             "--reason", "self review attempt", "--independence-declaration",
+             "--idempotency-key", "self-approve"],
         )
         self.assertEqual(code, 2, out)
         self.assertEqual(envelope["error"]["code"], "authorization_forbidden", envelope)
@@ -419,7 +423,8 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         campaign_id = self._create_frozen_campaign()
         code, envelope, out, _ = self._cli(
             _token(("reviewer",), REVIEWER_SUBJECT),
-            ["operator", "campaign", "approve", "--campaign", campaign_id],
+            ["operator", "campaign", "approve", "--campaign", campaign_id,
+             "--reason", "review", "--independence-declaration"],
         )
         self.assertEqual(code, 2, out)
         self.assertEqual(envelope["error"]["code"], "idempotency_key_required", envelope)

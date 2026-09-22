@@ -7,6 +7,7 @@ core contracts do not model (pagination envelopes, freeze registry input).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar, Union
 from uuid import UUID
 
@@ -816,13 +817,22 @@ class InvalidAttemptEntry(BaseModel):
 class CampaignApproveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    reason: str | None = None
+    decision: Literal["approve", "reject"] = "approve"
+    reason: str = Field(min_length=1, max_length=2000)
+    independence_declaration: bool
+
+    @field_validator("reason")
+    @classmethod
+    def campaign_review_reason_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("review reason must not be blank")
+        return value.strip()
 
 
 class CampaignApprovalSummary(BaseModel):
     """The single campaign-approval fact: which independent reviewer approved
     this frozen campaign (or that none ever did). Derived from the recorded
-    ReviewRow, never recomputed from a rule."""
+    IndependentReviewRow, never recomputed from a rule."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -832,6 +842,10 @@ class CampaignApprovalSummary(BaseModel):
     approved_at: str | None = None
     reason: str | None = None
     review_id: UUID | None = None
+    scope: str | None = None
+    evidence_digest: str | None = None
+    independence_declaration: bool | None = None
+    reviewed_at: str | None = None
 
 
 # ---- ENG-018: publication preparation, review, corrections -----------------
@@ -864,6 +878,13 @@ class PublicationPreparationSummary(BaseModel):
     published_publication_id: UUID | None
     created_at: str
     publication_class: Literal["ranked", "non_ranked"]
+    reviewer_user_id: UUID | None = None
+    review_scope: str | None = None
+    review_decision: Literal["approve", "reject"] | None = None
+    review_evidence_digest: str | None = None
+    independence_declaration: bool | None = None
+    review_reason: str | None = None
+    reviewed_at: str | None = None
 
 
 class PublicationPreparationDetail(BaseModel):
@@ -881,12 +902,18 @@ class PublicationReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["approve", "reject"]
-    # review_kind is NEVER client-selected: the server derives whether the
-    # review is independent from recorded identities (see publications.py).
-    # The reviewer supplies an organizational-independence ATTESTATION - an
-    # input to the server's derivation, not the label itself.
+    # review_kind is NEVER client-selected. A release decision is accepted
+    # only with this explicit human independence attestation; the server
+    # records the resulting independent review provenance.
     independence_attestation: bool = False
     notes: str | None = None
+
+    @field_validator("notes")
+    @classmethod
+    def publication_review_reason_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("review reason must not be blank")
+        return value.strip() if value is not None else None
 
 
 class PublicationWithdrawRequest(BaseModel):
@@ -1070,5 +1097,81 @@ class AdmissionReviewSummary(BaseModel):
     scope: str
     evidence_digest: str
     independence_declaration: bool
+    reason: str
+    created_at: str
+
+
+class HoldoutManifestCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_revision_id: UUID
+    storage_uri: str = Field(min_length=1, max_length=2000)
+    object_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    object_length: int = Field(ge=0)
+    protocol_version: str = Field(min_length=1, max_length=64)
+    access_scope: str = Field(min_length=1, max_length=256)
+    split: Literal["official", "development"] = "official"
+    retention_class: Literal["official", "development", "ephemeral"] = "official"
+    expires_at: datetime | None = None
+    overlap_review_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("expires_at")
+    @classmethod
+    def holdout_expiry_must_be_timezone_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("expires_at must include a timezone")
+        return value
+
+
+class HoldoutReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_kind: Literal["overlap", "storage", "isolation", "manifest"]
+    decision: Literal["approve", "reject", "inconclusive"]
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    report: dict = Field(default_factory=dict)
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def holdout_review_reason_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
+
+class HoldoutManifestSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    task_revision_id: UUID
+    family_id: str
+    evaluator_revision_digest: str
+    storage_uri: str
+    object_digest: str
+    object_length: int
+    manifest_digest: str
+    overlap_review_digest: str | None = None
+    protocol_version: str
+    access_scope: str
+    split: Literal["official", "development"]
+    retention_class: Literal["official", "development", "ephemeral"]
+    expires_at: str | None = None
+    status: Literal["draft", "reviewed", "frozen", "retired"]
+    created_by_user_id: UUID
+    frozen_by_user_id: UUID | None = None
+    frozen_at: str | None = None
+    approved_review_kinds: list[str] = Field(default_factory=list)
+
+
+class HoldoutReviewSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    holdout_manifest_id: UUID
+    reviewer_user_id: UUID
+    review_kind: Literal["overlap", "storage", "isolation", "manifest"]
+    decision: Literal["approve", "reject", "inconclusive"]
+    evidence_digest: str
     reason: str
     created_at: str

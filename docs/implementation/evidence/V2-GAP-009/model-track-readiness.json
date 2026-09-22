@@ -1,0 +1,27 @@
+{
+  "authorization_ready": false,
+  "cohort_id": "mvp2-model-development-v1",
+  "credential_present": false,
+  "errors": [
+    "protocol digest is missing or a placeholder",
+    "requested model identities are not concrete and frozen",
+    "authorized provider credential is not configured",
+    "approved positive spend cap is missing",
+    "no provider/model authorization record exists",
+    "usage/model-identity evidence is absent",
+    "real provider call evidence is absent"
+  ],
+  "fixed_contract_verified": true,
+  "official_release_eligible": false,
+  "plan_status": "prepared-not-authorized",
+  "provider_id": "openai-compatible",
+  "ready_for_real_execution": false,
+  "real_provider_call_executed": false,
+  "reason": "Read-only readiness audit; no provider call is made by this command.",
+  "requested_models": [
+    "pending-provider-model"
+  ],
+  "schema_version": "aieb.model-track-readiness/v1",
+  "spend_cap_ready": false,
+  "usage_identity_persistence_ready": false
+}

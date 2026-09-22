@@ -110,7 +110,7 @@ described as official benchmark results.
     against ENG-008).
   - `worker/harbor_dispatch.py`: the frozen-cell → Harbor `ExecutionSpec`
     translation adapter, with anti-substitution pinning checks
-    (`verify_spec_pinning`) and, as of this update, **actual runtime
+    (`verify_spec_pinning`), canonical frozen-manifest digest binding, and, as of this update, **actual runtime
     deadline enforcement** - `dispatch_cell` now polls `status()` and calls
     `stop()` at the frozen per-cell deadline (mirroring
     `aieb_runner.backends.orchestration.run_bounded`) instead of calling
@@ -193,49 +193,105 @@ described as official benchmark results.
 
 ### V2-GAP-005 — Genuine private official holdouts
 
-- Status: BLOCKED / PARTIAL.
-- Current evidence: holdout preparation tools and ENG-021 documentation exist.
-- Gap: no access-controlled official holdout corpus exists outside the public
-  repository/build context.
-- Closure: private storage, overlap review, immutable manifest, evaluator
-  isolation, access audit, and independent review.
+- Status: PARTIAL / BLOCKED.
+- Current evidence: `holdout_manifest`, append-only overlap/storage/isolation/
+  manifest reviews, immutable freeze triggers, scoped access auditing,
+  capability-scoped digest verification, and private maintainer endpoints are implemented in
+  `services/api/src/aieb_api/holdouts.py` and `routes/holdouts.py`.
+  Official evaluator references using `holdout://<digest>` are rejected by
+  release eligibility unless a frozen holdout manifest exists.
+- Remaining gap: no real private provider bucket/corpus, production provider
+  adapter/IAM policy, access-log export, or independent human approval has been recorded in this
+  repository. The implementation stores opaque references only; synthetic
+  local fixtures are not official holdout evidence.
+- Closure: configure the private storage provider and scoped evaluator
+  capability, run overlap/isolation reviews against the actual corpus, freeze
+  the immutable manifest, and attach independent review/access-audit evidence.
 
 ### V2-GAP-006 — Independent admission and release review
 
 - Status: BLOCKED.
-- Current evidence: reviewer checklist and pending-independent-review metadata.
-- Gap: no genuine independent human review is recorded for every task/release.
-- Closure: persist reviewer identity, scope, decision, timestamp, evidence
-  digest, independence declaration, and reason.
+- Current evidence: task-admission reviews already persist the required fields;
+  release/campaign approvals now use the structured `independent_review` table,
+  immutable target-derived digests, API/database independence checks, and
+  revalidation before campaign start/publication. Migration
+  `h1a2b3c4d5e6` additionally binds new reviews to an immutable global role
+  grant, locks target rows, and rejects unknown task authors and campaign
+  creator publication reviews. See
+  `docs/implementation/evidence/V2-GAP-006/independent-review.md`.
+- Gap: no genuine independent human review is recorded for every admitted task
+  and release in this repository. Software cannot self-certify the human gate.
+- Closure: authenticated independent reviewers must record reviewer identity,
+  scope, decision, timestamp, evidence digest, independence declaration, and
+  reason for every task/release, followed by independent acceptance of those
+  records.
 
 ### V2-GAP-007 — Track A depth and application diversity
 
 - Status: PARTIAL.
-- Current evidence: twelve development tasks and broad families exist; RAG-05
-  has a real-source development package.
-- Gap: several tasks remain shallow/shared-harness tasks, with no admitted
-  release proving the intended depth/diversity floor.
-- Closure: review difficulty/distinctness, reject shallow variants, and admit
-  only a defensible suite.
+- Current evidence: the deterministic audit in
+  `docs/implementation/evidence/V2-GAP-007/mvp1-depth-audit.json` examines all
+  twelve legacy development tasks with a padding-resistant v2 policy. Tests,
+  fixtures, generated/vendor/reference code and generic servers are excluded;
+  task count, authored modules, statement lines, symbols, branch points,
+  explicit projects, unique engineering mechanisms and cross-project
+  similarity are checked.
+- Result: all twelve thin fixtures are explicitly rejected with reasons. Zero
+  tasks are curated candidates, so broad category labels no longer create a
+  diversity claim. The release builder excludes rejected tasks by default and
+  refuses an empty curated bundle. `depth_diversity_satisfied` and
+  `suite_admission_eligible` remain false.
+- Gap: the suite has no admitted release proving the intended depth/diversity
+  floor; independent review, clean admission matrices, and real application
+  behavior review remain required.
+- Closure: author or import 12-20 defensible tasks across at least three deep
+  applications, rerun the audit and full
+  admission/reset matrix, record independent reviews, then freeze an admitted
+  development suite. Until then no task is release-eligible.
 
 ### V2-GAP-008 — MVP-2 bug-finding end-to-end track
 
 - Status: PARTIAL.
-- Current evidence: bug-finding contracts/scoring foundations and tests exist.
-- Gap: no complete repository task catalog, hidden-label workflow,
-  finding/patch execution, or separate published cohort has been proven.
-- Closure: fixed repositories, controls, hidden labels, duplicate/severity
-  scoring, patch separation, and end-to-end Harbor/evaluator evidence.
+- Current evidence: one development-only digest-pinned Apache-2.0 repository
+  task is cataloged with baseline/reference/alternative, adversarial and
+  no-bug controls. Versioned finding/patch contracts, task/revision/repository
+  bound evaluator results, patch-content digest verification,
+  duplicate/false-positive/severity/reproduction scoring, and a
+  fail-closed catalog audit are implemented. See
+  `docs/implementation/evidence/V2-GAP-008/bugfinding-track-audit.json`.
+- Result: the audit reports `tasks_admitted: 0`. The hidden-label digest is a
+  placeholder and no Harbor/evaluator end-to-end evidence exists. No official
+  or cross-track publication is possible.
+- Gap: a real access-controlled hidden-label corpus/evaluator, finding and
+  patch execution evidence, independent review, and a separately authorized
+  MVP-2 cohort are still missing.
+- Closure: provision private labels and access audits outside the public build,
+  run baseline/reference/alternative/negative controls and Harbor trials,
+  record component scores and immutable evidence, then independently review
+  and freeze a separate cohort. Do not mark this track official from fixtures.
 
 ## P1 — model track
 
 ### V2-GAP-009 — Authorized real model execution
 
 - Status: BLOCKED.
-- Current evidence: model loop/provider adapters and fake Docker smoke exist.
-- Gap: no real provider call has been authorized or executed.
-- Closure: provider/model authorization, credentials, spend cap, fixed cohort,
-  unsupported-control disclosure, and real usage/model identity persistence.
+- Current evidence: the fixed model loop/provider adapters, fake Docker smoke,
+  and a read-only readiness audit exist. The audit verifies the loop, system
+  prompt, tool schema, separate model cohort, credential name, spend cap,
+  unsupported-control disclosure, and usage/model-identity evidence without
+  printing secrets or contacting a provider. Evidence references are checked
+  as existing repository-local SHA-256-bound files; private URIs do not count
+  as locally verified proof. See
+  `docs/implementation/evidence/V2-GAP-009/model-track-readiness.json`.
+- Result: `ready_for_real_execution` is false. No authorization record,
+  configured credential, positive spend cap, concrete requested model,
+  protocol digest, or real provider-call evidence exists.
+- Gap: no real provider call has been authorized or executed. Fake-provider
+  smoke cannot satisfy this gate.
+- Closure: record explicit provider/model authorization, configure credentials
+  in the execution environment, reserve an approved cap, freeze a concrete
+  model cohort/protocol, disclose unsupported controls, run the bounded real
+  campaign, and persist real usage plus requested/reported model identities.
 
 ### V2-GAP-010 — Production model-track dispatch
 

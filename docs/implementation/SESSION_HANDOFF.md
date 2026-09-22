@@ -1260,3 +1260,105 @@ PostgreSQL tests skipped because `AIEB_DATABASE_URL` is unset). The migration
 head is `6f2a9d5c1e73`. PostgreSQL migration/integration execution, a configured
 real admission executor, and genuine independent human review remain pending;
 V2-GAP-003 stays PARTIAL and no official task admission is claimed.
+## V2-GAP-007 implementation handoff (2026-09-22)
+
+`scripts/validate_mvp1_suite.py` now performs a deterministic structural
+pre-screen for Track A depth and application diversity. Audit v2 excludes
+generic servers, tests, fixtures, generated/vendor/reference/control material,
+records authored modules, statement starts, symbols, branch points and
+normalized AST fingerprints, requires explicit projects and engineering
+mechanisms, and emits
+`docs/implementation/evidence/V2-GAP-007/mvp1-depth-audit.json`.
+
+All twelve legacy thin fixtures are now explicitly rejected with task-specific
+reasons and zero are counted as curated candidates. Rejected fixtures stay
+available for local controls but are excluded from bundles by default; the
+builder refuses an empty candidate bundle. The result is intentionally
+`depth_diversity_satisfied: false` and `suite_admission_eligible: false`.
+V2-GAP-007 remains PARTIAL until 12-20 defensible tasks across three deep
+applications pass full admission/reset matrices and independent review. No
+official release is claimed.
+
+## V2-GAP-008 implementation handoff (2026-09-22)
+
+MVP-2 now has one development-only task manifest at
+`suites/real/rag.corpus-index-drift/bugfinding.json`, referenced by the
+separate `suites/mvp2/catalog.json`. `scripts/validate_bugfinding_track.py`
+checks repository digest, license, controls, private references, hidden-label
+binding, public examples, and end-to-end evidence without treating placeholders
+as proof.
+
+`aieb_core.bugfinding_v2` adds digest-bound evaluator-only label sets and
+component scoring. Finding-only and patch submissions/releases are explicitly
+separated; duplicates and unmatched/speculative findings receive no credit.
+The audit reports zero admitted tasks because private labels,
+Harbor/evaluator evidence, independent review, and authorization remain absent.
+V2-GAP-008 stays PARTIAL and no official score is claimed.
+
+## V2-GAP-009 implementation handoff (2026-09-22)
+
+The model-track plan is pinned in
+`docs/implementation/evidence/V2-GAP-009/model-execution-plan.json` and its
+reference loop/prompt/tool-schema digests are checked by
+`scripts/audit_model_track_authorization.py`. The audit is read-only and does
+not contact a provider or expose credentials. `ModelExecutionAuthorization`
+requires a concrete cohort/model set, positive spend cap, credential variable,
+approver and expiry.
+
+The current readiness report is blocked: no authorization, credential, spend
+cap, concrete requested model, protocol digest, or real provider-call evidence
+exists. Usage/model-identity persistence has only fake/spike evidence. V2-GAP-009
+remains BLOCKED and no paid or official model-track run was performed.
+
+## V2-GAP-006 implementation handoff (2026-09-22)
+
+Independent task-admission review was already a persisted state-machine gate.
+Release/campaign review now has the same structured provenance in
+`independent_review`: reviewer and subject identities, scope, decision,
+target-derived evidence digest, explicit independence declaration, reason, and
+timestamp. API and PostgreSQL checks reject self-review, malformed evidence,
+target identity mismatches, and forged approval paths; campaign start and
+publication revalidate the review record.
+
+The gap remains **BLOCKED** because no software agent may invent the required
+human approvals. Every admitted task and release still needs an authenticated,
+independent human decision and independent acceptance of its evidence. The
+PostgreSQL migration/API run is pending while `AIEB_DATABASE_URL` is unset.
+
+Latest hardening is in additive migration `h1a2b3c4d5e6`: new admission
+reviews require known authorship and admitted transitions require a
+non-null-author approval; publication reviews lock and check both preparer and
+campaign creator for either decision; fixture admission seeds a global
+reviewer role; and new review rows retain the authorizing role-binding identity
+with a database-clock timestamp. Referenced grants cannot be mutated or
+deleted. Migration, direct-SQL, and two-transaction regression execution still
+requires a real PostgreSQL run (`AIEB_DATABASE_URL`).
+
+V2-GAP-005 follow-up: the private directory adapter now rejects drive-qualified
+and traversal keys and symlinked objects, all holdout mutation routes require
+`Idempotency-Key`, and additive migration `e8f9a0b1c2d3` adds direct-SQL
+digest/report/identity checks. The migration chain has one head. Holdout
+closure is still blocked on a real access-controlled provider/IAM corpus,
+overlap/contamination evidence, evaluator-only deployment access logs, and
+independent human approval.
+
+The latest V2-GAP-005 review is addressed in the working tree: exact
+`holdout://<digest>` release lookup now calls `require_frozen()`; failed reads
+audit through a separate committed session; manifest review/freeze/retire
+paths and the database trigger serialize on the manifest row. Path-component
+symlink/junction checks, bounded shared idempotency headers, and ORM constraint
+parity were added. Tests pass with Windows symlink setup skipped where the host
+denies link creation. The real private provider/corpus, evaluator access
+evidence, human review, and PostgreSQL migration execution remain blocked.
+
+## V2-GAP-008/009 review follow-up (2026-09-22)
+
+The latest review findings are addressed at the contract boundary. MVP-2
+scoring now requires task/revision/repository and hidden-label digest equality,
+and consumes only a bound evaluator result for finding/reproduction/patch
+outcomes. Patch content is hashed before scoring. The model-track readiness
+audit now verifies local evidence URI paths and SHA-256 bytes; `private://`
+references are not treated as proof. Tests and the generated audit reports were
+rerun. GAP-008 remains **PARTIAL** pending real private labels, isolated
+Harbor/evaluator evidence, and human review; GAP-009 remains **BLOCKED** pending
+provider authorization, credentials, spend cap, and a real provider call.

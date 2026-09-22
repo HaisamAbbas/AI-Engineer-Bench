@@ -3,7 +3,13 @@
   "track": "mvp2-public-repository-bug-finding",
   "cohort_id": "mvp2-bugfinding-development-v1",
   "status": "development-only",
-  "tasks": [],
+  "tasks": [
+    {
+      "task_id": "mvp2.rag.corpus-index-drift",
+      "manifest_path": "suites/real/rag.corpus-index-drift/bugfinding.json",
+      "mode": "finding-only"
+    }
+  ],
   "official_release_eligible": false,
   "reason": "No compatible repository snapshot has been independently admitted yet."
 }

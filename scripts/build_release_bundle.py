@@ -1,13 +1,13 @@
-"""ENG-021: Build a release candidate bundle.
+"""ENG-021: Build a curated development candidate bundle.
 
-Packages all 12 public development tasks with verified digests, frozen
-manifests, and evaluator revisions — but EXCLUDES:
+By default this packages only tasks accepted by the Track-A curation audit.
+Thin legacy fixtures require ``--include-rejected-development`` and cannot
+satisfy ``--require-admitted-suite``. Every mode excludes:
 - tests/maintainer/ (trusted evaluator/holdout code — never in a public bundle)
 - Any holdout fixture paths outside the repo
 
-This is a release-candidate bundle, NOT an official release. Label:
-official-public-origin. Per spec section 22 and the prompt, private examples
-on public tasks do not constitute a contamination-free hidden benchmark.
+This is not an official release. Per spec section 22, private examples on
+public tasks do not constitute a contamination-free hidden benchmark.
 
 Usage:
   python scripts/build_release_bundle.py --output <bundle-dir>
@@ -26,6 +26,16 @@ import tarfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _suite_depth_audit() -> dict:
+    # Import lazily so the bundle's file-copy helpers remain usable by focused
+    # tests without importing the catalog audit at module import time.
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.validate_mvp1_suite import audit
+
+    return audit()
 
 
 def _rmtree_windows_safe(path: Path) -> None:
@@ -157,15 +167,39 @@ def _mkdir_windows_safe(path: Path, *, retries: int = 3, delay_seconds: float = 
     raise last_error  # type: ignore[misc]
 
 
-def build_bundle(output_dir: Path) -> dict:
-    """Build the complete release candidate bundle."""
+def build_bundle(
+    output_dir: Path,
+    *,
+    require_admitted_suite: bool = False,
+    include_rejected_development: bool = False,
+) -> dict:
+    """Build a curated candidate bundle, excluding rejected tasks by default."""
+    catalog = _load_catalog()
+    suite_audit = _suite_depth_audit()
+    if require_admitted_suite and not suite_audit["suite_admission_eligible"]:
+        raise RuntimeError(
+            "SUITE NOT ADMITTED: Track A depth/diversity and independent catalog "
+            "review gates are not satisfied; deepen/remove shallow tasks and obtain "
+            "independent admission before building an admitted-only bundle."
+        )
+    curated_ids = {
+        row["id"] for row in suite_audit.get("tasks", [])
+        if row.get("status") == "curated-candidate"
+    }
+    tasks = catalog["tasks"] if include_rejected_development else [
+        task for task in catalog["tasks"] if task["id"] in curated_ids
+    ]
+    if not tasks:
+        raise RuntimeError(
+            "NO CURATED TASKS: every checked-in Track A package is currently "
+            "rejected or blocked by the depth/diversity audit. Use "
+            "--include-rejected-development only for a clearly labeled local "
+            "fixture bundle; it is not an admission or release path."
+        )
     bundle_root = output_dir / "release-candidate-bundle"
     if bundle_root.exists():
         _rmtree_windows_safe(bundle_root)
     _mkdir_windows_safe(bundle_root)
-
-    catalog = _load_catalog()
-    tasks = catalog["tasks"]
     task_bundles = []
 
     for task in tasks:
@@ -191,18 +225,43 @@ def build_bundle(output_dir: Path) -> dict:
     # Write bundle manifest
     manifest = {
         "schema_version": "aieb.release-bundle/v1",
-        "label": "official-public-origin",
+        "label": (
+            "rejected-development-fixtures"
+            if include_rejected_development
+            else "curated-development-candidates"
+        ),
         "contamination_clause": (
-            "This release candidate bundle contains the twelve public development tasks. "
+            "This development bundle contains only the task set selected by its curation mode. "
             "Private holdout fixtures are NOT included (they are stored outside the repository). "
             "Per spec section 22, private examples on public tasks do not constitute a "
             "contamination-free hidden benchmark."
         ),
-        "release_status": "NOT OFFICIALLY RELEASED - ready for independent review",
+        "release_status": (
+            "NOT A RELEASE - explicitly rejected development fixtures"
+            if include_rejected_development
+            else "NOT OFFICIALLY RELEASED - curated candidates pending independent review"
+        ),
         "built_at": _git_commit_or_unknown(),
         "total_tasks": len(task_bundles),
         "protected_path_exclusion_verified": True,
         "digest_verification": "all_task_digests_match_repo",
+        "suite_depth_audit": {
+            "schema_version": suite_audit["schema_version"],
+            "depth_diversity_satisfied": suite_audit["depth_diversity_satisfied"],
+            "suite_admission_eligible": suite_audit["suite_admission_eligible"],
+            "catalog_review_status": suite_audit["catalog_review_status"],
+            "near_duplicate_groups": suite_audit["near_duplicate_groups"],
+            "shallow_task_ids": [
+                row["id"] for row in suite_audit["tasks"] if row["depth_status"] == "shallow"
+            ],
+            "rejected_task_ids": [
+                row["id"] for row in suite_audit["tasks"] if row["status"] == "rejected"
+            ],
+            "project_statuses": {
+                project["id"]: project["status"] for project in suite_audit["projects"]
+            },
+            "report_path": "docs/implementation/evidence/V2-GAP-007/mvp1-depth-audit.json",
+        },
         "tasks": task_bundles,
         "excluded_from_bundle": [
             "tests/maintainer/ - trusted evaluator and holdout code (private)",
@@ -234,9 +293,23 @@ def _git_commit_or_unknown() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="Output directory for the bundle (outside repo recommended)")
+    parser.add_argument(
+        "--require-admitted-suite",
+        action="store_true",
+        help="refuse unless structural depth/diversity and independent catalog admission are satisfied",
+    )
+    parser.add_argument(
+        "--include-rejected-development",
+        action="store_true",
+        help="include explicitly rejected thin fixtures in a non-release local bundle",
+    )
     args = parser.parse_args()
 
-    manifest = build_bundle(args.output)
+    manifest = build_bundle(
+        args.output,
+        require_admitted_suite=args.require_admitted_suite,
+        include_rejected_development=args.include_rejected_development,
+    )
     print(json.dumps(manifest, sort_keys=True, ensure_ascii=False, indent=2))
     print(f"\nBundle built at: {args.output / 'release-candidate-bundle'}", file=sys.stderr)
     print("VERIFICATION: No protected paths (tests/maintainer/, dev_tests/, holdout) found in bundle.", file=sys.stderr)

@@ -555,7 +555,13 @@ def _campaign_inspect(args: argparse.Namespace, client: PrivateApiClient) -> tup
 def _campaign_approve(args: argparse.Namespace, client: PrivateApiClient) -> tuple[int, dict]:
     command = "campaign.approve"
     campaign_id = _require(getattr(args, "campaign", None), "--campaign")
-    body: dict = {}
+    if not getattr(args, "independence_declaration", False):
+        return _fail(args, command, _error_object(
+            "independence_declaration_required",
+            "campaign approval requires an explicit independent-human declaration",
+            False,
+        ))
+    body: dict = {"independence_declaration": True}
     reason = getattr(args, "reason", None)
     if reason:
         body["reason"] = reason
@@ -723,7 +729,9 @@ def add_operator_parsers(subparsers: argparse._SubParsersAction) -> None:
     approve = campaign_command.add_parser("approve", help="record independent campaign approval on the private API")
     _common_flags(approve, muted_default=True)
     approve.add_argument("--campaign", required=True)
-    approve.add_argument("--reason")
+    approve.add_argument("--reason", required=True)
+    approve.add_argument("--independence-declaration", action="store_true",
+                         help="explicitly attest that this is an independent human review")
     cancel = campaign_command.add_parser("cancel", help="request cancellation (stop new dispatch; drains leased work)")
     _common_flags(cancel, muted_default=True)
     cancel.add_argument("--campaign", required=True)
@@ -744,7 +752,7 @@ def add_operator_parsers(subparsers: argparse._SubParsersAction) -> None:
     _common_flags(publish, muted_default=True)
     publish.add_argument("--preparation", required=True)
     publish.add_argument("--independence-attestation", action="store_true")
-    publish.add_argument("--notes")
+    publish.add_argument("--notes", required=True, help="review reason bound to this publication decision")
 
 
 def dispatch(args: argparse.Namespace) -> tuple[int, dict]:

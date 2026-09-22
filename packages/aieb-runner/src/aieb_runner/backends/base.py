@@ -92,6 +92,10 @@ class ExecutionSpec:
     # exactly (empty/None) for the agent track, which does not use them.
     model_name: str | None = None
     agent_kwargs: dict[str, Any] = field(default_factory=dict)
+    # Canonical digest of the frozen campaign manifest that selected this
+    # trial. Backends may carry it through their run metadata, but must never
+    # replace or derive it from mutable ambient configuration.
+    manifest_digest: str | None = None
 
 
 @dataclass(frozen=True)

@@ -21,10 +21,10 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from .. import admission, budgets, orchestration
+from .. import admission, budgets, orchestration, release_reviews
 from ..auth import Identity, require_role
 from ..db import get_session
-from ..errors import conflict, forbidden, invalid_request, not_found, stale_revision
+from ..errors import ApiError, conflict, forbidden, invalid_request, not_found, stale_revision
 from ..idempotency import check_or_reserve, finalize, principal_scope
 from ..models import (
     AttemptRow,
@@ -35,7 +35,7 @@ from ..models import (
     EntrantRevisionRow,
     EvaluationRow,
     ProtocolRevisionRow,
-    ReviewRow,
+    IndependentReviewRow,
     TaskRevisionRow,
     TrialRow,
     User,
@@ -473,6 +473,19 @@ def start_campaign(
             f"only an approved campaign can be started, not one in state {row.state} "
             "(freeze, plan the matrix, then obtain independent approval first)"
         )
+    approval = session.execute(
+        select(IndependentReviewRow).where(
+            IndependentReviewRow.target_type == _CAMPAIGN_APPROVAL_TARGET,
+            IndependentReviewRow.target_id == campaign_id,
+            IndependentReviewRow.decision == "approve",
+            IndependentReviewRow.independence_declaration.is_(True),
+            IndependentReviewRow.reviewer_role_binding_id.is_not(None),
+        ).order_by(IndependentReviewRow.created_at.desc(), IndependentReviewRow.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    if approval is None:
+        raise conflict("campaign has no recorded independent approval")
+    if approval.evidence_digest != release_reviews.campaign_review_digest(row):
+        raise conflict("campaign approval is not bound to the current frozen manifest/cohort/matrix")
     try:
         orchestration.verify_matrix_or_raise(session, row)
     except orchestration.MatrixMismatchError as exc:
@@ -689,25 +702,38 @@ def campaign_approval(
     if row is None:
         raise not_found()
     review = session.execute(
-        select(ReviewRow).where(
-            ReviewRow.target_type == _CAMPAIGN_APPROVAL_TARGET,
-            ReviewRow.target_id == campaign_id,
-            ReviewRow.decision == "approve",
-        ).order_by(ReviewRow.created_at.desc(), ReviewRow.id.desc()).limit(1)
+        select(IndependentReviewRow).where(
+            IndependentReviewRow.target_type == _CAMPAIGN_APPROVAL_TARGET,
+            IndependentReviewRow.target_id == campaign_id,
+        ).order_by(IndependentReviewRow.created_at.desc(), IndependentReviewRow.id.desc()).limit(1)
     ).scalar_one_or_none()
     if review is None:
         return CampaignApprovalSummary(campaign_id=campaign_id, approved=False)
+    try:
+        evidence_bound = review.evidence_digest == release_reviews.campaign_review_digest(row)
+    except ApiError:
+        evidence_bound = False
+    approved = (
+        review.decision == "approve"
+        and review.independence_declaration
+        and review.reviewer_role_binding_id is not None
+        and evidence_bound
+    )
     return CampaignApprovalSummary(
-        campaign_id=campaign_id, approved=True, approved_by_user_id=review.reviewer_id,
+        campaign_id=campaign_id, approved=approved, approved_by_user_id=review.reviewer_user_id,
         approved_at=review.created_at.isoformat().replace("+00:00", "Z"),
-        reason=review.evidence.get("reason"), review_id=review.id,
+        reason=review.reason if approved else "approval evidence is not bound to the current frozen campaign",
+        review_id=review.id, scope=review.scope,
+        evidence_digest=review.evidence_digest,
+        independence_declaration=review.independence_declaration,
+        reviewed_at=review.created_at.isoformat().replace("+00:00", "Z"),
     )
 
 
 @router.post("/{campaign_id}/approve", response_model=CampaignApprovalSummary)
 def approve_campaign(
     campaign_id: UUID,
-    body: CampaignApproveRequest = CampaignApproveRequest(),
+    body: CampaignApproveRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     identity: Identity = Depends(require_role("reviewer", "administrator")),
     session: Session = Depends(get_session),
@@ -725,9 +751,10 @@ def approve_campaign(
       content;
     - a replay-safe mutation like everything else: same key replays the same
       summary, a reused key with different body is 409.
-    Approval records a durable decision AND transitions planned -> approved
-    (the plan's campaign_approved state); actually dispatching work remains
-    POST .../start with its own matrix/budget gates."""
+    The endpoint records a durable independent decision. An approval transitions
+    planned -> approved; a rejection remains planned and is still retained as
+    explicit release-review evidence. Actually dispatching work remains POST
+    .../start with its own matrix/budget gates."""
     row = session.execute(
         select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
     ).scalar_one_or_none()
@@ -756,18 +783,21 @@ def approve_campaign(
         "cohort_digest": row.cohort_digest,
         "matrix_digest": row.matrix_digest,
     }
-    review = ReviewRow(
-        reviewer_id=reviewer_id, target_type=_CAMPAIGN_APPROVAL_TARGET, target_id=campaign_id,
-        decision="approve", created_at=now,
-        evidence={"reason": body.reason, "campaign_id": str(campaign_id), **bound_identities},
+    review_digest = release_reviews.campaign_review_digest(row)
+    review = release_reviews.record_release_review(
+        session, target_type=_CAMPAIGN_APPROVAL_TARGET, target_id=campaign_id,
+        reviewer_id=reviewer_id, decision=body.decision, scope="campaign-approval",
+        evidence_digest_value=review_digest,
+        independence_declaration=body.independence_declaration,
+        reason=body.reason,
     )
-    session.add(review)
-    session.flush()
-    approved = session.execute(
-        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "planned")
-        .values(state="approved", revision=CampaignRow.revision + 1).returning(CampaignRow)
-    ).scalar_one_or_none()
-    if approved is None:
+    approved = None
+    if body.decision == "approve":
+        approved = session.execute(
+            update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "planned")
+            .values(state="approved", revision=CampaignRow.revision + 1).returning(CampaignRow)
+        ).scalar_one_or_none()
+    if body.decision == "approve" and approved is None:
         # The FOR UPDATE lock above serializes concurrent approvers, so this
         # can only be a replay of an approval that just committed.
         replay = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
@@ -777,13 +807,19 @@ def approve_campaign(
         raise conflict(f"cannot approve a campaign in state {current.state}")
     session.add(AuditEventRow(
         actor_user_id=reviewer_id, target_type="campaign", target_id=campaign_id,
-        action="campaign_approved", created_at=now,
-        evidence={"review_id": str(review.id), "reason": body.reason, **bound_identities},
+        action="campaign_approved" if body.decision == "approve" else "campaign_review_rejected", created_at=now,
+        evidence={"review_id": str(review.id), "reason": body.reason,
+                  "scope": review.scope, "evidence_digest": review.evidence_digest,
+                  "independence_declaration": review.independence_declaration,
+                  **bound_identities},
     ))
     session.flush()
     summary = CampaignApprovalSummary(
-        campaign_id=campaign_id, approved=True, approved_by_user_id=reviewer_id,
+        campaign_id=campaign_id, approved=body.decision == "approve", approved_by_user_id=reviewer_id,
         approved_at=now.isoformat().replace("+00:00", "Z"), reason=body.reason, review_id=review.id,
+        scope=review.scope, evidence_digest=review.evidence_digest,
+        independence_declaration=review.independence_declaration,
+        reviewed_at=review.created_at.isoformat().replace("+00:00", "Z"),
     )
     replay = finalize(session, scope=scope, key=idempotency_key, body=request_body,
                       status_code=200, response_body=summary.model_dump(mode="json"))

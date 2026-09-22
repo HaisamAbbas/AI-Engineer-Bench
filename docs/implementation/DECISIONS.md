@@ -1476,3 +1476,172 @@ Per section 14, engineer model calls use an authenticated budget broker; applica
   and implemented - silently picking one without recording the tradeoff here
   first is exactly the failure mode ADR-12's own "record before implementation"
   rule exists to prevent.
+
+## V2-GAP-004 — Canonical frozen-manifest digest binding
+
+- Harbor dispatch now requires a caller-supplied campaign manifest digest and
+  recomputes `ResolvedCampaign.model_validate(resolved).digest()` inside the
+  adapter. Missing or mismatched values fail before preflight/launch.
+- The canonical digest is carried into `ExecutionSpec` and checked again by
+  `verify_spec_pinning`, so a later spec rewrite cannot dispatch under a
+  different campaign identity. Regression coverage includes missing and
+  incorrect digest inputs.
+## V2-GAP-005 — Private holdout registry boundary
+
+- Implemented a private holdout control-plane registry with opaque provider
+  references, digest/length identity, append-only overlap/storage/isolation/
+  manifest reviews, immutable freeze triggers, scoped access auditing, and a release
+  eligibility check for explicit `holdout://<digest>` evaluator references.
+- The final frozen manifest digest is recomputed after approved overlap evidence
+  is attached, and the database rejects frozen-state edits other than retirement.
+- Fixture bytes are intentionally not accepted by the API or persisted in the
+  repository/database. A real private provider, IAM policy, overlap corpus,
+  access-log export, and independent human approval remain external closure
+  gates; no official holdout is claimed.
+- A development-only directory adapter verifies the capability's digest and
+  length without exposing a path to the evaluator; S3/GS references fail closed
+  until an approved production adapter is configured.
+- Review decisions are evaluated newest-first per kind; a later reject or
+  inconclusive decision blocks freezing even when an older approval exists.
+  PostgreSQL triggers duplicate this rule and bind author/freezer, task-family,
+  and evaluator-revision identities so direct SQL cannot bypass the service.
+- Follow-up hardening adds `e8f9a0b1c2d3` after the independent-review
+  migration: direct SQL now also fails closed on malformed manifest/review/audit
+  digests, blank review identity, oversized review reports, and blank protocol
+  or access scope. The local adapter rejects drive-qualified, traversal, and
+  symlinked object keys. These controls do not imply that a production object
+  store or official corpus exists.
+
+- Review follow-up: release eligibility now resolves the exact referenced
+  object digest and calls the full `require_frozen()` integrity/review gate;
+  failed reads commit audit events via an independent session while preserving
+  the provider error. Manifest locks and `g1b2c3d4e5f6` parent-row locking
+  serialize reviews against freeze/retirement. Idempotency keys are bounded to
+  the database column limit and all `e8f9a0b1c2d3` checks are mirrored in ORM
+  metadata. External storage, corpus, evaluator evidence, and human review
+  remain required for closure.
+## V2-GAP-006 - Structured independent admission and release review
+
+- Date: 2026-09-22
+- Status: implemented software gate; human acceptance remains blocked.
+- Decision: retain the existing task-admission review state machine and add a
+  first-class `independent_review` record for campaign approvals and
+  publication preparations. It persists reviewer identity, target subject,
+  scope, decision, evidence digest, independence declaration, reason, and
+  timestamp. The API derives subject identity and the digest from the locked,
+  immutable target; PostgreSQL constraints/triggers reject self-review,
+  malformed provenance, target-subject mismatches, and non-append-only writes.
+  Campaign start and publication approval revalidate the persisted review and
+  digest. No synthetic human review records are created.
+- Consequence: implementation is testable and fail-closed, but V2-GAP-006
+  stays BLOCKED until independent humans authenticate and record approvals for
+  every admitted task revision and release, followed by independent review of
+  that evidence.
+- Follow-up: additive migration `f0a1b2c3d4e5` adds database triggers that
+  require a global reviewer/administrator role and the correct review-gate
+  state (`planned` campaign or `prepared` publication preparation) for direct
+  SQL inserts. This closes an authorization/stale-target bypass without
+  changing the human-approval gate.
+- Further follow-up: additive migration `h1a2b3c4d5e6` requires known task
+  authorship for new admission reviews and admitted transitions, checks both
+  publication preparers and campaign creators for approve and reject decisions,
+  locks target rows before state validation, and persists the exact global role
+  binding used for every new review. The database assigns review timestamps and
+  protects referenced grants from later mutation/deletion. Fixture admission
+  now provisions its reviewer grant rather than weakening production guards.
+  PostgreSQL migration/direct-SQL/concurrency execution and genuine human
+  approvals remain open.
+
+## V2-GAP-007 - Structural Track A depth and application-diversity gate
+
+- Date: 2026-09-22
+- Status: implemented pre-admission audit; suite remains PARTIAL.
+- Decision: add a deterministic, fail-closed structural pre-screen before any
+  Track A development catalog can be treated as release-ready. The audit
+  excludes the shared HTTP harness, counts executable application lines and
+  symbols, groups tasks by their declared application project, and compares
+  normalized AST fingerprints to flag copied implementations. Floors are
+  documented in the report and are intentionally evidence for triage, not a
+  replacement for semantic review, clean admission matrices, or independent
+  human review.
+- Evidence: `docs/implementation/evidence/V2-GAP-007/mvp1-depth-audit.json`
+  currently reports three categories and no near-duplicate pair, but eleven of
+  twelve tasks are structurally shallow and all three project groups fail the
+  aggregate/deep-task floor. `suite_admission_eligible` is false because both
+  the structural floor and the catalog's independent-review status are
+  required. The catalog therefore remains development-only; no task is
+  release-eligible from this audit alone.
+- Consequence: tasks must be deepened or removed, then rerun through admission,
+  reset and independent-review gates before a defensible suite manifest can be
+  frozen. No human review or official release is manufactured by the script.
+- Follow-up decision: adopt `aieb.track-a-curation/v2` and reject all twelve
+  legacy thin fixtures from the curated suite. The earlier audit could be
+  padded by multiline spans and counted every Python file except `server.py`;
+  it also treated category labels across rejected tasks as diversity. Audit v2
+  excludes tests, fixtures, generated/vendor/reference/control material,
+  counts statement starts plus modules/symbols/branch points, requires explicit
+  projects and unique engineering mechanisms, and enforces the specification's
+  12-20 task range. Rejected fixtures remain available for local controls but
+  are excluded from bundles by default. This is a deliberate reduction from
+  twelve claimed candidates to zero honest candidates, not an admission claim.
+
+## V2-GAP-009 - Fail-closed gate for authorized real model execution
+
+- Date: 2026-09-22
+- Status: implemented readiness gate; execution remains BLOCKED.
+- Decision: require a non-secret `ModelExecutionAuthorization` binding the
+  provider, concrete requested models, separate model cohort, positive spend
+  cap, credential environment variable, approver, purpose, and expiry. A
+  read-only audit verifies the frozen reference-loop/prompt/tool-schema
+  digests, protocol/cohort identity, unsupported-control disclosure,
+  credential presence, usage/model-identity evidence, and real-call evidence.
+  It never contacts a provider or logs credential values.
+- Evidence: `docs/implementation/evidence/V2-GAP-009/model-track-readiness.json`
+  reports `ready_for_real_execution: false`; the checked-in plan is explicitly
+  `prepared-not-authorized` and contains no secret or paid-provider result.
+- Consequence: fake Docker/provider smoke remains test evidence only. Real
+  execution requires external authorization, configured credentials, an
+  approved cap, and a frozen concrete cohort before any provider call.
+
+## V2-GAP-008 - Separate MVP-2 bug-finding track foundations
+
+- Date: 2026-09-22
+- Status: implemented development foundations; track remains PARTIAL.
+- Decision: keep bug finding in a separate cohort and require a fixed,
+  digest-bound repository snapshot, compatible license, public controls,
+  evaluator-only hidden labels, and an explicit finding-only or patch mode.
+  Hidden labels are represented by private references and independently bound
+  digests; they are never committed as public fixtures. Scoring is component
+  based (true/false positives, duplicates, severity, reproduction, precision,
+  recall and optional patch correctness), so speculative lists cannot inflate
+  results.
+- Evidence: `docs/implementation/evidence/V2-GAP-008/bugfinding-track-audit.json`
+  audits the development task and reports zero admitted tasks. The hidden-label
+  digest is still a placeholder, Harbor/evaluator evidence is missing, and
+  independent review/authorization is pending.
+- Consequence: no MVP-2 task, release, or score is official. A private corpus,
+  trusted evaluator execution, immutable trial evidence, independent review,
+  and a separately authorized cohort remain required for closure.
+
+## V2-GAP-008/009 review follow-up - evaluator and evidence binding
+
+- Date: 2026-09-22
+- Status: software findings fixed; external gates unchanged.
+- Decision: scoring requires a task/revision-bound hidden-label set whose
+  digest equals the task's `hidden_label_digest`, plus a digest-bound
+  `BugEvaluationResult` carrying the frozen evaluator identity and evaluator
+  finding/reproduction evidence digests. Reproduction quality and patch
+  correctness are no longer caller arguments. Patch bytes must hash to the
+  submitted patch digest, and hidden expected patch digests are checked when
+  an evaluator reports a correct patch. Model-track evidence references count
+  only when a repository-local `evidence://path#sha256` file exists and hashes
+  exactly; private references remain unverifiable to the local audit.
+- Evidence: `tests.test_bugfinding_v2` and
+  `tests.test_model_track_authorization` (22 tests), plus the related contract,
+  MVP-1, Harbor-dispatch, and operator-CLI checks (58 tests, 30 environment
+  skips) pass. `bugfinding-track-audit.json` still reports zero admitted tasks;
+  `model-track-readiness.json` still reports not ready.
+- Consequence: these controls close the reported software-boundary defects but
+  do not create private holdouts, genuine isolated evaluator runs, independent
+  review, provider authorization, or paid execution. GAP-008 remains PARTIAL
+  and GAP-009 remains BLOCKED.

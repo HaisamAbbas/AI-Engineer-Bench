@@ -166,6 +166,9 @@ class AdmissionPersistenceTests(unittest.TestCase):
             )
             session.add(revision)
             session.flush()
+            session.add(models.RoleBinding(
+                user_id=reviewer.id, role="reviewer", scope="global",
+            ))
             session.add(models.TaskAdmissionStateRow(
                 task_revision_id=revision.id, status="frozen", author_user_id=author.id))
             session.commit()

@@ -16,6 +16,7 @@ class ReviewFollowupTests(unittest.TestCase):
     _seed_evaluator = fixtures.ApiServiceTests._seed_evaluator
     _registry_payload = staticmethod(fixtures.ApiServiceTests._registry_payload)
     _seed_frozen_campaign_for_aggregation = fixtures.ApiServiceTests._seed_frozen_campaign_for_aggregation
+    _seed_task = fixtures.ApiServiceTests._seed_task
     _seed_publication = fixtures.ApiServiceTests._seed_publication
     _analysis_snapshot = staticmethod(fixtures.ApiServiceTests._analysis_snapshot)
 
@@ -32,6 +33,42 @@ class ReviewFollowupTests(unittest.TestCase):
             json={"decision": "approve", "independence_attestation": True})
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["published_publication_id"]
+
+    def test_campaign_creator_cannot_submit_a_publication_rejection(self):
+        """Independence applies to every decision, not only approvals."""
+        from aieb_api import db, models
+        campaign = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True)
+        preparation = self._prepare(campaign)
+        with db.session_factory()() as session:
+            row = session.get(models.CampaignRow, campaign)
+            creator = session.get(models.User, row.created_by_user_id)
+            creator_subject = creator.oidc_subject
+        response = self.client.post(
+            f"/v1/publications/preparations/{preparation}/review",
+            headers=fixtures._auth_header(("reviewer",), subject=creator_subject)
+            | {"Idempotency-Key": "creator-reject"},
+            json={"decision": "reject", "independence_attestation": True, "notes": "rejected"},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_fixture_admission_provisions_the_database_reviewer_grant(self):
+        from aieb_api import db, models
+        from sqlalchemy import select
+        self._seed_task()
+        with db.session_factory()() as session:
+            reviewer = session.execute(
+                select(models.User).where(
+                    models.User.oidc_issuer == "fixture",
+                    models.User.oidc_subject == "fixture-reviewer",
+                )
+            ).scalar_one()
+            self.assertIsNotNone(session.execute(
+                select(models.RoleBinding).where(
+                    models.RoleBinding.user_id == reviewer.id,
+                    models.RoleBinding.role == "reviewer",
+                    models.RoleBinding.scope == "global",
+                )
+            ).scalar_one_or_none())
 
     def test_non_ranked_class_reaches_results_history_and_comparison(self):
         from aieb_api import db, models

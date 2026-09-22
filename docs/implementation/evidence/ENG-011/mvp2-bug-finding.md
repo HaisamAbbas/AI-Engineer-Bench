@@ -9,9 +9,11 @@ mutually exclusive; patch mode additionally requires a patch digest and paths.
 
 Release manifests use an explicit `mvp2-bugfinding-*` cohort and cannot be
 marked official by the contract. Baseline, reference, alternative, and
-negative-control references are required on every task revision. The catalog
-is empty and development-only until a real license-compatible repository is
-curated and independently admitted; no speculative findings or official
-scores are generated.
+negative-control references are required on every task revision. The separate
+catalog now contains one digest-pinned Apache-2.0 development task based on
+the real-source RAG package, but its private labels, public examples, and
+Harbor/evaluator evidence are intentionally absent. The fail-closed audit
+therefore admits zero tasks; no speculative findings or official scores are
+generated.
 
 Verification: MVP-2 contract tests and the fail-closed catalog audit pass.

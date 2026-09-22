@@ -11,6 +11,7 @@ import hashlib
 import json
 from typing import Any
 
+from fastapi import Header
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,10 +39,27 @@ def principal_scope(scope: str, principal: str | None) -> str:
     return f"{scope}|u={principal if principal else 'unauthenticated'}"
 
 
+def required_idempotency_key(key: str = Header(..., alias="Idempotency-Key")) -> str:
+    """FastAPI dependency for mutation routes.
+
+    The database key column is bounded to 128 characters. Validate and trim at
+    the HTTP boundary so oversized or whitespace-only values become a stable
+    client error instead of a driver/database exception.
+    """
+    normalized = key.strip()
+    if not normalized:
+        raise invalid_request("Idempotency-Key must not be blank")
+    if len(normalized) > 128:
+        raise invalid_request("Idempotency-Key must be at most 128 characters")
+    return normalized
+
+
 def check_or_reserve(session: Session, *, scope: str, key: str | None, body: dict[str, Any]) -> dict[str, Any] | None:
     """Returns a cached response body to replay, or None if the caller should proceed and later call `store`."""
-    if not key:
+    if key is None or not key.strip():
         raise invalid_request("Idempotency-Key header is required for this mutation")
+    if len(key) > 128 or len(key.strip()) > 128:
+        raise invalid_request("Idempotency-Key must be at most 128 characters")
     digest = request_digest(body)
     existing = session.execute(
         select(IdempotencyRecordRow).where(IdempotencyRecordRow.scope == scope, IdempotencyRecordRow.key == key)
@@ -54,12 +72,14 @@ def check_or_reserve(session: Session, *, scope: str, key: str | None, body: dic
 
 
 def store(session: Session, *, scope: str, key: str, body: dict[str, Any], status_code: int, response_body: dict[str, Any]) -> None:
-    if not key:
+    if not key or not key.strip():
         # The (scope, key) unique constraint is the correctness mechanism for
         # concurrent replays; a NULL key would insert an unusable record that
         # no client could ever replay (and, on PostgreSQL, would not even
         # conflict with another NULL). Fail closed instead.
         raise invalid_request("Idempotency-Key header is required for this mutation")
+    if len(key) > 128 or len(key.strip()) > 128:
+        raise invalid_request("Idempotency-Key must be at most 128 characters")
     session.add(
         IdempotencyRecordRow(
             scope=scope, key=key, request_digest=request_digest(body), response_status=status_code, response_body=response_body,

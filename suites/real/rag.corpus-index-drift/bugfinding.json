@@ -1,0 +1,47 @@
+{
+  "schema_version": "aieb.bug-task/v2",
+  "task_id": "mvp2.rag.corpus-index-drift",
+  "revision": "0.1.0",
+  "cohort_id": "mvp2-bugfinding-development-v1",
+  "mode": "finding-only",
+  "repository": {
+    "schema_version": "aieb.bug-repository/v2",
+    "repository_id": "sqlite-utils-corpus-index-drift",
+    "revision": "9d7da06",
+    "content_digest": "0e55378bd4ccb01a34b03f182b56cb1fdc01082982954d5e59406b5832dc837f",
+    "license_id": "Apache-2.0",
+    "provenance_digest": "c72a24a55d7a80c3e1fa1d595fcec77153efe4e2498b1d37ba7a612198cc485b",
+    "documentation_digest": "e2f0f1b0485f7be4879c5a4b3f049721c19b32c5dd63125ff5fb3bb3498d7a53",
+    "allowed_commands": ["python dev_tests/selfcheck.py"],
+    "network_policy": "none"
+  },
+  "objective": "Find reproducible defects in versioned corpus indexing without changing the repository.",
+  "severity_taxonomy_version": "aieb.bug-severity/v1",
+  "hidden_label_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "evaluator_digest": "8975800cb8cd4d9d50f2fa0b528f4785087bfcb0af7766972c40de4cb333e74c",
+  "hidden_label_ref": "private://mvp2-bugfinding-development-v1/mvp2.rag.corpus-index-drift/labels",
+  "evaluator_ref": "private://mvp2-bugfinding-development-v1/mvp2.rag.corpus-index-drift/evaluator",
+  "public_examples": [
+    {
+      "schema_version": "aieb.bug-finding/v2",
+      "finding_id": "example-stale-index",
+      "location": "knowledge_service/backend.py",
+      "symbol_or_line": "Backend.put",
+      "reproduction_steps": ["python dev_tests/selfcheck.py"],
+      "observed_behavior": "A newer document version leaves the old passage searchable.",
+      "expected_behavior": "Replacing a document removes superseded index entries.",
+      "impact": "Search consumers can receive stale knowledge.",
+      "severity": "major",
+      "evidence": [
+        {"kind": "reproduction", "reference": "repo/dev_tests/selfcheck.py"}
+      ],
+      "confidence": "0.8"
+    }
+  ],
+  "baseline_ref": "repo/knowledge_service/backend.py",
+  "reference_ref": "reference/backend.py",
+  "alternative_ref": "alternative/backend.py",
+  "negative_control_ref": "counterexamples/",
+  "public_test_ref": "repo/dev_tests/selfcheck.py",
+  "execution_evidence_ref": null
+}

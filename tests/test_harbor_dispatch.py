@@ -20,7 +20,7 @@ for src in (ROOT / "services/api/src", ROOT / "packages/aieb-core/src", ROOT / "
     if str(src) not in sys.path:
         sys.path.insert(0, str(src))
 
-from aieb_core.models import BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, RoleBudget, TaskRevision  # noqa: E402
+from aieb_core.models import BudgetProfile, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, ResolvedCampaign, RoleBudget, TaskRevision  # noqa: E402
 from aieb_core.planner import Registry, freeze_campaign  # noqa: E402
 
 from aieb_api.worker.harbor_dispatch import (  # noqa: E402
@@ -90,8 +90,27 @@ def _payload(**kwargs):
     resolved = _resolved_manifest(**kwargs)
     trial_id = resolved["trials"][0]["id"]
     return build_frozen_cell_payload(
-        resolved, trial_id=trial_id, attempt_number=1, campaign_id=resolved["id"], manifest_digest="manifest-digest",
+        resolved, trial_id=trial_id, attempt_number=1, campaign_id=resolved["id"],
+        manifest_digest=ResolvedCampaign.model_validate(resolved).digest(),
     )
+
+
+def test_build_frozen_cell_payload_rejects_manifest_digest_mismatch() -> None:
+    resolved = _resolved_manifest()
+    with pytest.raises(DispatchIntegrityError, match="canonical frozen manifest"):
+        build_frozen_cell_payload(
+            resolved, trial_id=resolved["trials"][0]["id"], attempt_number=1,
+            campaign_id=resolved["id"], manifest_digest="0" * 64,
+        )
+
+
+def test_build_frozen_cell_payload_rejects_missing_manifest_digest() -> None:
+    resolved = _resolved_manifest()
+    with pytest.raises(DispatchIntegrityError, match="requires the frozen campaign manifest digest"):
+        build_frozen_cell_payload(
+            resolved, trial_id=resolved["trials"][0]["id"], attempt_number=1,
+            campaign_id=resolved["id"],
+        )
 
 
 class _SyntheticLauncher:

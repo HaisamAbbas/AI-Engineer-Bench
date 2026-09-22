@@ -127,7 +127,7 @@ class BundleExclusionTest(unittest.TestCase):
         _rmtree_windows_safe(self.tmp)
 
     def test_bundle_contains_no_maintainer_tests(self) -> None:
-        build_bundle(self.output)
+        build_bundle(self.output, include_rejected_development=True)
         bundle_root = self.output / "release-candidate-bundle"
         for path in bundle_root.rglob("*"):
             rel = path.relative_to(bundle_root)
@@ -136,14 +136,14 @@ class BundleExclusionTest(unittest.TestCase):
             self.assertNotIn("tests", parts, f"tests/ directory found in bundle at {rel}")
 
     def test_bundle_contains_no_dev_tests(self) -> None:
-        build_bundle(self.output)
+        build_bundle(self.output, include_rejected_development=True)
         bundle_root = self.output / "release-candidate-bundle"
         for path in bundle_root.rglob("*"):
             rel = path.relative_to(bundle_root)
             self.assertNotIn("dev_tests", rel.parts, f"dev_tests found in bundle at {rel}")
 
     def test_bundle_contains_no_holdout(self) -> None:
-        build_bundle(self.output)
+        build_bundle(self.output, include_rejected_development=True)
         bundle_root = self.output / "release-candidate-bundle"
         for path in bundle_root.rglob("*"):
             rel = path.relative_to(bundle_root)
@@ -151,7 +151,7 @@ class BundleExclusionTest(unittest.TestCase):
                 self.assertNotIn("holdout", part.lower(), f"holdout path found in bundle at {rel}")
 
     def test_bundle_manifest_verifies_exclusion(self) -> None:
-        manifest = build_bundle(self.output)
+        manifest = build_bundle(self.output, include_rejected_development=True)
         self.assertTrue(manifest["protected_path_exclusion_verified"])
         self.assertEqual(manifest["excluded_from_bundle"], [
             "tests/maintainer/ - trusted evaluator and holdout code (private)",
@@ -159,8 +159,9 @@ class BundleExclusionTest(unittest.TestCase):
             ".cache/ - local caches (ephemeral)",
         ])
 
-    def test_bundle_manifest_lists_all_twelve_tasks(self) -> None:
-        manifest = build_bundle(self.output)
+    def test_explicit_rejected_fixture_bundle_lists_all_twelve_tasks(self) -> None:
+        manifest = build_bundle(self.output, include_rejected_development=True)
+        self.assertEqual(manifest["label"], "rejected-development-fixtures")
         self.assertEqual(manifest["total_tasks"], 12)
         task_ids = [t["task_id"] for t in manifest["tasks"]]
         expected = [

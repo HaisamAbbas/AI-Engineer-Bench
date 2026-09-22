@@ -610,6 +610,52 @@ class ReviewRow(Base):
     __table_args__ = (CheckConstraint("decision in ('approve','reject')", name="ck_review_decision"),)
 
 
+class IndependentReviewRow(Base):
+    """Structured review evidence for release/campaign gates.
+
+    ``ReviewRow`` predates the v2 release workflow and is intentionally kept
+    for historical invalid-attempt classifications.  Release approvals use
+    this table so the reviewer identity, scope, decision, evidence binding,
+    independence declaration, reason, and timestamp are first-class durable
+    fields rather than conventions hidden in a JSON blob.
+    """
+
+    __tablename__ = "independent_review"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    target_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
+    reviewer_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Immutable snapshot of the global reviewer/administrator grant used at
+    # insertion time.  The database trigger requires this for new reviews and
+    # the FK prevents the referenced grant from being deleted later.
+    reviewer_role_binding_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("role_bindings.id"), nullable=True
+    )
+    subject_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    independence_declaration: Mapped[bool] = mapped_column(nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("target_type", "target_id", name="uq_independent_review_target"),
+        CheckConstraint(
+            "target_type in ('campaign_approval','publication_preparation')",
+            name="ck_independent_review_target_type",
+        ),
+        CheckConstraint("decision in ('approve','reject')", name="ck_independent_review_decision"),
+        CheckConstraint("independence_declaration = true", name="ck_independent_review_independence"),
+        CheckConstraint("reviewer_user_id <> subject_user_id", name="ck_independent_review_reviewer_distinct"),
+        CheckConstraint("evidence_digest ~ '^[0-9a-f]{64}$'", name="ck_independent_review_digest"),
+        CheckConstraint("length(btrim(scope)) > 0", name="ck_independent_review_scope"),
+        CheckConstraint("length(btrim(reason)) > 0", name="ck_independent_review_reason"),
+        Index("ix_independent_review_target", "target_type", "target_id"),
+    )
+
+
 class AuditEventRow(Base):
     __tablename__ = "audit_event"
 
@@ -863,6 +909,102 @@ class SystemFenceRow(Base):
     )
 
 
+class HoldoutManifestRow(Base):
+    """Opaque, immutable identity for a private official holdout corpus.
+
+    Fixture bytes never live here: ``storage_uri`` is a private provider
+    reference and the digest/length bind the object selected by an evaluator.
+    A frozen row cannot be edited; retirement is an append-only status change.
+    """
+
+    __tablename__ = "holdout_manifest"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
+    family_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    evaluator_revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    object_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_length: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    overlap_review_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    access_scope: Mapped[str] = mapped_column(String(256), nullable=False)
+    split: Mapped[str] = mapped_column(String(32), nullable=False, default="official")
+    retention_class: Mapped[str] = mapped_column(String(32), nullable=False, default="official")
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    frozen_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("holdout_manifest.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    frozen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("status in ('draft','reviewed','frozen','retired')", name="ck_holdout_manifest_status"),
+        CheckConstraint("object_length >= 0", name="ck_holdout_manifest_length"),
+        CheckConstraint("object_digest ~ '^[0-9a-f]{64}$'", name="ck_holdout_manifest_digest"),
+        CheckConstraint("manifest_digest ~ '^[0-9a-f]{64}$'", name="ck_holdout_manifest_identity_digest"),
+        CheckConstraint("overlap_review_digest IS NULL OR overlap_review_digest ~ '^[0-9a-f]{64}$'", name="ck_holdout_manifest_overlap_digest"),
+        CheckConstraint("length(btrim(protocol_version)) > 0 AND length(btrim(access_scope)) > 0", name="ck_holdout_manifest_protocol_scope"),
+        CheckConstraint("split in ('official','development')", name="ck_holdout_manifest_split"),
+        CheckConstraint("retention_class in ('official','development','ephemeral')", name="ck_holdout_manifest_retention"),
+        UniqueConstraint("task_revision_id", "manifest_digest", name="uq_holdout_manifest_revision_digest"),
+        Index("ix_holdout_manifest_task_status", "task_revision_id", "status"),
+    )
+
+
+class HoldoutReviewRow(Base):
+    """Append-only overlap/storage/isolation/manifest review evidence."""
+
+    __tablename__ = "holdout_review"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    holdout_manifest_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("holdout_manifest.id"), nullable=False)
+    reviewer_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    review_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    report: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("review_kind in ('overlap','storage','isolation','manifest')", name="ck_holdout_review_kind"),
+        CheckConstraint("decision in ('approve','reject','inconclusive')", name="ck_holdout_review_decision"),
+        CheckConstraint("evidence_digest ~ '^[0-9a-f]{64}$'", name="ck_holdout_review_evidence_digest"),
+        CheckConstraint("length(btrim(reason)) > 0", name="ck_holdout_review_reason"),
+        CheckConstraint("octet_length(report::text) <= 65536", name="ck_holdout_review_report_size"),
+        UniqueConstraint("holdout_manifest_id", "review_kind", "reviewer_user_id", name="uq_holdout_review_identity"),
+        Index("ix_holdout_review_manifest", "holdout_manifest_id"),
+    )
+
+
+class HoldoutAccessAuditRow(Base):
+    """Append-only audit trail for scoped evaluator access; never stores content."""
+
+    __tablename__ = "holdout_access_audit"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    holdout_manifest_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("holdout_manifest.id"), nullable=False)
+    actor_identity: Mapped[str] = mapped_column(String(256), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("campaign.id"), nullable=True)
+    attempt_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("attempt.id"), nullable=True)
+    object_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    success: Mapped[bool] = mapped_column(nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("operation in ('read','list','download','verify','review')", name="ck_holdout_access_operation"),
+        CheckConstraint("length(btrim(actor_identity)) > 0", name="ck_holdout_access_actor"),
+        CheckConstraint("object_digest ~ '^[0-9a-f]{64}$'", name="ck_holdout_access_digest"),
+        Index("ix_holdout_access_manifest_time", "holdout_manifest_id", "created_at"),
+        Index("ix_holdout_access_campaign", "campaign_id"),
+    )
+
+
 class MetricCounterRow(Base):
     """Durable counters shared by API and worker processes.
 
@@ -1082,6 +1224,12 @@ class TaskAdmissionReviewRow(Base):
     task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
     admission_run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_admission_run.id"), nullable=False)
     reviewer_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # See IndependentReviewRow.reviewer_role_binding_id.  Nullable only for
+    # legacy rows predating the authorization snapshot migration; all new rows
+    # are rejected by the database trigger unless this is populated.
+    reviewer_role_binding_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("role_bindings.id"), nullable=True
+    )
     author_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     requested_by_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -1096,6 +1244,9 @@ class TaskAdmissionReviewRow(Base):
         Index("ix_task_admission_review_revision", "task_revision_id"),
         CheckConstraint("decision in ('approve','reject')", name="ck_task_admission_review_decision"),
         CheckConstraint("independence_declaration = true", name="ck_task_admission_review_independence"),
+        CheckConstraint("evidence_digest ~ '^[0-9a-f]{64}$'", name="ck_task_admission_review_digest_format"),
+        CheckConstraint("length(btrim(scope)) > 0", name="ck_task_admission_review_scope_nonblank"),
+        CheckConstraint("length(btrim(reason)) > 0", name="ck_task_admission_review_reason_nonblank"),
         CheckConstraint(
             "(author_user_id is null or reviewer_user_id <> author_user_id) "
             "and reviewer_user_id <> requested_by_user_id",

@@ -134,6 +134,64 @@ export interface paths {
         patch: operations["patch_campaign_v1_campaigns__campaign_id__patch"];
         trace?: never;
     };
+    "/v1/campaigns/{campaign_id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campaign Approval
+         * @description The campaign's approval fact. An unapproved frozen campaign reads
+         *     `approved: false` - distinct from missing; the operator CLI's `run`
+         *     gate refuses before ever issuing a start.
+         */
+        get: operations["campaign_approval_v1_campaigns__campaign_id__approval_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Campaign
+         * @description Reviewer-only independent approval of a PLANNED campaign.
+         *
+         *     Anti-bypass rules:
+         *     - reviewer must be distinct from the campaign's creator (no self-approval);
+         *     - the campaign must be `planned` - i.e. frozen AND its exact cell matrix
+         *       materialized and digest-pinned first - so what is approved is an
+         *       executable matrix, not an abstract draft, and a running/ended campaign
+         *       cannot subsequently be 'approved';
+         *     - the recorded approval binds the exact frozen manifest, cohort, and
+         *       matrix digests, so an approval can never be read as covering different
+         *       content;
+         *     - a replay-safe mutation like everything else: same key replays the same
+         *       summary, a reused key with different body is 409.
+         *     The endpoint records a durable independent decision. An approval transitions
+         *     planned -> approved; a rejection remains planned and is still retained as
+         *     explicit release-review evidence. Actually dispatching work remains POST
+         *     .../start with its own matrix/budget gates.
+         */
+        post: operations["approve_campaign_v1_campaigns__campaign_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/campaigns/{campaign_id}/cancel": {
         parameters: {
             query?: never;
@@ -145,14 +203,14 @@ export interface paths {
         put?: never;
         /**
          * Cancel Campaign Route
-         * @description frozen/running/paused -> cancelling: stop new dispatch, keep the
-         *     budget reservation ACTIVE until the drain completes. Releasing at request
-         *     time would book the estimate back as available while leased work was
-         *     still capable of billing spend; the reservation is released only when no
-         *     ready/leased work remains. Already-leased work finishes or expires
+         * @description frozen/planned/approved/running/paused -> cancelling: stop new dispatch,
+         *     keep the budget reservation ACTIVE until the drain completes. Releasing at
+         *     request time would book the estimate back as available while leased work
+         *     was still capable of billing spend; the reservation is released only when
+         *     no ready/leased work remains. Already-leased work finishes or expires
          *     naturally; the worker (or the idle sweep) finalizes the campaign to
          *     `cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.
-         *     cancelling a frozen campaign that was never enqueued, or one whose last
+         *     cancelling a planned campaign that was never started, or one whose last
          *     item just finished - is finalized to `cancelled` directly in THIS
          *     transaction, so it can never sit stuck in `cancelling` with no work item
          *     left to trigger the worker's completion path.
@@ -247,6 +305,41 @@ export interface paths {
          *     this campaign until it is resumed.
          */
         post: operations["pause_campaign_v1_campaigns__campaign_id__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/campaigns/{campaign_id}/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Plan Campaign
+         * @description frozen -> planned: expand the EXACT cell matrix from the frozen release
+         *     manifest and pin it (V2-GAP-004 plan sections 1/3/4).
+         *
+         *     Every `task_revision x entrant_revision x repetition_index` cell becomes a
+         *     persisted trial row with the plan-required per-cell identity (the
+         *     deterministic trial id plus its contract cell digest), frozen order, worst-
+         *     case budget allocation, planned wall-clock deadline, and initial
+         *     `planned` status. The campaign's `matrix_digest` - a canonical digest over
+         *     the full cell-identity set - is recorded here and re-verified before start
+         *     and at aggregation, so a matrix altered after planning can never run.
+         *
+         *     Expansion is idempotent (an already-materialized matrix is left as-is and
+         *     re-verified) and shares the transaction with the state transition, so a
+         *     failure cannot leave half a matrix or a planned campaign without cells.
+         *     Operator-authorized, replay-safe, and never public: `POST /preview` remains
+         *     the read-only dry run for drafts.
+         */
+        post: operations["plan_campaign_v1_campaigns__campaign_id__plan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -380,9 +473,18 @@ export interface paths {
         put?: never;
         /**
          * Start Campaign
-         * @description frozen -> running: reserve the declared budget (estimated, not a hard
-         *     provider hold), enqueue the frozen trial matrix, then flip to running.
-         *     All writes, including the idempotent response, share one transaction.
+         * @description approved -> running: verify the exact matrix, reserve the declared
+         *     budget (estimated, not a hard provider hold), enqueue first attempts for
+         *     every cell, then flip to running. All writes, including the idempotent
+         *     response, share one transaction.
+         *
+         *     Server-side gates (V2-GAP-004 plan sections 3-5): the campaign must be
+         *     `approved` - reachable only through freeze -> plan -> independent
+         *     approval, so start cannot bypass the approval sequence - the persisted
+         *     matrix must exactly equal the frozen manifest matrix, the worst-case
+         *     reservation must be known (a missing role cap or environment bound is
+         *     refused, never silently dropped from the total), and it must not exceed
+         *     the authorized cap (`AIEB_BUDGET_CAP_USD`) when one is configured.
          */
         post: operations["start_campaign_v1_campaigns__campaign_id__start_post"];
         delete?: never;
@@ -632,6 +734,310 @@ export interface paths {
          *     `finalize()` commits it together with the idempotency record.
          */
         post: operations["deactivate_kill_switch_v1_kill_switch_deactivate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/admissions/{admission_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Admission */
+        get: operations["get_admission_v1_maintainer_admissions__admission_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/admissions/{admission_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Admission */
+        post: operations["cancel_admission_v1_maintainer_admissions__admission_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/admissions/{admission_id}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Execute Admission */
+        post: operations["execute_admission_v1_maintainer_admissions__admission_id__execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/admissions/{admission_id}/gates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Admission Gates */
+        get: operations["get_admission_gates_v1_maintainer_admissions__admission_id__gates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/admissions/{admission_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Admission */
+        post: operations["review_admission_v1_maintainer_admissions__admission_id__review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/holdouts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Holdout */
+        post: operations["create_holdout_v1_maintainer_holdouts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/holdouts/{holdout_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Holdout */
+        get: operations["get_holdout_v1_maintainer_holdouts__holdout_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/holdouts/{holdout_id}/freeze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Freeze Holdout */
+        post: operations["freeze_holdout_v1_maintainer_holdouts__holdout_id__freeze_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/holdouts/{holdout_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retire Holdout */
+        post: operations["retire_holdout_v1_maintainer_holdouts__holdout_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/holdouts/{holdout_id}/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Review Holdout */
+        post: operations["review_holdout_v1_maintainer_holdouts__holdout_id__reviews_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Task Draft */
+        post: operations["create_task_draft_v1_maintainer_task_drafts_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts/authored": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Authored Task Draft
+         * @description Create a draft from an authored, pinned repository source.
+         *
+         *     This adapter intentionally accepts only authored sources; mined-PR and
+         *     live-window metadata require separate adapters and cohorts.
+         */
+        post: operations["create_authored_task_draft_v1_maintainer_task_drafts_authored_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts/live-window": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Live Window Task Draft
+         * @description Register a time-windowed snapshot with explicit expiry and cutoff.
+         */
+        post: operations["create_live_window_task_draft_v1_maintainer_task_drafts_live_window_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts/mined-pr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Mined Pr Task Draft
+         * @description Register a mined PR as a development draft with explicit provenance.
+         *
+         *     The patch and PR metadata are retained for contamination and split review;
+         *     this endpoint never implies that the task is admitted or official.
+         */
+        post: operations["create_mined_pr_task_draft_v1_maintainer_task_drafts_mined_pr_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts/{draft_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Task Draft */
+        patch: operations["update_task_draft_v1_maintainer_task_drafts__draft_id__patch"];
+        trace?: never;
+    };
+    "/v1/maintainer/task-drafts/{draft_id}/freeze": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Freeze Task Draft */
+        post: operations["freeze_task_draft_v1_maintainer_task_drafts__draft_id__freeze_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/maintainer/task-revisions/{revision_id}/admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Admission */
+        post: operations["start_admission_v1_maintainer_task_revisions__revision_id__admissions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -943,6 +1349,143 @@ export interface components {
          * @enum {string}
          */
         Activity: "repair";
+        /** AdmissionCancelRequest */
+        AdmissionCancelRequest: {
+            /** Reason */
+            reason: string;
+        };
+        /** AdmissionGateSummary */
+        AdmissionGateSummary: {
+            /** Completed At */
+            completed_at?: string | null;
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
+            /** Evidence Reference */
+            evidence_reference?: string | null;
+            /** Gate Name */
+            gate_name: string;
+            /** Observed Digest */
+            observed_digest?: string | null;
+            /** Required */
+            required: boolean;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_run" | "pass" | "fail" | "indeterminate";
+        };
+        /** AdmissionReviewRequest */
+        AdmissionReviewRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Independence Declaration */
+            independence_declaration: boolean;
+            /** Reason */
+            reason: string;
+            /** Scope */
+            scope: string;
+        };
+        /** AdmissionReviewSummary */
+        AdmissionReviewSummary: {
+            /**
+             * Admission Run Id
+             * Format: uuid
+             */
+            admission_run_id: string;
+            /** Created At */
+            created_at: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Evidence Digest */
+            evidence_digest: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Independence Declaration */
+            independence_declaration: boolean;
+            /** Reason */
+            reason: string;
+            /**
+             * Reviewer User Id
+             * Format: uuid
+             */
+            reviewer_user_id: string;
+            /** Scope */
+            scope: string;
+            /**
+             * Task Revision Id
+             * Format: uuid
+             */
+            task_revision_id: string;
+        };
+        /** AdmissionRunSummary */
+        AdmissionRunSummary: {
+            /** Admission State */
+            admission_state: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Evaluator Digest */
+            evaluator_digest: string;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Gates */
+            gates?: components["schemas"]["AdmissionGateSummary"][];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Manifest Digest */
+            manifest_digest: string;
+            /**
+             * Passing Resets
+             * @default 0
+             */
+            passing_resets: number;
+            /** Protocol Digest */
+            protocol_digest: string;
+            /** Protocol Version */
+            protocol_version: string;
+            /** Result Digest */
+            result_digest?: string | null;
+            /** Revision Digest */
+            revision_digest: string;
+            /** Source Digest */
+            source_digest: string;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "running" | "passed" | "failed" | "cancelled";
+            /**
+             * Task Revision Id
+             * Format: uuid
+             */
+            task_revision_id: string;
+        };
+        /** AdmissionStartRequest */
+        AdmissionStartRequest: {
+            /** Protocol Version */
+            protocol_version?: string | null;
+        };
         /**
          * AnalysisSnapshot
          * @description The exact shape aieb_analysis.metrics.summarize() returns. Publication
@@ -1050,6 +1593,35 @@ export interface components {
              */
             trace: "present" | "missing";
         };
+        /** AuthoredTaskDraftRequest */
+        AuthoredTaskDraftRequest: {
+            /** Evaluator Code Digest */
+            evaluator_code_digest: string;
+            /** Evaluator Contract Version */
+            evaluator_contract_version: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Repository Url */
+            repository_url: string;
+            /** Source Content Digest */
+            source_content_digest: string;
+            /** Source License Id */
+            source_license_id: string;
+            /** Source Provenance Digest */
+            source_provenance_digest: string;
+            /** Source Revision */
+            source_revision: string;
+            /**
+             * Source Strategy
+             * @default authored
+             * @constant
+             */
+            source_strategy: "authored";
+            /** Ticket Text */
+            ticket_text: string;
+        };
         /**
          * BudgetProfile
          * @description `aieb.budget/v1` - UNCHANGED byte-compatible contract.
@@ -1112,11 +1684,19 @@ export interface components {
         };
         /** BudgetReservationSummary */
         BudgetReservationSummary: {
+            /** Authorized Cap Usd */
+            authorized_cap_usd?: string | null;
+            /** Budget Profile Digest */
+            budget_profile_digest?: string | null;
             /**
              * Enforcement
              * @enum {string}
              */
             enforcement: "hard" | "estimated_time_limited";
+            /** Reservation Formula */
+            reservation_formula?: {
+                [key: string]: unknown;
+            } | null;
             /** Reservation Id */
             reservation_id: string;
             /** Reserved Usd */
@@ -1132,6 +1712,50 @@ export interface components {
          * @enum {string}
          */
         BudgetRole: "engineer" | "dev_application" | "verifier_application" | "verifier_judge";
+        /**
+         * CampaignApprovalSummary
+         * @description The single campaign-approval fact: which independent reviewer approved
+         *     this frozen campaign (or that none ever did). Derived from the recorded
+         *     IndependentReviewRow, never recomputed from a rule.
+         */
+        CampaignApprovalSummary: {
+            /** Approved */
+            approved: boolean;
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By User Id */
+            approved_by_user_id?: string | null;
+            /**
+             * Campaign Id
+             * Format: uuid
+             */
+            campaign_id: string;
+            /** Evidence Digest */
+            evidence_digest?: string | null;
+            /** Independence Declaration */
+            independence_declaration?: boolean | null;
+            /** Reason */
+            reason?: string | null;
+            /** Review Id */
+            review_id?: string | null;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Scope */
+            scope?: string | null;
+        };
+        /** CampaignApproveRequest */
+        CampaignApproveRequest: {
+            /**
+             * Decision
+             * @default approve
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Independence Declaration */
+            independence_declaration: boolean;
+            /** Reason */
+            reason: string;
+        };
         /** CampaignCreateRequest */
         CampaignCreateRequest: {
             draft: components["schemas"]["CampaignDraft"];
@@ -1217,6 +1841,8 @@ export interface components {
             id: string;
             /** Manifest Digest */
             manifest_digest: string | null;
+            /** Matrix Digest */
+            matrix_digest?: string | null;
             /** Name */
             name: string;
             /** Revision */
@@ -1637,6 +2263,154 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HoldoutManifestCreateRequest */
+        HoldoutManifestCreateRequest: {
+            /** Access Scope */
+            access_scope: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Object Digest */
+            object_digest: string;
+            /** Object Length */
+            object_length: number;
+            /** Overlap Review Digest */
+            overlap_review_digest?: string | null;
+            /** Protocol Version */
+            protocol_version: string;
+            /**
+             * Retention Class
+             * @default official
+             * @enum {string}
+             */
+            retention_class: "official" | "development" | "ephemeral";
+            /**
+             * Split
+             * @default official
+             * @enum {string}
+             */
+            split: "official" | "development";
+            /** Storage Uri */
+            storage_uri: string;
+            /**
+             * Task Revision Id
+             * Format: uuid
+             */
+            task_revision_id: string;
+        };
+        /** HoldoutManifestSummary */
+        HoldoutManifestSummary: {
+            /** Access Scope */
+            access_scope: string;
+            /** Approved Review Kinds */
+            approved_review_kinds?: string[];
+            /**
+             * Created By User Id
+             * Format: uuid
+             */
+            created_by_user_id: string;
+            /** Evaluator Revision Digest */
+            evaluator_revision_digest: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Family Id */
+            family_id: string;
+            /** Frozen At */
+            frozen_at?: string | null;
+            /** Frozen By User Id */
+            frozen_by_user_id?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Manifest Digest */
+            manifest_digest: string;
+            /** Object Digest */
+            object_digest: string;
+            /** Object Length */
+            object_length: number;
+            /** Overlap Review Digest */
+            overlap_review_digest?: string | null;
+            /** Protocol Version */
+            protocol_version: string;
+            /**
+             * Retention Class
+             * @enum {string}
+             */
+            retention_class: "official" | "development" | "ephemeral";
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "official" | "development";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "reviewed" | "frozen" | "retired";
+            /** Storage Uri */
+            storage_uri: string;
+            /**
+             * Task Revision Id
+             * Format: uuid
+             */
+            task_revision_id: string;
+        };
+        /** HoldoutReviewRequest */
+        HoldoutReviewRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject" | "inconclusive";
+            /** Evidence Digest */
+            evidence_digest: string;
+            /** Reason */
+            reason: string;
+            /** Report */
+            report?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Review Kind
+             * @enum {string}
+             */
+            review_kind: "overlap" | "storage" | "isolation" | "manifest";
+        };
+        /** HoldoutReviewSummary */
+        HoldoutReviewSummary: {
+            /** Created At */
+            created_at: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject" | "inconclusive";
+            /** Evidence Digest */
+            evidence_digest: string;
+            /**
+             * Holdout Manifest Id
+             * Format: uuid
+             */
+            holdout_manifest_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Review Kind
+             * @enum {string}
+             */
+            review_kind: "overlap" | "storage" | "isolation" | "manifest";
+            /**
+             * Reviewer User Id
+             * Format: uuid
+             */
+            reviewer_user_id: string;
+        };
         /**
          * IncludedEvidenceSelection
          * @description A trial pinned INTO a publication. Every identifying id AND digest is
@@ -1842,6 +2616,45 @@ export interface components {
             /** Reason */
             reason?: string | null;
         };
+        /** LiveWindowTaskDraftRequest */
+        LiveWindowTaskDraftRequest: {
+            /** Cohort Id */
+            cohort_id: string;
+            /** Collected At */
+            collected_at: string;
+            /** Evaluator Code Digest */
+            evaluator_code_digest: string;
+            /** Evaluator Contract Version */
+            evaluator_contract_version: string;
+            /** Expires At */
+            expires_at: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Model Cutoff */
+            model_cutoff: string;
+            /** Released At */
+            released_at: string;
+            /** Repository Url */
+            repository_url: string;
+            /** Source Content Digest */
+            source_content_digest: string;
+            /** Source License Id */
+            source_license_id: string;
+            /** Source Provenance Digest */
+            source_provenance_digest: string;
+            /** Source Revision */
+            source_revision: string;
+            /**
+             * Source Strategy
+             * @default live_window
+             * @constant
+             */
+            source_strategy: "live_window";
+            /** Ticket Text */
+            ticket_text: string;
+        };
         /** MatrixPreview */
         MatrixPreview: {
             /** Budget Profile Id */
@@ -1916,6 +2729,48 @@ export interface components {
             scoring_digest: string;
             /** Version */
             version: string;
+        };
+        /** MinedPrTaskDraftRequest */
+        MinedPrTaskDraftRequest: {
+            /** Base Commit */
+            base_commit: string;
+            /** Contamination Cutoff */
+            contamination_cutoff: string;
+            /** Evaluator Code Digest */
+            evaluator_code_digest: string;
+            /** Evaluator Contract Version */
+            evaluator_contract_version: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Patch Commit */
+            patch_commit: string;
+            /** Pull Request Number */
+            pull_request_number: number;
+            /** Pull Request Url */
+            pull_request_url: string;
+            /** Repository Url */
+            repository_url: string;
+            /** Source Content Digest */
+            source_content_digest: string;
+            /** Source License Id */
+            source_license_id: string;
+            /** Source Provenance Digest */
+            source_provenance_digest: string;
+            /**
+             * Source Strategy
+             * @default mined_pr
+             * @constant
+             */
+            source_strategy: "mined_pr";
+            /**
+             * Split
+             * @enum {string}
+             */
+            split: "public" | "held_out" | "restricted";
+            /** Ticket Text */
+            ticket_text: string;
         };
         /** ModelProfile */
         ModelProfile: {
@@ -2214,6 +3069,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Independence Declaration */
+            independence_declaration?: boolean | null;
             /**
              * Publication Class
              * @enum {string}
@@ -2221,8 +3078,20 @@ export interface components {
             publication_class: "ranked" | "non_ranked";
             /** Published Publication Id */
             published_publication_id: string | null;
+            /** Review Decision */
+            review_decision?: ("approve" | "reject") | null;
+            /** Review Evidence Digest */
+            review_evidence_digest?: string | null;
             /** Review Kind */
             review_kind: string | null;
+            /** Review Reason */
+            review_reason?: string | null;
+            /** Review Scope */
+            review_scope?: string | null;
+            /** Reviewed At */
+            reviewed_at?: string | null;
+            /** Reviewer User Id */
+            reviewer_user_id?: string | null;
             /** Snapshot Digest */
             snapshot_digest: string;
             /**
@@ -2358,6 +3227,30 @@ export interface components {
              * Format: uuid
              */
             campaign_id: string;
+            /** Campaign State */
+            campaign_state?: string | null;
+            /** Cohort */
+            cohort?: {
+                [key: string]: unknown;
+            } | null;
+            /** Coverage */
+            coverage?: {
+                [key: string]: unknown;
+            } | null;
+            /** Frozen Identities */
+            frozen_identities?: {
+                [key: string]: unknown;
+            } | null;
+            /** Limitations */
+            limitations?: string[] | null;
+            /** Redaction Policy */
+            redaction_policy?: {
+                [key: string]: unknown;
+            } | null;
+            /** Release */
+            release?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Schema Version
              * @constant
@@ -2367,6 +3260,10 @@ export interface components {
             selections: (components["schemas"]["IncludedEvidenceSelection"] | components["schemas"]["ExcludedEvidenceSelection"])[];
             /** Snapshot Digest */
             snapshot_digest: string;
+            /** Usage Provenance */
+            usage_provenance?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** RegradeRequest */
         RegradeRequest: {
@@ -2545,6 +3442,56 @@ export interface components {
                 number,
                 number
             ] | null;
+        };
+        /**
+         * TaskDraftCreateRequest
+         * @description Maintainer task authoring input. Admission/publication are separate.
+         */
+        TaskDraftCreateRequest: {
+            /** Evaluator Code Digest */
+            evaluator_code_digest: string;
+            /** Evaluator Contract Version */
+            evaluator_contract_version: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Ticket Text */
+            ticket_text: string;
+        };
+        /** TaskDraftResponse */
+        TaskDraftResponse: {
+            /** Evaluator Id */
+            evaluator_id?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Revision Digest */
+            revision_digest: string;
+            /** Slug */
+            slug: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "frozen" | "pending-independent-review";
+            /** Version */
+            version: string;
+        };
+        /** TaskDraftUpdateRequest */
+        TaskDraftUpdateRequest: {
+            /** Evaluator Code Digest */
+            evaluator_code_digest: string;
+            /** Evaluator Contract Version */
+            evaluator_contract_version: string;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Ticket Text */
+            ticket_text: string;
         };
         /**
          * TaskRateDelta
@@ -2867,6 +3814,74 @@ export interface operations {
             };
         };
     };
+    campaign_approval_v1_campaigns__campaign_id__approval_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignApprovalSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_campaign_v1_campaigns__campaign_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CampaignApproveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignApprovalSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     cancel_campaign_route_v1_campaigns__campaign_id__cancel_post: {
         parameters: {
             query?: never;
@@ -3039,6 +4054,39 @@ export interface operations {
         };
     };
     pause_campaign_v1_campaigns__campaign_id__pause_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignStateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    plan_campaign_v1_campaigns__campaign_id__plan_post: {
         parameters: {
             query?: never;
             header?: {
@@ -3580,6 +4628,591 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["KillSwitchStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_admission_v1_maintainer_admissions__admission_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionRunSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_admission_v1_maintainer_admissions__admission_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdmissionCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionRunSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    execute_admission_v1_maintainer_admissions__admission_id__execute_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionRunSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_admission_gates_v1_maintainer_admissions__admission_id__gates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionGateSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_admission_v1_maintainer_admissions__admission_id__review_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                admission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdmissionReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionReviewSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_holdout_v1_maintainer_holdouts_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HoldoutManifestCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HoldoutManifestSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_holdout_v1_maintainer_holdouts__holdout_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                holdout_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HoldoutManifestSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    freeze_holdout_v1_maintainer_holdouts__holdout_id__freeze_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                holdout_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HoldoutManifestSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_holdout_v1_maintainer_holdouts__holdout_id__retire_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                holdout_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HoldoutManifestSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_holdout_v1_maintainer_holdouts__holdout_id__reviews_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                holdout_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HoldoutReviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HoldoutReviewSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_task_draft_v1_maintainer_task_drafts_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskDraftCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_authored_task_draft_v1_maintainer_task_drafts_authored_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AuthoredTaskDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_live_window_task_draft_v1_maintainer_task_drafts_live_window_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LiveWindowTaskDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_mined_pr_task_draft_v1_maintainer_task_drafts_mined_pr_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MinedPrTaskDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_task_draft_v1_maintainer_task_drafts__draft_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskDraftUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    freeze_task_draft_v1_maintainer_task_drafts__draft_id__freeze_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                draft_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDraftResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_admission_v1_maintainer_task_revisions__revision_id__admissions_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                revision_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdmissionStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionRunSummary"];
                 };
             };
             /** @description Validation Error */

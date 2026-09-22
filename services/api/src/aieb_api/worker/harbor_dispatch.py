@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
-from aieb_core.models import EntrantRevision, TaskRevision, Trial as TrialContract
+from aieb_core.models import EntrantRevision, ResolvedCampaign, TaskRevision, Trial as TrialContract
 
 DISPATCH_BACKENDS = ("local", "harbor")
 
@@ -140,6 +140,16 @@ def build_frozen_cell_payload(
     budget/resource pins."""
     if resolved.get("schema_version") != "aieb.campaign/v1" or resolved.get("frozen") is not True:
         raise DispatchIntegrityError("dispatch requires a frozen aieb.campaign/v1 release manifest")
+    if not manifest_digest:
+        raise DispatchIntegrityError("dispatch requires the frozen campaign manifest digest")
+    try:
+        canonical_manifest_digest = ResolvedCampaign.model_validate(resolved).digest()
+    except Exception as exc:  # noqa: BLE001 - malformed frozen input is integrity evidence
+        raise DispatchIntegrityError("frozen campaign manifest failed canonical validation") from exc
+    if manifest_digest != canonical_manifest_digest:
+        raise DispatchIntegrityError(
+            "supplied campaign manifest digest does not match the canonical frozen manifest"
+        )
     trials = resolved.get("trials")
     if not isinstance(trials, list):
         raise DispatchIntegrityError("frozen manifest has no trial matrix")
@@ -180,7 +190,7 @@ def build_frozen_cell_payload(
 
     return FrozenCellPayload(
         campaign_id=str(campaign_id or resolved.get("id")),
-        manifest_digest=str(manifest_digest or ""),
+        manifest_digest=canonical_manifest_digest,
         cohort_digest=cohort_digest,
         trial_id=str(trial["id"]),
         cell_digest=TrialContract.model_validate(trial).digest(),
@@ -229,6 +239,7 @@ def build_execution_spec(
         memory_limit_mb=payload.engineer_memory_mb,
         isolation=IsolationPolicy(hardened_isolation_required=hardened_isolation),
         model_name=payload.requested_model,
+        manifest_digest=payload.manifest_digest,
         agent_kwargs=(
             {"requested_model": payload.requested_model, "model_settings_digest": payload.model_settings_digest}
             if payload.requested_model else {}
@@ -248,6 +259,10 @@ def verify_spec_pinning(payload: FrozenCellPayload, spec: Any) -> None:
         raise DispatchIntegrityError(
             f"spec would launch model {spec.model_name!r} but the frozen cell pins "
             f"{payload.requested_model!r}; refusing to substitute a different model"
+        )
+    if getattr(spec, "manifest_digest", None) != payload.manifest_digest:
+        raise DispatchIntegrityError(
+            "spec campaign manifest digest differs from the canonical frozen manifest; refusing to dispatch"
         )
     if spec.cpu_limit != payload.engineer_cpu or spec.memory_limit_mb != payload.engineer_memory_mb:
         raise DispatchIntegrityError(

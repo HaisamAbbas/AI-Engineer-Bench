@@ -145,6 +145,49 @@ class ApiServiceTests(unittest.TestCase):
         session.flush()
         return row.id
 
+    def test_holdout_freeze_rejects_a_later_rejection_after_approval(self) -> None:
+        """A stale approval must not satisfy the latest review decision gate."""
+        self._seed_task()
+        with db.session_factory()() as session:
+            task_id = session.execute(
+                select(api_models.TaskRevisionRow.id).where(api_models.TaskRevisionRow.slug == "rag.document-freshness")
+            ).scalar_one()
+        author = _auth_header(("operator",), subject="holdout-author")
+        created = self.client.post(
+            "/v1/maintainer/holdouts",
+            json={
+                "task_revision_id": str(task_id), "storage_uri": "private://official/holdout",
+                "object_digest": "a" * 64, "object_length": 1, "protocol_version": "protocol/v1",
+                "access_scope": "campaign:holdout-test",
+            },
+            headers=author | {"Idempotency-Key": "holdout-create-latest"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        holdout_id = created.json()["id"]
+        reviewer_a = _auth_header(("reviewer",), subject="holdout-reviewer-a")
+        reviewer_b = _auth_header(("reviewer",), subject="holdout-reviewer-b")
+        for index, (kind, headers) in enumerate((
+            ("overlap", reviewer_a), ("storage", reviewer_a),
+            ("isolation", reviewer_b), ("manifest", reviewer_b),
+        )):
+            response = self.client.post(
+                f"/v1/maintainer/holdouts/{holdout_id}/reviews",
+                json={"review_kind": kind, "decision": "approve", "evidence_digest": f"{index + 1}" * 64, "reason": "reviewed"},
+                headers=headers | {"Idempotency-Key": f"holdout-approve-{kind}"},
+            )
+            self.assertEqual(response.status_code, 201, response.text)
+        rejected = self.client.post(
+            f"/v1/maintainer/holdouts/{holdout_id}/reviews",
+            json={"review_kind": "overlap", "decision": "reject", "evidence_digest": "f" * 64, "reason": "overlap conflict"},
+            headers=reviewer_b | {"Idempotency-Key": "holdout-reject-overlap"},
+        )
+        self.assertEqual(rejected.status_code, 201, rejected.text)
+        frozen = self.client.post(
+            f"/v1/maintainer/holdouts/{holdout_id}/freeze",
+            headers=_auth_header(("operator",), subject="holdout-freezer") | {"Idempotency-Key": "holdout-freeze-latest"},
+        )
+        self.assertEqual(frozen.status_code, 409, frozen.text)
+
     def _seed_entrant(self, slug: str = "agent-a") -> None:
         manifest = {
             "schema_version": "aieb.entrant/v1", "id": slug, "track": "agents", "agent_implementation": "demo",
@@ -564,7 +607,9 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(planned.status_code, 200, planned.text)
         reviewer = _auth_header(("reviewer",), subject="fixture-campaign-reviewer")
         approved = self.client.post(
-            f"/v1/campaigns/{campaign_id}/approve", headers=reviewer | {"Idempotency-Key": f"appr-{uuid.uuid4().hex[:8]}"},
+            f"/v1/campaigns/{campaign_id}/approve",
+            json={"reason": "independent campaign review", "independence_declaration": True},
+            headers=reviewer | {"Idempotency-Key": f"appr-{uuid.uuid4().hex[:8]}"},
         )
         self.assertEqual(approved.status_code, 200, approved.text)
 
@@ -862,13 +907,12 @@ class ApiServiceTests(unittest.TestCase):
 
         # Rejection keeps the preparation reviewable state honest.
         rejected = self.client.post(review_url, headers=reviewer | {"Idempotency-Key": "pub-rev-reject"},
-            json={"decision": "reject", "notes": "not yet"})
+            json={"decision": "reject", "independence_attestation": True, "notes": "not yet"})
         self.assertEqual(rejected.status_code, 200, rejected.text)
         self.assertEqual(rejected.json()["status"], "rejected")
-        # review_kind is server-derived, never client-selected: without an
-        # independence attestation a distinct-identity review is honestly
-        # labelled single_maintainer even for a rejection.
-        self.assertEqual(rejected.json()["review_kind"], "single_maintainer")
+        # Review provenance is server-derived and the rejection is still
+        # recorded as a genuinely independent decision.
+        self.assertEqual(rejected.json()["review_kind"], "independent")
 
         prepared = self.client.post(f"/v1/campaigns/{campaign_id}/publications/prepare",
             headers=operator | {"Idempotency-Key": "pub-prep-2"}, json={})
@@ -876,7 +920,7 @@ class ApiServiceTests(unittest.TestCase):
         approved = self.client.post(
             f"/v1/publications/preparations/{prepared.json()['id']}/review",
             headers=reviewer | {"Idempotency-Key": "pub-rev-approve"},
-            json={"decision": "approve", "independence_attestation": True},
+            json={"decision": "approve", "independence_attestation": True, "notes": "independent publication review"},
         )
         self.assertEqual(approved.status_code, 200, approved.text)
         # A distinct identity WITH the attestation is labelled independent, and
@@ -1996,7 +2040,16 @@ class ApiServiceTests(unittest.TestCase):
             entrant_a = api_models.EntrantRevisionRow(slug="agent-a", version="1.0.0", track="agents", config_digest="agent-a-digest", capabilities=["cpu-fixture-standard-v1"], manifest=entrant_a_manifest)
             entrant_b = api_models.EntrantRevisionRow(slug="agent-b", version="1.0.0", track="agents", config_digest="agent-b-digest", capabilities=["cpu-fixture-standard-v1"], manifest=entrant_b_manifest)
             fixture = api_models.FixtureRevisionRow(digest="4" * 64, visibility="public", family_id="knowledge-service-a")
-            campaign = api_models.CampaignRow(name=f"agg-{uuid.uuid4().hex[:8]}", state=campaign_state, draft={"repetitions": 1}, resolved=resolved)
+            campaign_owner = api_models.User(
+                oidc_issuer="test", oidc_subject=f"aggregation-owner-{uuid.uuid4().hex}"
+            )
+            session.add(campaign_owner)
+            session.flush()
+            campaign = api_models.CampaignRow(
+                name=f"agg-{uuid.uuid4().hex[:8]}", state=campaign_state,
+                draft={"repetitions": 1}, resolved=resolved,
+                created_by_user_id=campaign_owner.id,
+            )
             session.add_all([task, entrant_a, entrant_b, fixture, campaign])
             session.flush()
 
@@ -2229,7 +2282,7 @@ class ApiServiceTests(unittest.TestCase):
             headers=operator | {"Idempotency-Key": "rg-prep-1"}, json={})
         approved = self.client.post(f"/v1/publications/preparations/{first.json()['id']}/review",
             headers=reviewer | {"Idempotency-Key": "rg-rev-1"},
-            json={"decision": "approve", "independence_attestation": True})
+            json={"decision": "approve", "independence_attestation": True, "notes": "independent publication review"})
         original_publication = approved.json()["published_publication_id"]
         self.assertEqual(self.client.get(f"/v1/publications/{original_publication}/results").json()["snapshot"]["suite_rate"], 1.0)
 
@@ -2275,7 +2328,7 @@ class ApiServiceTests(unittest.TestCase):
             self.assertIn("correction reason", reasonless.text)
         approved = self.client.post(f"/v1/publications/preparations/{superseding.json()['id']}/review",
             headers=reviewer | {"Idempotency-Key": "rg-rev-2"},
-            json={"decision": "approve", "independence_attestation": True})
+                json={"decision": "approve", "independence_attestation": True, "notes": "independent correction review"})
         self.assertEqual(approved.status_code, 200, approved.text)
         corrected_publication = approved.json()["published_publication_id"]
         self.assertEqual(self.client.get(f"/v1/publications/{corrected_publication}/results").json()["snapshot"]["suite_rate"], 0.0)

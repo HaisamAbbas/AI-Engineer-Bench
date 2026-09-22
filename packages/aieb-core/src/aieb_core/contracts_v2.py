@@ -7,6 +7,7 @@ v2 document has an explicit track, protocol, provenance, and release identity.
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -141,6 +142,40 @@ class ModelConfiguration(ContractModel):
     reported_model: NonEmpty
     settings_digest: Digest
     unsupported_controls: tuple[Slug, ...] = ()
+
+
+class ModelExecutionAuthorization(ContractModel):
+    """Non-secret authorization record required before a real model call."""
+
+    schema_version: Literal["aieb.model-execution-authorization/v1"]
+    authorization_id: Slug
+    cohort_id: Slug
+    provider_id: NonEmpty
+    requested_models: tuple[NonEmpty, ...] = Field(min_length=1)
+    spend_cap_usd: str
+    credential_env_var: Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{2,127}$")]
+    approved_by: NonEmpty
+    approved_at: NonEmpty
+    expires_at: NonEmpty
+    purpose: NonEmpty
+
+    @field_validator("spend_cap_usd")
+    @classmethod
+    def positive_cap(cls, value: str) -> str:
+        try:
+            amount = Decimal(value)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("spend_cap_usd must be a finite decimal string") from exc
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError("spend_cap_usd must be positive")
+        return format(amount.normalize(), "f")
+
+    @field_validator("requested_models")
+    @classmethod
+    def unique_models(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("requested model identities must be unique")
+        return value
 
 
 class CampaignCell(ContractModel):

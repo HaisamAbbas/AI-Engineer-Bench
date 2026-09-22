@@ -1,0 +1,22 @@
+{
+  "schema_version": "aieb.model-execution-plan/v1",
+  "track": "models",
+  "status": "prepared-not-authorized",
+  "cohort_id": "mvp2-model-development-v1",
+  "release_id": "mvp2-model-development-v1",
+  "protocol_version": "aieb.track-b-protocol/v2",
+  "protocol_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "fixed_reference_loop": "packages/aieb-runner/src/aieb_runner/model_loop.py",
+  "fixed_loop_source_digest": "e09a0c8f85f13599b0ef2fede7011dbe4d4a55dfa881cb514948029c57017e56",
+  "system_prompt_digest": "172f424d7ba343d26598c48a78713c8cfa366e6c29815374db208edde82479fd",
+  "tool_schema_digest": "5272c0cad367dc17bd03799d40a1d03104bdf44a45f9ae026e574a10c1b2b4fb",
+  "provider_id": "openai-compatible",
+  "requested_models": ["pending-provider-model"],
+  "unsupported_controls": ["provider-settings-not-yet-verified"],
+  "credential_env_var": "AIEB_MODEL_TRACK_API_KEY",
+  "spend_cap_usd": null,
+  "authorization": null,
+  "usage_identity_evidence_ref": null,
+  "real_provider_call_evidence_ref": null,
+  "notes": "Development plan only. No credential, provider call, spend, or official score is present."
+}

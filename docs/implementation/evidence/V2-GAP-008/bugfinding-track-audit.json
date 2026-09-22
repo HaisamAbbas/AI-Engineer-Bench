@@ -1,0 +1,33 @@
+{
+  "catalog_status": "blocked",
+  "cohort_id": "mvp2-bugfinding-development-v1",
+  "controls_complete": false,
+  "errors": [],
+  "execution_evidence_complete": false,
+  "hidden_label_workflow_complete": false,
+  "independent_review": "pending",
+  "official_release_eligible": false,
+  "reason": "Development-only MVP-2 audit; private labels, end-to-end evaluator evidence, independent review, and authorized publication remain pending.",
+  "schema_validated": true,
+  "schema_version": "aieb.mvp2-bug-track-audit/v2",
+  "tasks": [
+    {
+      "cohort_id": "mvp2-bugfinding-development-v1",
+      "errors": [
+        "hidden-label digest is a placeholder; no private label set is bound",
+        "no Harbor/evaluator end-to-end evidence is recorded"
+      ],
+      "execution_evidence_present": false,
+      "license_id": "Apache-2.0",
+      "mode": "finding-only",
+      "private_labels_present": false,
+      "repository_digest": "0e55378bd4ccb01a34b03f182b56cb1fdc01082982954d5e59406b5832dc837f",
+      "revision": "0.1.0",
+      "status": "blocked",
+      "task_id": "mvp2.rag.corpus-index-drift"
+    }
+  ],
+  "tasks_admitted": 0,
+  "track": "mvp2-public-repository-bug-finding",
+  "validated": false
+}
