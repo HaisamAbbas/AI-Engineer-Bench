@@ -7,6 +7,24 @@ from unittest.mock import patch
 
 from tests import test_api_service as fixtures
 
+# V2-GAP-004's worst-case reservation formula (budgets.py::_bounds) requires a
+# complete aieb.budget/v2 `resolved` manifest and refuses to reserve (raises
+# UnknownBudgetBounds) when `resolved` is missing/empty - these
+# reservation-layer tests build bare CampaignRow rows with no real freeze
+# manifest since they exercise sweeper/locking behavior, not budget math, so
+# they need a minimal but valid `resolved` block attached.
+_MINIMAL_RESOLVED_BUDGET = {
+    "trials": [{"id": "t1"}],
+    "protocol": {"max_replacements": 0},
+    "budget": {
+        "environment_upper_bound_usd": "0.5",
+        "per_role_budget_usd": [
+            {"role": "engineer", "limit_usd": "1.00"}, {"role": "dev_application", "limit_usd": "1.00"},
+            {"role": "verifier_application", "limit_usd": "1.00"}, {"role": "verifier_judge", "limit_usd": "1.00"},
+        ],
+    },
+}
+
 
 @unittest.skipUnless(fixtures.DATABASE_URL, "AIEB_DATABASE_URL is required")
 class CampaignStartAtomicityTests(unittest.TestCase):
@@ -18,6 +36,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
     _draft_body = fixtures.ApiServiceTests._draft_body
     _registry_payload = staticmethod(fixtures.ApiServiceTests._registry_payload)
     _create_and_freeze = fixtures.ApiServiceTests._create_and_freeze
+    _plan_and_approve = fixtures.ApiServiceTests._plan_and_approve
     _drive_campaign_to_terminal = fixtures.ApiServiceTests._drive_campaign_to_terminal
 
     def test_zero_work_cancellation_settlement_rolls_back_without_response(self) -> None:
@@ -59,6 +78,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select
 
         campaign_id = uuid.UUID(self._create_and_freeze())
+        self._plan_and_approve(str(campaign_id))
         headers = fixtures._auth_header(("operator",))
         for action in ("start", "pause"):
             response = self.client.post(f"/v1/campaigns/{campaign_id}/{action}",
@@ -85,7 +105,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select, text
 
         with db.session_factory()() as session:
-            campaigns = [models.CampaignRow(name=f"sweep-{i}", state="cancelling", draft={}) for i in range(5)]
+            campaigns = [models.CampaignRow(name=f"sweep-{i}", state="cancelling", draft={}, resolved=_MINIMAL_RESOLVED_BUDGET) for i in range(5)]
             session.add_all(campaigns)
             session.flush()
             for campaign in campaigns:
@@ -127,7 +147,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select, text
 
         with db.session_factory()() as session:
-            campaign = models.CampaignRow(name="locked-sweep", state="running", draft={})
+            campaign = models.CampaignRow(name="locked-sweep", state="running", draft={}, resolved=_MINIMAL_RESOLVED_BUDGET)
             session.add(campaign)
             session.flush()
             budgets.reserve_campaign_budget(session, campaign)
@@ -165,7 +185,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select, text
 
         with db.session_factory()() as session:
-            campaign = models.CampaignRow(name="completion-race", state="cancelling", draft={})
+            campaign = models.CampaignRow(name="completion-race", state="cancelling", draft={}, resolved=_MINIMAL_RESOLVED_BUDGET)
             session.add(campaign)
             session.flush()
             budgets.reserve_campaign_budget(session, campaign)
@@ -241,6 +261,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import func, select
 
         campaign_id = self._create_and_freeze()
+        self._plan_and_approve(campaign_id)
         headers = fixtures._auth_header(("operator",)) | {"Idempotency-Key": "concurrent-start"}
         barrier = Barrier(2)
 
@@ -263,6 +284,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select
 
         campaign_id = uuid.UUID(self._create_and_freeze())
+        self._plan_and_approve(str(campaign_id))
         started = self.client.post(f"/v1/campaigns/{campaign_id}/start",
             headers=fixtures._auth_header(("operator",)) | {"Idempotency-Key": "cancel-drain-start"})
         self.assertEqual(started.status_code, 200, started.text)
@@ -329,6 +351,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import select
 
         campaign_id = uuid.UUID(self._create_and_freeze())
+        self._plan_and_approve(str(campaign_id))
         response = self.client.post(f"/v1/campaigns/{campaign_id}/start",
             headers=fixtures._auth_header(("operator",)) | {"Idempotency-Key": "unresolved-start"})
         self.assertEqual(response.status_code, 200, response.text)
@@ -368,17 +391,30 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from aieb_api import db, models
         from sqlalchemy import select
 
+        from aieb_api import admission as admission_module
+        from aieb_core.models import TaskRevision as _TaskRevisionContract
+
         self._seed_task()
         self._seed_entrant()
         with db.session_factory()() as session:
             original = session.scalars(select(models.TaskRevisionRow)).one()
             manifest = dict(original.manifest)
             manifest["version"] = "0.2.0"
-            session.add(models.TaskRevisionRow(
+            second = models.TaskRevisionRow(
                 slug=original.slug, version="0.2.0", family_id=original.family_id, category=original.category,
-                source_digest="9" * 64, manifest_digest="8" * 64, evaluator_id=original.evaluator_id,
+                source_digest="9" * 64,
+                manifest_digest=_TaskRevisionContract.model_validate(manifest).digest(),
+                evaluator_id=original.evaluator_id,
                 manifest=manifest, ticket_text=original.ticket_text,
-            ))
+            )
+            session.add(second)
+            session.flush()
+            # This second pinned revision also needs its own release-eligible
+            # admission record (the first revision's admission does not cover
+            # it - eligibility is per revision digest), or the later pinned
+            # freeze/start below fails closed with "not release-eligible"
+            # exactly like the unpinned freeze above but for the wrong reason.
+            admission_module.seed_fixture_admission(session, second)
             session.commit()
         create = self.client.post("/v1/campaigns", json=self._draft_body(),
             headers=fixtures._auth_header(("operator",)) | {"Idempotency-Key": "ambiguous-draft"})
@@ -405,6 +441,7 @@ class CampaignStartAtomicityTests(unittest.TestCase):
             self.assertEqual(frozen["tasks"][0]["version"], "0.2.0")
             self.assertEqual([t["trial_id"] for t in pinned_preview.json()["trials"]],
                 [t["id"] for t in frozen["trials"]])
+        self._plan_and_approve(campaign_id)
         started = self.client.post(f"/v1/campaigns/{campaign_id}/start",
             headers=operator | {"Idempotency-Key": "pinned-start"})
         self.assertEqual(started.status_code, 200, started.text)
@@ -419,13 +456,20 @@ class CampaignStartAtomicityTests(unittest.TestCase):
         from sqlalchemy import func, select
 
         campaign_id = uuid.UUID(self._create_and_freeze())
+        self._plan_and_approve(str(campaign_id))
         headers = fixtures._auth_header(("operator",)) | {"Idempotency-Key": "atomic-start"}
         with patch.object(campaigns, "_state_response", side_effect=RuntimeError("injected before response persistence")):
             with self.assertRaisesRegex(RuntimeError, "injected before response persistence"):
                 self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=headers)
         with db.session_factory()() as session:
-            self.assertEqual(session.get(models.CampaignRow, campaign_id).state, "frozen")
-            for model in (models.TrialRow, models.AttemptRow, models.WorkItemRow, models.BudgetReservationRow):
+            self.assertEqual(session.get(models.CampaignRow, campaign_id).state, "approved")
+            # V2-GAP-004 moved exact-matrix materialization to `plan`, not
+            # `start` - TrialRow rows are durable from `_plan_and_approve`
+            # above and correctly survive a rollback of a LATER `start`
+            # failure; only start's own writes (attempts/work items/budget
+            # reservation) must roll back to zero.
+            self.assertEqual(session.scalar(select(func.count()).select_from(models.TrialRow)), 1)
+            for model in (models.AttemptRow, models.WorkItemRow, models.BudgetReservationRow):
                 self.assertEqual(session.scalar(select(func.count()).select_from(model)), 0, model.__name__)
         response = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=headers)
         self.assertEqual(response.status_code, 200, response.text)

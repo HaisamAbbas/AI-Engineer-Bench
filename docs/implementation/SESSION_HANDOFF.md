@@ -1244,3 +1244,19 @@ DB writers, real end-to-end Harbor-Docker-to-Postgres proof; the writer function
 the loop's hook into them are proven, but a production dispatcher invoking this
 pipeline for a live campaign remains ENG-001's P0-gated remaining scope, unchanged),
 **ENG-024 BLOCKED** (unchanged), **ENG-001 BLOCKED** (re-verified, untouched).
+
+## V2-GAP-003 implementation handoff
+
+The current worktree adds the persisted task-admission state machine and
+private API. Freeze creates `frozen` admission state only. Admission runs pin
+revision/source/evaluator/protocol digests, require repeated matrix evidence
+and clean resets, and can reach `admitted` only through a passing run plus an
+independent review. Campaign registry resolution now rejects revisions that do
+not satisfy `admission.release_eligibility_error()`.
+
+Verification so far: Python compilation, OpenAPI regeneration/check, and
+`tests/test_task_admission_state_machine.py` (6 protocol/integrity tests passed; 3
+PostgreSQL tests skipped because `AIEB_DATABASE_URL` is unset). The migration
+head is `6f2a9d5c1e73`. PostgreSQL migration/integration execution, a configured
+real admission executor, and genuine independent human review remain pending;
+V2-GAP-003 stays PARTIAL and no official task admission is claimed.

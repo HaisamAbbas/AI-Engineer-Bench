@@ -38,6 +38,11 @@ class HarborNormalizationTests(unittest.TestCase):
             self.skipTest(f"filesystem cannot create nested test directories: {exc}")
 
     def test_candidate_is_collected_from_overlaid_harbor_artifact(self) -> None:
+        # `include=("*",)`, not `("**",)`: SubmissionPolicy.validate_paths
+        # (aieb_core/models.py) rejects a bare "**" (or a "**/"-prefixed
+        # path) as not task-specific - first exercised now that this whole
+        # suite runs against real PostgreSQL. "*" matches the single
+        # top-level file these fixtures write and is unaffected by that rule.
         with _temporary_directory() as tmp:
             root = Path(tmp)
             frozen = root / "frozen"
@@ -53,7 +58,7 @@ class HarborNormalizationTests(unittest.TestCase):
             normalized = normalize_harbor_result(
                 artifacts=artifacts,
                 frozen_source=frozen,
-                submission=SubmissionPolicy(include=("**",), protected=(), max_artifact_bytes=1024),
+                submission=SubmissionPolicy(include=("*",), protected=(), max_artifact_bytes=1024),
                 base_revision_digest="a" * 64,
                 store=FilesystemArtifactStore(root / "store"),
                 access_scope="attempt-1",
@@ -72,7 +77,7 @@ class HarborNormalizationTests(unittest.TestCase):
                 normalize_harbor_result(
                     artifacts=CandidateArtifacts(trial, result, trial / "manifest.json", ()),
                     frozen_source=root,
-                    submission=SubmissionPolicy(include=("**",), protected=(), max_artifact_bytes=1024),
+                    submission=SubmissionPolicy(include=("*",), protected=(), max_artifact_bytes=1024),
                     base_revision_digest="a" * 64,
                     store=FilesystemArtifactStore(root / "store"),
                     access_scope="attempt-1",

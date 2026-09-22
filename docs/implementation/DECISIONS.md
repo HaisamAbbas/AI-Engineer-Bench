@@ -1413,3 +1413,66 @@ Per section 14, engineer model calls use an authenticated budget broker; applica
 - Consequence: worker-leasing grows to **47 tests**; combined worker-leasing + credentials = **62
   passed**; the drill still passes 5/5 through the command. Gap 5 (operator kill-switch API/CLI) is
   next; gap 6 (Prometheus metrics/alerts) remains open.
+
+## V2-GAP-003 — Persisted task-admission state machine
+
+- Decision: freezing a task revision remains an immutable identity step only;
+  it never implies admission. Admission is represented by PostgreSQL-backed
+  state, run, gate, reset, and independent-review records introduced by
+  migration `6f2a9d5c1e73_task_admission_state_machine.py`.
+- The versioned `aieb.admission-protocol/v1` defines mandatory manifest,
+  checkout, behavior, control, leakage, reset, determinism, and evidence gates.
+  Behavioral evidence enters through a bounded external executor boundary; the
+  API does not reimplement evaluator semantics or treat fixture evidence as
+  official admission.
+- Only an admitted revision with a passing run, matching pinned digests,
+  passing required gates, and an approving independent review is release and
+  campaign eligible. Private admission routes require roles and idempotency
+  keys. PostgreSQL triggers protect state transitions, terminal evidence,
+  reset/gate append rules, and review identity/evidence binding.
+- Status: implementation present, acceptance PARTIAL pending real PostgreSQL
+  migration/integration execution, configured executor evidence, and genuine
+  independent review. No task is declared officially admitted by this entry.
+
+## PENDING — V2-GAP-001/004: how a Harbor-dispatched attempt maps onto the engineering/verification leasing split
+
+- Date: 2026-09-22
+- Status: OPEN DECISION - not yet made, recorded here before implementation per
+  spec section 41 (same discipline as ADR-12) precisely because it changes a
+  crash-recovery guarantee, not because it touches a new trust boundary.
+- The problem: `worker/runner_bridge.py` splits every local attempt into two
+  *independently leased* work items - `engineering` (produces a candidate) and
+  `verification` (scores it) - specifically so "a dead verifier never causes
+  engineering to repeat" (ENG015-007). `HarborBackend.launch()`
+  (`packages/aieb-runner/src/aieb_runner/backends/harbor/backend.py:549-582`)
+  builds a Harbor `TrialConfig` with `verifier=VerifierConfig()`: Harbor runs
+  the agent AND the verifier inside one container and returns a single
+  `result.json`/manifest. There is no Harbor call that verifies an
+  already-produced candidate in isolation. Wiring `worker/harbor_dispatch.py`
+  (V2-GAP-004 section 6's frozen-cell -> `ExecutionSpec` adapter, closed as of
+  2026-09-22 including runtime deadline enforcement - see V2-GAP-004 in the
+  gap register) into `execute_leased_work`/`worker/loop.py` therefore requires
+  picking one of:
+  1. **New combined work type.** Add a third work-item type (e.g.
+     `harbor_trial`) that engineering+verification collapse into for
+     Harbor-backed campaigns only. One lease, one heartbeat, one finalize per
+     cell; a crash re-runs the whole cell via a fresh attempt (matches what
+     Harbor's `Trial` abstraction actually gives us) rather than claiming a
+     two-phase recovery guarantee Harbor cannot back. The local runner bridge
+     keeps its existing two-phase split unchanged.
+  2. **Force-split Harbor too.** Disable Harbor's internal `VerifierConfig`,
+     use `dispatch_cell` only for the engineering phase, translate its output
+     into a `StoredCandidate` (a new Harbor-artifact -> `StoredCandidate`
+     adapter, not yet built), and run the *existing* local verification phase
+     against it, independently leased exactly as today. Preserves one
+     recovery model everywhere, at the cost of an unverified feasibility
+     question (can Harbor's `Trial` actually run agent-only with no built-in
+     verify step?) and new translation code between Harbor's artifact shape
+     and the local scorer's candidate shape.
+- Consequence of not deciding: `worker/loop.py::run_worker` continues to call
+  `refuse_unwired_harbor_dispatch()` and refuse to boot under
+  `AIEB_DISPATCH_BACKEND=harbor` (V2-GAP-001 stays OPEN). This is the
+  intended fail-closed behavior until one of the two options above is chosen
+  and implemented - silently picking one without recording the tradeoff here
+  first is exactly the failure mode ADR-12's own "record before implementation"
+  rule exists to prevent.

@@ -26,6 +26,12 @@ _MUTATING = ("post", "patch", "put", "delete")
 # the pinned registry and never writes (see campaigns.preview_matrix).
 _NON_PERSISTING_POSTS = {
     "/v1/campaigns/{campaign_id}/preview",
+    # Validates a presented scoped attempt credential and returns a plain
+    # boolean (routes/attempts.py::verify_attempt_credential_endpoint) - a
+    # POST only because it carries a token in the body, never a write to the
+    # DB, so it has nothing to replay idempotently. First audited here
+    # 2026-09-22 when this whole suite's real-PostgreSQL run first went green.
+    "/v1/attempts/{attempt_id}/credentials/verify",
 }
 
 

@@ -17,7 +17,7 @@ from ..db import get_session
 from ..errors import conflict, invalid_request, not_found
 from ..evidence_integrity import task_revision_digest
 from ..idempotency import check_or_reserve, finalize, principal_scope
-from ..models import EvaluatorRevisionRow, TaskDraftRow, TaskRevisionRow
+from ..models import EvaluatorRevisionRow, TaskAdmissionStateRow, TaskDraftRow, TaskRevisionRow
 from ..schemas import AuthoredTaskDraftRequest, LiveWindowTaskDraftRequest, MinedPrTaskDraftRequest, TaskDraftCreateRequest, TaskDraftResponse, TaskDraftUpdateRequest
 
 router = APIRouter(prefix="/v1/maintainer", tags=["maintainer-authoring"])
@@ -275,6 +275,14 @@ def freeze_task_draft(
         ticket_text=draft.ticket_text, revision_digest=task_revision_digest(draft.manifest, draft.ticket_text),
     )
     session.add(revision)
+    session.flush()
+    # Freezing pins revision identity only.  Admission is a separate persisted
+    # lifecycle, and always starts in the explicit `frozen` state.
+    session.add(TaskAdmissionStateRow(
+        task_revision_id=revision.id,
+        status="frozen",
+        author_user_id=UUID(principal) if principal else None,
+    ))
     session.flush()
     draft.status, draft.frozen_revision_id = "frozen", revision.id
     response = _response(draft, evaluator.id, status="pending-independent-review")

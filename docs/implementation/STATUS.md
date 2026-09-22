@@ -7,6 +7,13 @@ Prompt 14 update: ENG-011, ENG-017, and ENG-018 are COMPLETE following independe
 Current phase: ENG-011 and ENG-015 through ENG-018 are COMPLETE. The typed-client artifact has been regenerated and both declared artifact checks pass. See `evidence/ENG-011/aggregation-review.md` and `evidence/ENG-018/review-closure.md`. No real public release was performed or authorized.
 Scores/evaluations: no benchmark scores; local development-admission checks only
 
+V2 product-gap implementation status: V2-GAP-003 is PARTIAL. The persisted
+task-admission state machine, private admission API, bounded executor boundary,
+immutable gate/reset/review evidence, and admitted-only campaign eligibility
+are implemented in the current worktree. PostgreSQL migration/integration
+execution, real executor evidence, and genuine independent review remain
+pending; no task is being called officially admitted.
+
 ## Status vocabulary
 
 - `READY`: dependencies are satisfied and the ticket can be started.

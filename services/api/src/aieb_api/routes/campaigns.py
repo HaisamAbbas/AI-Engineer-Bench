@@ -1,8 +1,12 @@
-"""POST /v1/campaigns, PATCH /v1/campaigns/{id}, POST /v1/campaigns/{id}/freeze.
+"""Campaign lifecycle routes: draft editing, freeze, plan (exact matrix
+materialization), start, pause/resume, cancel, approval, progress.
 
 Draft editing uses optimistic revision control (If-Match). Freezing is
 immutable: any change after freeze must create a new campaign (spec
-section 13/14).
+section 13/14). V2-GAP-004 adds the orchestration sequence on top of the
+frozen manifest - freeze -> plan -> approve -> start - each a replay-safe,
+role-gated transition whose legal moves are the shared state machine in
+aieb_api.orchestration (mirrored by a PostgreSQL trigger).
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from .. import budgets
+from .. import admission, budgets, orchestration
 from ..auth import Identity, require_role
 from ..db import get_session
 from ..errors import conflict, forbidden, invalid_request, not_found, stale_revision
@@ -80,6 +84,7 @@ def _summary(row: CampaignRow) -> CampaignSummary:
     return CampaignSummary(
         id=row.id, name=row.name, state=row.state, revision=row.revision,
         manifest_digest=row.manifest_digest, cohort_digest=row.cohort_digest,
+        matrix_digest=row.matrix_digest,
     )
 
 
@@ -273,6 +278,7 @@ def _registry_for(session: Session, draft: CampaignDraft, registry_body: FreezeR
         for row in rows:
             by_slug.setdefault(row.slug, []).append(row)
         resolved = {}
+        selected_rows = []
         for slug in slugs:
             versions = by_slug.get(slug, [])
             if slug in pins:
@@ -284,8 +290,15 @@ def _registry_for(session: Session, draft: CampaignDraft, registry_body: FreezeR
                     f"{kind} {slug} has {len(versions)} stored revisions; "
                     f"supply an explicit {kind} version pin"
                 )
+            selected = versions[0]
+            selected_rows.append(selected)
             contract = TaskRevision if model is TaskRevisionRow else EntrantRevision
-            resolved[slug] = validate_stored_manifest(contract, versions[0].manifest, kind=kind, row_id=versions[0].id)
+            resolved[slug] = validate_stored_manifest(contract, selected.manifest, kind=kind, row_id=selected.id)
+        if model is TaskRevisionRow:
+            # A frozen task identity is not an admitted task.  Preview and
+            # freeze share this exact resolver, so neither can place a
+            # pending/failed/rejected revision into a campaign matrix.
+            admission.require_release_eligible(session, [row.id for row in selected_rows])
         return resolved
 
     return Registry(
@@ -355,6 +368,78 @@ def _state_response(session: Session, campaign: CampaignRow, *, notice: str | No
     )
 
 
+@router.post("/{campaign_id}/plan", response_model=CampaignStateResponse)
+def plan_campaign(
+    campaign_id: UUID,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+    identity: Identity = Depends(require_role("operator")),
+    session: Session = Depends(get_session),
+) -> CampaignStateResponse:
+    """frozen -> planned: expand the EXACT cell matrix from the frozen release
+    manifest and pin it (V2-GAP-004 plan sections 1/3/4).
+
+    Every `task_revision x entrant_revision x repetition_index` cell becomes a
+    persisted trial row with the plan-required per-cell identity (the
+    deterministic trial id plus its contract cell digest), frozen order, worst-
+    case budget allocation, planned wall-clock deadline, and initial
+    `planned` status. The campaign's `matrix_digest` - a canonical digest over
+    the full cell-identity set - is recorded here and re-verified before start
+    and at aggregation, so a matrix altered after planning can never run.
+
+    Expansion is idempotent (an already-materialized matrix is left as-is and
+    re-verified) and shares the transaction with the state transition, so a
+    failure cannot leave half a matrix or a planned campaign without cells.
+    Operator-authorized, replay-safe, and never public: `POST /preview` remains
+    the read-only dry run for drafts.
+    """
+    row = session.execute(
+        select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
+    ).scalar_one_or_none()
+    if row is None:
+        raise not_found()
+    scope = principal_scope(f"POST /v1/campaigns/{campaign_id}/plan", str(_current_user_id(session, identity)))
+    cached = check_or_reserve(session, scope=scope, key=idempotency_key, body={})
+    if cached is not None:
+        return CampaignStateResponse.model_validate(cached)
+    if row.state != "frozen":
+        raise conflict(f"only a frozen campaign can be planned, not one in state {row.state}")
+    if not isinstance(row.resolved, dict) or not row.resolved.get("trials"):
+        raise conflict("campaign has no frozen resolved manifest matrix to plan")
+
+    # Materialize cells from the FROZEN manifest, then verify the persisted
+    # matrix exactly equals it (membership, identities, digests) BEFORE the
+    # transition. The unique (campaign, task, entrant, repetition) constraint
+    # and the deterministic trial ids make duplicates impossible; anything
+    # unexpected rolls back both the rows and this plan.
+    try:
+        repository.materialize_frozen_matrix(session, campaign_id)  # flushed, not committed
+        matrix_digest = orchestration.verify_matrix_or_raise(session, row)
+    except orchestration.MatrixMismatchError as exc:
+        raise invalid_request(f"campaign matrix could not be planned: {exc}") from exc
+
+    updated = session.execute(
+        update(CampaignRow)
+        .where(CampaignRow.id == campaign_id, CampaignRow.state == "frozen", CampaignRow.revision == row.revision)
+        .values(state="planned", matrix_digest=matrix_digest, revision=CampaignRow.revision + 1)
+        .returning(CampaignRow)
+    ).scalar_one_or_none()
+    if updated is None:
+        replay = check_or_reserve(session, scope=scope, key=idempotency_key, body={})
+        if replay is not None:
+            return CampaignStateResponse.model_validate(replay)
+        current = session.get(CampaignRow, campaign_id)
+        if current is None:
+            raise not_found()
+        raise conflict(f"cannot plan a campaign in state {current.state}")
+    session.flush()
+    response = _state_response(
+        session, updated,
+        notice="Cell matrix materialized from the frozen manifest and pinned by matrix digest.",
+    )
+    replay = finalize(session, scope=scope, key=idempotency_key, body={}, status_code=200, response_body=response.model_dump(mode="json"))
+    return response if replay is None else CampaignStateResponse.model_validate(replay)
+
+
 @router.post("/{campaign_id}/start", response_model=CampaignStateResponse)
 def start_campaign(
     campaign_id: UUID,
@@ -362,9 +447,18 @@ def start_campaign(
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
-    """frozen -> running: reserve the declared budget (estimated, not a hard
-    provider hold), enqueue the frozen trial matrix, then flip to running.
-    All writes, including the idempotent response, share one transaction."""
+    """approved -> running: verify the exact matrix, reserve the declared
+    budget (estimated, not a hard provider hold), enqueue first attempts for
+    every cell, then flip to running. All writes, including the idempotent
+    response, share one transaction.
+
+    Server-side gates (V2-GAP-004 plan sections 3-5): the campaign must be
+    `approved` - reachable only through freeze -> plan -> independent
+    approval, so start cannot bypass the approval sequence - the persisted
+    matrix must exactly equal the frozen manifest matrix, the worst-case
+    reservation must be known (a missing role cap or environment bound is
+    refused, never silently dropped from the total), and it must not exceed
+    the authorized cap (`AIEB_BUDGET_CAP_USD`) when one is configured."""
     row = session.execute(
         select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
     ).scalar_one_or_none()
@@ -374,12 +468,22 @@ def start_campaign(
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body={})
     if cached is not None:
         return CampaignStateResponse.model_validate(cached)
-    if row.state != "frozen":
-        raise conflict(f"only a frozen campaign can be started, not one in state {row.state}")
-    budgets.reserve_campaign_budget(session, row)
-    repository.enqueue_frozen_campaign(session, campaign_id)  # flushed, not committed
+    if row.state != "approved":
+        raise conflict(
+            f"only an approved campaign can be started, not one in state {row.state} "
+            "(freeze, plan the matrix, then obtain independent approval first)"
+        )
+    try:
+        orchestration.verify_matrix_or_raise(session, row)
+    except orchestration.MatrixMismatchError as exc:
+        raise conflict(str(exc)) from exc
+    try:
+        budgets.reserve_campaign_budget(session, row)
+    except budgets.BudgetError as exc:
+        raise conflict(str(exc)) from exc
+    repository.enqueue_campaign_attempts(session, campaign_id)  # flushed, not committed
     updated = session.execute(
-        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "frozen")
+        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "approved")
         .values(state="running").returning(CampaignRow)
     ).scalar_one_or_none()
     if updated is None:
@@ -491,14 +595,14 @@ def cancel_campaign_route(
     identity: Identity = Depends(require_role("operator")),
     session: Session = Depends(get_session),
 ) -> CampaignStateResponse:
-    """frozen/running/paused -> cancelling: stop new dispatch, keep the
-    budget reservation ACTIVE until the drain completes. Releasing at request
-    time would book the estimate back as available while leased work was
-    still capable of billing spend; the reservation is released only when no
-    ready/leased work remains. Already-leased work finishes or expires
+    """frozen/planned/approved/running/paused -> cancelling: stop new dispatch,
+    keep the budget reservation ACTIVE until the drain completes. Releasing at
+    request time would book the estimate back as available while leased work
+    was still capable of billing spend; the reservation is released only when
+    no ready/leased work remains. Already-leased work finishes or expires
     naturally; the worker (or the idle sweep) finalizes the campaign to
     `cancelled` once nothing remains. A drain with NOTHING outstanding - e.g.
-    cancelling a frozen campaign that was never enqueued, or one whose last
+    cancelling a planned campaign that was never started, or one whose last
     item just finished - is finalized to `cancelled` directly in THIS
     transaction, so it can never sit stuck in `cancelling` with no work item
     left to trigger the worker's completion path."""
@@ -532,7 +636,7 @@ def cancel_campaign_route(
             status_code=200, response_body=response.model_dump(mode="json"))
         return response if replay is None else CampaignStateResponse.model_validate(replay)
     updated = session.execute(
-        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused")))
+        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(orchestration.CANCELLABLE_STATES))
         .values(state="cancelling").returning(CampaignRow)
     ).scalar_one_or_none()
     if updated is None:
@@ -608,17 +712,22 @@ def approve_campaign(
     identity: Identity = Depends(require_role("reviewer", "administrator")),
     session: Session = Depends(get_session),
 ) -> CampaignApprovalSummary:
-    """Reviewer-only independent approval of a FROZEN campaign.
+    """Reviewer-only independent approval of a PLANNED campaign.
 
     Anti-bypass rules:
     - reviewer must be distinct from the campaign's creator (no self-approval);
-    - the campaign must be `frozen` (approval is meaningless pre-freeze, and a
-      running/ended campaign cannot subsequently be 'approved');
+    - the campaign must be `planned` - i.e. frozen AND its exact cell matrix
+      materialized and digest-pinned first - so what is approved is an
+      executable matrix, not an abstract draft, and a running/ended campaign
+      cannot subsequently be 'approved';
+    - the recorded approval binds the exact frozen manifest, cohort, and
+      matrix digests, so an approval can never be read as covering different
+      content;
     - a replay-safe mutation like everything else: same key replays the same
       summary, a reused key with different body is 409.
-    Approval only records a durable decision; it does not start the campaign
-    (authoritative start remains POST .../start with its own gates).
-    """
+    Approval records a durable decision AND transitions planned -> approved
+    (the plan's campaign_approved state); actually dispatching work remains
+    POST .../start with its own matrix/budget gates."""
     row = session.execute(
         select(CampaignRow).where(CampaignRow.id == campaign_id).with_for_update()
     ).scalar_one_or_none()
@@ -636,21 +745,42 @@ def approve_campaign(
     cached = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
     if cached is not None:
         return CampaignApprovalSummary.model_validate(cached)
-    if row.state != "frozen":
-        raise conflict(f"only a frozen campaign can be approved, not one in state {row.state}")
+    if row.state != "planned":
+        raise conflict(
+            f"only a planned campaign can be approved, not one in state {row.state} "
+            "(freeze, then plan the exact matrix, before seeking approval)"
+        )
     now = datetime.now(timezone.utc)
+    bound_identities = {
+        "manifest_digest": row.manifest_digest,
+        "cohort_digest": row.cohort_digest,
+        "matrix_digest": row.matrix_digest,
+    }
     review = ReviewRow(
         reviewer_id=reviewer_id, target_type=_CAMPAIGN_APPROVAL_TARGET, target_id=campaign_id,
         decision="approve", created_at=now,
-        evidence={"reason": body.reason, "campaign_id": str(campaign_id)},
+        evidence={"reason": body.reason, "campaign_id": str(campaign_id), **bound_identities},
     )
     session.add(review)
     session.flush()
+    approved = session.execute(
+        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state == "planned")
+        .values(state="approved", revision=CampaignRow.revision + 1).returning(CampaignRow)
+    ).scalar_one_or_none()
+    if approved is None:
+        # The FOR UPDATE lock above serializes concurrent approvers, so this
+        # can only be a replay of an approval that just committed.
+        replay = check_or_reserve(session, scope=scope, key=idempotency_key, body=request_body)
+        if replay is not None:
+            return CampaignApprovalSummary.model_validate(replay)
+        current = session.get(CampaignRow, campaign_id)
+        raise conflict(f"cannot approve a campaign in state {current.state}")
     session.add(AuditEventRow(
         actor_user_id=reviewer_id, target_type="campaign", target_id=campaign_id,
         action="campaign_approved", created_at=now,
-        evidence={"review_id": str(review.id), "reason": body.reason},
+        evidence={"review_id": str(review.id), "reason": body.reason, **bound_identities},
     ))
+    session.flush()
     summary = CampaignApprovalSummary(
         campaign_id=campaign_id, approved=True, approved_by_user_id=reviewer_id,
         approved_at=now.isoformat().replace("+00:00", "Z"), reason=body.reason, review_id=review.id,

@@ -11,6 +11,7 @@ CLI already uses (aieb_cli.main._editor) for development verticals.
 from __future__ import annotations
 
 import sys
+import asyncio
 import threading
 import uuid
 from dataclasses import dataclass
@@ -18,15 +19,17 @@ from typing import Annotated, Literal, Mapping
 from pathlib import Path
 from uuid import uuid4
 
-from aieb_core.models import CandidateManifest, ExecutionValidity, SubmissionPolicy
+from aieb_core.models import CandidateManifest, EntrantRevision, ExecutionValidity, SubmissionPolicy, TaskRevision
 from aieb_runner.artifacts import ArtifactReference, BlobRef, CandidateDiff, StoredCandidate
 from aieb_runner.lifecycle import AttemptConfig, AttemptOutcome, CancelledError, EngineeringCommand, LocalAttemptRunner
+from aieb_runner.backends.normalization import HarborResultError, normalize_harbor_result
+from aieb_runner.backends.base import CandidateArtifacts
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from ..evidence_integrity import evidence_digest
-from ..models import AuditEventRow, TaskRevisionRow, TrialRow
+from ..models import AuditEventRow, AttemptRow, CampaignRow, EntrantRevisionRow, TaskRevisionRow, TrialRow
 from . import repository
 from .artifact_store import PostgresArtifactStore
 from .repository import CandidateOutcome, EvaluationOutcome, LeasedWork
@@ -720,6 +723,141 @@ def execute_leased_verification(
             attempt_id=leased.attempt_id, terminal_status=terminal_status, done=done,
         )
     return ExecutionResult(finalized=finalized, execution_validity=outcome.execution_validity.value, verdict=reported_verdict)
+
+
+def execute_leased_harbor_engineering(
+    session_factory: sessionmaker,
+    leased: LeasedWork,
+    *,
+    worker_id: str,
+    work_root: Path,
+    lease_seconds: int = repository.DEFAULT_LEASE_SECONDS,
+    cancel_event: threading.Event | None = None,
+) -> ExecutionResult:
+    """Execute one engineering lease through the explicitly selected Harbor backend.
+
+    Harbor owns the agent/container lifecycle here; candidate normalization and
+    persistence still use the same AIEB artifact/repository path as the local
+    runner. Verification remains a separate AIEB lease and replays the retained
+    candidate, so selecting Harbor cannot bypass the independent verification
+    and fencing contract.
+    """
+    from .harbor_dispatch import DispatchIntegrityError, build_frozen_cell_payload, dispatch_cell
+    from aieb_runner.backends.harbor.backend import HarborBackend
+
+    if leased.work_type != "engineering":
+        # Verification/regrade continue through the authoritative replay path.
+        return execute_leased_work(
+            session_factory, leased, worker_id=worker_id, work_root=work_root,
+            lease_seconds=lease_seconds, cancel_event=cancel_event,
+        )
+    with session_factory() as session:
+        started = repository.append_attempt_event_fenced(
+            session, work_item_id=leased.work_item_id, worker_id=worker_id,
+            generation=leased.generation, attempt_id=leased.attempt_id,
+            event_type="phase.started", payload={"phase": "engineering"},
+            lease_seconds=lease_seconds,
+        )
+        if not started:
+            return ExecutionResult(False, ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+        trial = session.get(TrialRow, leased.trial_id)
+        attempt = session.get(AttemptRow, leased.attempt_id)
+        campaign = session.get(CampaignRow, trial.campaign_id) if trial else None
+        task_row = session.get(TaskRevisionRow, trial.task_revision_id) if trial else None
+        entrant_row = session.get(EntrantRevisionRow, trial.entrant_revision_id) if trial else None
+        if not trial or not attempt or not campaign or not task_row or not entrant_row:
+            return ExecutionResult(False, ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+        resolved = campaign.resolved if isinstance(campaign.resolved, dict) else None
+        try:
+            task = TaskRevision.model_validate(task_row.manifest)
+            entrant = EntrantRevision.model_validate(entrant_row.manifest)
+            agent_import_path = entrant.agent_implementation
+            if ":" not in agent_import_path:
+                raise DispatchIntegrityError("entrant agent_implementation is not an importable Harbor agent path")
+            payload = build_frozen_cell_payload(
+                resolved or {}, trial_id=str(trial.id), attempt_number=attempt.number,
+                campaign_id=str(campaign.id), manifest_digest=campaign.manifest_digest or "",
+            )
+        except Exception as exc:  # noqa: BLE001 - malformed frozen input is infrastructure evidence
+            session.rollback()
+            with session_factory() as final_session:
+                finalized = repository.finalize(
+                    final_session, work_item_id=leased.work_item_id, worker_id=worker_id,
+                    generation=leased.generation, attempt_id=leased.attempt_id,
+                    terminal_status="infrastructure_invalid", done=False,
+                )
+            return ExecutionResult(finalized, ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+        task_dir = ROOT / "suites" / "dev" / task.slug
+        frozen_source = task_dir / "repo"
+        runs_dir = Path(work_root) / str(leased.attempt_id) / "harbor"
+        store = PostgresArtifactStore(session_factory)
+
+    if cancel_event is None:
+        cancel_event = threading.Event()
+    heartbeat_stop = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop,
+        args=(session_factory, leased, worker_id, lease_seconds, heartbeat_stop),
+        daemon=True,
+    )
+    heartbeat.start()
+    try:
+        backend = HarborBackend()
+        outcome = asyncio.run(dispatch_cell(
+            payload, launcher=backend, task_dir=task_dir, runs_dir=runs_dir,
+            agent_import_path=agent_import_path, cancel_event=cancel_event,
+        ))
+        artifacts = CandidateArtifacts(
+            trial_dir=Path(outcome.trial_dir or ""),
+            result_path=Path(outcome.result_path or ""),
+            manifest_path=Path(outcome.trial_dir or "") / "artifacts" / "manifest.json",
+            manifest=outcome.manifest_entries,
+        )
+        normalized = normalize_harbor_result(
+            artifacts=artifacts, frozen_source=frozen_source,
+            submission=task.submission, base_revision_digest=task.source.repository_digest,
+            store=store, access_scope=str(leased.attempt_id),
+        )
+    except (Exception,) as exc:  # noqa: BLE001 - backend/normalization failures are infra outcomes
+        with session_factory() as final_session:
+            finalized = repository.finalize(
+                final_session, work_item_id=leased.work_item_id, worker_id=worker_id,
+                generation=leased.generation, attempt_id=leased.attempt_id,
+                terminal_status="cancelled" if cancel_event.is_set() else "infrastructure_invalid",
+                done=False,
+            )
+        return ExecutionResult(finalized, "cancelled" if cancel_event.is_set() else ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+    finally:
+        heartbeat_stop.set()
+        heartbeat.join(timeout=5)
+
+    stored = _serialize_stored_candidate(normalized.candidate)
+    with session_factory() as session:
+        try:
+            candidate_id = repository.record_candidate(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id,
+                generation=leased.generation, attempt_id=leased.attempt_id,
+                candidate=CandidateOutcome(
+                    tree_digest=normalized.candidate.manifest.full_tree_hash,
+                    manifest_digest=normalized.candidate.manifest.digest(),
+                    validation_status="valid", stored_candidate=stored,
+                ), lease_seconds=lease_seconds,
+            )
+        except repository.CandidateConflictError:
+            finalized = repository.finalize(
+                session, work_item_id=leased.work_item_id, worker_id=worker_id,
+                generation=leased.generation, attempt_id=leased.attempt_id,
+                terminal_status="infrastructure_invalid", done=False,
+            )
+            return ExecutionResult(finalized, ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+        if candidate_id is None:
+            return ExecutionResult(False, ExecutionValidity.INFRASTRUCTURE_INVALID.value, None)
+        repository.attach_candidate_references(session, attempt_id=leased.attempt_id, candidate_id=candidate_id)
+        advanced = repository.advance_to_verification(
+            session, work_item_id=leased.work_item_id, worker_id=worker_id,
+            generation=leased.generation, attempt_id=leased.attempt_id,
+        )
+    return ExecutionResult(advanced, ExecutionValidity.VALID.value, None)
 
 
 def execute_leased_work(

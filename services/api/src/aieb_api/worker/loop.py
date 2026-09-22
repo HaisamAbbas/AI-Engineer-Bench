@@ -22,7 +22,7 @@ from ..models import TrialRow
 from . import repository
 from .metrics import log_event
 from .repository import LeasedWork
-from .runner_bridge import execute_leased_work
+from .runner_bridge import execute_leased_harbor_engineering, execute_leased_work
 
 
 def _campaign_id_for_trial(session: Session, trial_id: uuid.UUID) -> uuid.UUID:
@@ -60,7 +60,18 @@ def run_worker(
     stop_event: threading.Event | None = None,
 ) -> int:
     """Poll for ready work, execute it, repeat. Returns the number of work items
-    this call processed (claimed and either finalized or fenced out)."""
+    this call processed (claimed and either finalized or fenced out).
+
+    Dispatch-backend gate (V2-GAP-004 section 6 / V2-GAP-001): the backend is
+    explicit configuration. `AIEB_DISPATCH_BACKEND=harbor` refuses to boot
+    until leased-worker Harbor dispatch is wired - it must never silently
+    execute Harbor-selected cells through the local runner bridge. Unset is
+    the declared local path."""
+    from .harbor_dispatch import dispatch_backend_from_env
+
+    # Backend selection is explicit. Unknown values fail before any work is
+    # claimed; `harbor` is handled through the production leased path below.
+    dispatch_backend_from_env()
     processed = 0
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
@@ -97,10 +108,18 @@ def run_worker(
         cancel_event = threading.Event()
         if cancelling:
             cancel_event.set()
-        result = execute_leased_work(
-            session_factory, leased, worker_id=worker_id, candidate_variant=candidate_variant,
-            work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,
-        )
+        dispatch_backend = dispatch_backend_from_env()
+        if dispatch_backend == "harbor" and leased.work_type == "engineering":
+            result = execute_leased_harbor_engineering(
+                session_factory, leased, worker_id=worker_id,
+                work_root=work_root, lease_seconds=lease_seconds,
+                cancel_event=cancel_event,
+            )
+        else:
+            result = execute_leased_work(
+                session_factory, leased, worker_id=worker_id, candidate_variant=candidate_variant,
+                work_root=work_root, lease_seconds=lease_seconds, cancel_event=cancel_event,
+            )
         processed += 1
         log_event(
             "worker.finished", worker_id=worker_id, work_item_id=str(leased.work_item_id),

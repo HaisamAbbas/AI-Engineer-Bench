@@ -144,16 +144,51 @@ class OperatorCliIntegrationTests(unittest.TestCase):
             "evaluator": {"evaluator_digest": "6" * 64, "development_fixture": "rag01-dev-v1", "official_fixture_ref": "maintainer-only:rag01-v1"},
             "profile_compatibility": ["cohort-a"],
         }
+        from aieb_api import admission as admission_module
+        from aieb_core.models import TaskRevision as _TaskRevisionContract
+
+        manifest_digest = _TaskRevisionContract.model_validate(manifest).digest()
         with db.session_factory()() as session:
-            session.add(api_models.TaskRevisionRow(
+            # Idempotent for the same reason as `_seed_evaluator`: this
+            # test's core flow calls `_create_frozen_campaign()` twice in one
+            # test, and two campaigns legitimately sharing one admitted task
+            # revision is normal - re-inserting it a second time is not.
+            existing = session.execute(
+                select(api_models.TaskRevisionRow).where(
+                    api_models.TaskRevisionRow.slug == "rag.document-freshness",
+                    api_models.TaskRevisionRow.version == "0.1.0",
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+            revision = api_models.TaskRevisionRow(
                 slug="rag.document-freshness", version="0.1.0", family_id="knowledge-service-a", category="rag",
-                source_digest="1" * 64, manifest_digest="d" * 64,
+                source_digest="1" * 64, manifest_digest=manifest_digest,
                 evaluator_id=self._seed_evaluator(session), manifest=manifest,
                 ticket_text="Repair stale document ingestion.",
-            ))
+            )
+            session.add(revision)
+            session.flush()
+            # V2-GAP-004's freeze requires release-eligible (admitted) task
+            # revisions - see test_api_service.py::_seed_task for the same fix.
+            admission_module.seed_fixture_admission(session, revision)
             session.commit()
 
     def _seed_evaluator(self, session) -> uuid.UUID:
+        # Idempotent: this test's core flow calls `_create_frozen_campaign()`
+        # twice in one test (a second, separately-approved campaign), and
+        # `_seed_task` -> `_seed_evaluator` re-seeding the same fixed
+        # (code_digest, contract_version) a second time used to violate
+        # `uq_evaluator_revision_digest_contract` - first surfaced once the
+        # earlier admission-gate blocker (below) stopped masking it.
+        existing = session.execute(
+            select(api_models.EvaluatorRevisionRow).where(
+                api_models.EvaluatorRevisionRow.code_digest == "e" * 64,
+                api_models.EvaluatorRevisionRow.contract_version == "v1",
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return existing.id
         row = api_models.EvaluatorRevisionRow(code_digest="e" * 64, contract_version="v1")
         session.add(row)
         session.flush()
@@ -167,6 +202,15 @@ class OperatorCliIntegrationTests(unittest.TestCase):
             "credential_ref_type": "broker",
         }
         with db.session_factory()() as session:
+            # Idempotent for the same reason as `_seed_task`/`_seed_evaluator`.
+            existing = session.execute(
+                select(api_models.EntrantRevisionRow).where(
+                    api_models.EntrantRevisionRow.slug == "agent-a",
+                    api_models.EntrantRevisionRow.version == "1.0.0",
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
             session.add(api_models.EntrantRevisionRow(
                 slug="agent-a", version="1.0.0", track="agents", config_digest="agent-a-digest",
                 capabilities=["cpu-fixture-standard-v1"], manifest=manifest,
@@ -185,9 +229,13 @@ class OperatorCliIntegrationTests(unittest.TestCase):
             "budget": {
                 "schema_version": "aieb.budget/v2", "id": "budget-a", "engineer_wall_seconds": 1200, "verification_wall_seconds": 300,
                 "engineer_cpu": 2, "engineer_memory_mb": 1024, "environment_upper_bound_usd": "0.5",
+                # V2-GAP-004's worst-case reservation formula treats a `None`
+                # limit_usd as an undeclared (unbounded) role cap and refuses
+                # to start - see test_api_service.py::_registry_payload for
+                # the same fix.
                 "per_role_budget_usd": [
-                    {"role": "engineer", "limit_usd": None}, {"role": "dev_application", "limit_usd": None},
-                    {"role": "verifier_application", "limit_usd": None}, {"role": "verifier_judge", "limit_usd": None},
+                    {"role": "engineer", "limit_usd": "1.00"}, {"role": "dev_application", "limit_usd": "1.00"},
+                    {"role": "verifier_application", "limit_usd": "1.00"}, {"role": "verifier_judge", "limit_usd": "1.00"},
                 ],
             },
         }
@@ -252,7 +300,18 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         campaign_id = self._create_frozen_campaign()
         manifest = self._manifest_path(campaign_id)
 
-        # 1) reviewer approves the frozen campaign through the CLI.
+        # 0) materialize the exact cell matrix (frozen -> planned): V2-GAP-004
+        # requires a campaign to be `planned` before it can be `approved` -
+        # `approve` alone on a merely `frozen` campaign now fails closed.
+        code, envelope, out, _ = self._cli(
+            _token(("operator",), OPERATOR_SUBJECT),
+            ["operator", "campaign", "plan", "--campaign", campaign_id, "--manifest", manifest,
+             "--materialize", "--idempotency-key", "plan-1"],
+        )
+        self.assertEqual(code, 0, out)
+        self.assertEqual(envelope["data"]["state"], "planned", envelope)
+
+        # 1) reviewer approves the planned campaign through the CLI.
         code, envelope, out, _ = self._cli(
             _token(("reviewer",), REVIEWER_SUBJECT),
             ["operator", "campaign", "approve", "--campaign", campaign_id, "--reason", "independently reviewed",
@@ -268,14 +327,21 @@ class OperatorCliIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, out)
         self.assertTrue(envelope["data"]["digest_verified"], envelope)
-        self.assertTrue(envelope["data"]["frozen"], envelope)
+        # `frozen` reports `state == "frozen"` at read time - the campaign has
+        # already advanced past that to `approved` by this point (steps 0-1),
+        # which is what a genuinely materialized-and-approved campaign looks
+        # like; `state`/the approval gate below are the meaningful checks here.
+        self.assertFalse(envelope["data"]["frozen"], envelope)
+        self.assertEqual(envelope["data"]["state"], "approved", envelope)
         self.assertFalse(envelope["data"]["mutation_issued"], envelope)
         approval_gate = next(gate for gate in envelope["data"]["gates"] if gate["gate"] == "campaign_approved")
         self.assertTrue(approval_gate["satisfied"], envelope)
         self.assertEqual(envelope["data"]["planned_trials"], 1)
         self.assertEqual(envelope["data"]["cells"]["trials"], 1)
 
-        # 3) an unapproved campaign start is refused by the real API via the CLI gate.
+        # 3) an unplanned, unapproved campaign start is refused by the CLI gate
+        # before it ever reaches the server - `not_planned` fires first since
+        # V2-GAP-004 interposed a mandatory materialize step before approval.
         other = self._create_frozen_campaign()
         other_manifest = self._manifest_path(other)
         code, envelope, out, _ = self._cli(
@@ -284,7 +350,7 @@ class OperatorCliIntegrationTests(unittest.TestCase):
              "--confirm-run", "--idempotency-key", "run-other"],
         )
         self.assertEqual(code, 2, out)
-        self.assertEqual(envelope["error"]["code"], "approval_required", envelope)
+        self.assertEqual(envelope["error"]["code"], "not_planned", envelope)
 
         # 4) the approved campaign runs and reports durable server state.
         code, envelope, out, _ = self._cli(

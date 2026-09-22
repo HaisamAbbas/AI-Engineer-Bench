@@ -7,7 +7,7 @@ core contracts do not model (pagination envelopes, freeze registry input).
 
 from __future__ import annotations
 
-from typing import Generic, Literal, TypeVar, Union
+from typing import Any, Generic, Literal, TypeVar, Union
 from uuid import UUID
 
 from aieb_core.models import ApplicationProfile, BudgetProfile, BudgetProfileV2, CampaignDraft, Cohort, EntrantRevision, ProtocolRevision, TaskRevision
@@ -131,6 +131,8 @@ class CampaignSummary(BaseModel):
     revision: int
     manifest_digest: str | None
     cohort_digest: str | None
+    # V2-GAP-004: digest of the exact materialized cell matrix (set by plan).
+    matrix_digest: str | None = None
 
 
 class TaskRevisionResponse(BaseModel):
@@ -284,6 +286,18 @@ class PublishedEvidenceManifest(BaseModel):
     # derivation check is deferred to ENG-018) - only that the published pair
     # cannot be altered undetected afterward.
     snapshot_digest: str
+    # V2-GAP-004 section 10 additions. All OPTIONAL: manifests persisted
+    # before the extension must keep validating on read (fail-closed reads
+    # must not reject honest old evidence), while every manifest prepared
+    # after it carries them (publication_evidence.build_evidence_manifest).
+    release: dict[str, Any] | None = None
+    campaign_state: str | None = None
+    cohort: dict[str, Any] | None = None
+    frozen_identities: dict[str, Any] | None = None
+    coverage: dict[str, Any] | None = None
+    usage_provenance: dict[str, Any] | None = None
+    redaction_policy: dict[str, Any] | None = None
+    limitations: list[str] | None = None
     selections: list[PublishedEvidenceSelection]
 
     @model_validator(mode="after")
@@ -752,6 +766,10 @@ class BudgetReservationSummary(BaseModel):
     enforcement: Literal["hard", "estimated_time_limited"]
     reserved_usd: str | None
     status: Literal["active", "released", "consumed"]
+    # V2-GAP-004: auditable derivation of the reserved amount.
+    reservation_formula: dict | None = None
+    budget_profile_digest: str | None = None
+    authorized_cap_usd: str | None = None
 
 
 class CampaignStateResponse(BaseModel):
@@ -965,3 +983,92 @@ class KillSwitchStatus(BaseModel):
     reason: str | None = None
     activated_at: str | None = None
     campaigns_teardown_requested: int | None = None
+
+
+# ---- V2-GAP-003: private task-admission lifecycle -------------------------
+
+
+class AdmissionStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: str | None = Field(default=None, max_length=64)
+
+
+class AdmissionCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def admission_cancel_reason_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("reason must not be blank")
+        return value.strip()
+
+
+class AdmissionReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["approve", "reject"]
+    scope: str = Field(min_length=1, max_length=64)
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    independence_declaration: bool
+    reason: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("scope", "reason")
+    @classmethod
+    def admission_review_text_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("value must not be blank")
+        return value.strip()
+
+
+class AdmissionGateSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    gate_name: str
+    required: bool
+    status: Literal["not_run", "pass", "fail", "indeterminate"]
+    observed_digest: str | None = None
+    evidence_reference: str | None = None
+    details: dict
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class AdmissionRunSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    task_revision_id: UUID
+    admission_state: str
+    status: Literal["pending", "running", "passed", "failed", "cancelled"]
+    protocol_version: str
+    protocol_digest: str
+    revision_digest: str
+    manifest_digest: str
+    source_digest: str
+    evaluator_digest: str
+    result_digest: str | None = None
+    failure_reason: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    created_at: str
+    gates: list[AdmissionGateSummary] = Field(default_factory=list)
+    passing_resets: int = 0
+
+
+class AdmissionReviewSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    admission_run_id: UUID
+    task_revision_id: UUID
+    reviewer_user_id: UUID
+    decision: Literal["approve", "reject"]
+    scope: str
+    evidence_digest: str
+    independence_declaration: bool
+    reason: str
+    created_at: str

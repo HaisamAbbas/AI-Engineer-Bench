@@ -32,6 +32,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .. import budgets
 from ..models import (
     AttemptCredentialRow,
     AttemptEventRow,
@@ -305,24 +306,55 @@ def _fenced_work_item_where(*, work_item_id: uuid.UUID, worker_id: str, generati
     )
 
 
-def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
-    """Create trial/attempt/work_item rows for a frozen campaign's resolved trials.
+def _planned_deadline_from_resolved(resolved: dict) -> int | None:
+    """The frozen per-cell wall-clock deadline budget: engineer + verification
+    wall seconds. NULL when the frozen budget does not declare both (start
+    refuses unknown budget bounds anyway, so a NULL here never runs)."""
+    budget = resolved.get("budget")
+    if not isinstance(budget, dict):
+        return None
+    engineer = budget.get("engineer_wall_seconds")
+    verification = budget.get("verification_wall_seconds")
+    if not isinstance(engineer, int) or not isinstance(verification, int):
+        return None
+    return engineer + verification
 
-    A minimal internal capability this ticket needs to make leasing/recovery
-    testable end to end. The public POST /campaigns/{id}/start endpoint
-    (budget reservations, role checks) is ENG-017's scope and will call this
-    same function rather than duplicating trial-expansion logic.
-    """
+
+def materialize_frozen_matrix(session: Session, campaign_id: uuid.UUID) -> int:
+    """Expand the frozen release manifest into persisted CampaignCell rows
+    (trial rows) - V2-GAP-004 plan section 3. Called by POST /plan
+    (frozen -> planned), BEFORE any execution machinery exists.
+
+    One row per `task_revision x entrant_revision x repetition_index` cell,
+    carrying exactly what the plan requires each cell to pin: the
+    deterministic cell id (the manifest's trial id) and contract cell digest,
+    the task/entrant revision bindings, the repetition index, the frozen
+    order index, the worst-case budget allocation
+    ((role caps + environment bound) x (1 + max_replacements); NULL only when
+    the frozen bounds are unknown - start refuses such campaigns), the frozen
+    per-cell wall-clock deadline budget, and initial status 'planned'.
+
+    Idempotent: an already-materialized matrix is left untouched (the DB's
+    unique (campaign, task, entrant, repetition) constraint would reject any
+    duplicate regardless). Exact equality with the manifest is verified by
+    the caller (aieb_api.orchestration.verify_matrix_or_raise). The caller
+    owns the transaction."""
     campaign = session.get(CampaignRow, campaign_id)
-    if campaign is None or campaign.state != "frozen" or campaign.resolved is None:
-        raise EnqueueError("campaign must be frozen with a resolved manifest to enqueue")
+    if (
+        campaign is None
+        or campaign.state not in ("frozen", "planned", "approved", "running")
+        or not isinstance(campaign.resolved, dict)
+    ):
+        raise EnqueueError("campaign must be frozen with a resolved manifest to materialize its matrix")
     already = session.execute(select(TrialRow.id).where(TrialRow.campaign_id == campaign_id).limit(1)).first()
     if already is not None:
-        return 0  # idempotent: already enqueued
+        return 0  # idempotent: already materialized
 
     resolved = campaign.resolved
     task_by_digest = {TaskRevision.model_validate(t).digest(): t for t in resolved["tasks"]}
     entrant_by_digest = {EntrantRevision.model_validate(e).digest(): e for e in resolved["entrants"]}
+    per_cell_allocation = budgets.per_cell_allocation_from_resolved(resolved)
+    deadline_seconds = _planned_deadline_from_resolved(resolved)
 
     created = 0
     for trial in resolved["trials"]:
@@ -337,20 +369,76 @@ def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
             )
         ).scalar_one()
         cell_digest = TrialContract.model_validate(trial).digest()
-        trial_row = TrialRow(
-            id=uuid.UUID(trial["id"]), campaign_id=campaign.id, task_revision_id=task_row.id,
-            entrant_revision_id=entrant_row.id, repetition=trial["repetition_index"], cell_digest=cell_digest,
+        session.add(
+            TrialRow(
+                id=uuid.UUID(trial["id"]), campaign_id=campaign.id, task_revision_id=task_row.id,
+                entrant_revision_id=entrant_row.id, repetition=trial["repetition_index"], cell_digest=cell_digest,
+                order_index=trial.get("order_index", 0),
+                budget_allocation_usd=per_cell_allocation,
+                planned_deadline_seconds=deadline_seconds,
+                status="planned",
+            )
         )
-        session.add(trial_row)
-        session.flush()
-        attempt_row = AttemptRow(trial_id=trial_row.id, number=1, phase="queued", lease_generation=0)
-        session.add(attempt_row)
-        session.flush()
-        session.add(WorkItemRow(attempt_id=attempt_row.id, type="engineering", state="ready"))
         created += 1
+    # The caller owns the transaction: plan must persist the matrix, the matrix
+    # digest, the state transition and the replayable response together, or roll
+    # all of them back.
+    session.flush()
+    return created
+
+
+def enqueue_campaign_attempts(session: Session, campaign_id: uuid.UUID) -> int:
+    """Create first attempts (and their ready engineering work items) for every
+    materialized cell that has none - the start-time half of V2-GAP-004's
+    expansion, deliberately separate from plan-time row materialization so the
+    exact matrix exists and is digest-pinned before any execution machinery is
+    created.
+
+    Cells are inserted in frozen order (order_index, then id). Idempotent per
+    cell: a trial that already has an attempt (a retried start) is only marked
+    'enqueued' and never gets a second first-attempt - replacements are created
+    exclusively by the attempt-replacement path, never by starting again. The
+    caller owns the transaction."""
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None or campaign.state not in ("frozen", "planned", "approved", "running"):
+        raise EnqueueError("campaign must be approved with a materialized matrix to enqueue attempts")
+    trials = session.execute(
+        select(TrialRow).where(TrialRow.campaign_id == campaign_id).order_by(TrialRow.order_index, TrialRow.id)
+    ).scalars().all()
+    if not trials:
+        raise EnqueueError("campaign has no materialized cells; run plan before start")
+    created = 0
+    for trial_row in trials:
+        existing = session.execute(
+            select(AttemptRow.id).where(AttemptRow.trial_id == trial_row.id).limit(1)
+        ).first()
+        if existing is None:
+            attempt_row = AttemptRow(trial_id=trial_row.id, number=1, phase="queued", lease_generation=0)
+            session.add(attempt_row)
+            session.flush()
+            session.add(WorkItemRow(attempt_id=attempt_row.id, type="engineering", state="ready"))
+            created += 1
+        if trial_row.status != "enqueued":
+            trial_row.status = "enqueued"
     # The caller owns the transaction: start must persist the queue, reservation,
     # running state and replayable response together, or roll all of them back.
     session.flush()
+    return created
+
+
+def enqueue_frozen_campaign(session: Session, campaign_id: uuid.UUID) -> int:
+    """Materialize the frozen matrix AND create first attempts in one call.
+
+    POST /plan and POST /start now perform these as two audited steps with the
+    digest check between them; this wrapper keeps the combined behavior
+    available for internal callers (reconciler tooling, tests) that need both
+    halves without the HTTP orchestration layer. Returns the number of cells
+    created."""
+    campaign = session.get(CampaignRow, campaign_id)
+    if campaign is None or campaign.state != "frozen" or campaign.resolved is None:
+        raise EnqueueError("campaign must be frozen with a resolved manifest to enqueue")
+    created = materialize_frozen_matrix(session, campaign_id)
+    enqueue_campaign_attempts(session, campaign_id)
     return created
 
 
@@ -1054,7 +1142,12 @@ def activate_kill_switch(session: Session, *, activated_by_user_id: uuid.UUID | 
     row.activated_at = datetime.now(timezone.utc)
     session.flush()
     campaign_ids = session.execute(
-        select(CampaignRow.id).where(CampaignRow.state.in_(("frozen", "running", "paused")))
+        # Every non-terminal, non-draining state - including V2-GAP-004's
+        # planned/approved campaigns: they hold reservations/pinned matrices
+        # and must be torn down with everything else.
+        select(CampaignRow.id).where(
+            CampaignRow.state.in_(("frozen", "planned", "approved", "running", "paused"))
+        )
     ).scalars().all()
     # commit=False here regardless of the outer `commit`: committing per-campaign would
     # release the FOR UPDATE lock taken above before all campaigns are cancelled, letting
@@ -1547,7 +1640,10 @@ def cancel_campaign(session: Session, campaign_id: uuid.UUID, commit: bool = Tru
     accepted cancel-from-paused behavior was correct and unbroken throughout. This was a bug in
     this standalone helper's narrower WHERE clause, not a regression in the HTTP route."""
     result = session.execute(
-        update(CampaignRow).where(CampaignRow.id == campaign_id, CampaignRow.state.in_(("frozen", "running", "paused"))).values(state="cancelling")
+        update(CampaignRow).where(
+            CampaignRow.id == campaign_id,
+            CampaignRow.state.in_(("frozen", "planned", "approved", "running", "paused")),
+        ).values(state="cancelling")
     )
     if commit:
         session.commit()

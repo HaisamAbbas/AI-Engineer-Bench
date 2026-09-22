@@ -109,13 +109,34 @@ class ApiServiceTests(unittest.TestCase):
             "evaluator": {"evaluator_digest": "6" * 64, "development_fixture": "rag01-dev-v1", "official_fixture_ref": "maintainer-only:rag01-v1"},
             "profile_compatibility": ["cohort-a"],
         }
+        from aieb_core.models import TaskRevision as _TaskRevisionContract
+
+        # The admission `manifest_schema` gate (seeded below) recomputes and
+        # compares this against `TaskRevision.model_validate(manifest).digest()`
+        # - a placeholder "d"*64 value passed real-PostgreSQL testing before
+        # because nothing exercised that gate, but fails it now.
+        manifest_digest = _TaskRevisionContract.model_validate(manifest).digest()
         with db.session_factory()() as session:
-            session.add(api_models.TaskRevisionRow(
+            revision = api_models.TaskRevisionRow(
                 slug=slug, version="0.1.0", family_id="knowledge-service-a", category="rag",
-                source_digest="1" * 64, manifest_digest="d" * 64,
+                source_digest="1" * 64, manifest_digest=manifest_digest,
                 evaluator_id=self._seed_evaluator(session), manifest=manifest,
                 ticket_text="Repair stale document ingestion. Updated documents must replace old searchable text.",
-            ))
+            )
+            session.add(revision)
+            session.flush()
+            # V2-GAP-004's freeze now requires release-eligible (admitted)
+            # task revisions (admission.require_release_eligible) - without
+            # this, every campaign-freeze test here fails closed with 409
+            # "not release-eligible", which is what real-PostgreSQL testing
+            # of this suite surfaced. This is a synthetic fixture admission
+            # (admission.seed_fixture_admission - never route-reachable),
+            # not a real independent review; no test here exercises the
+            # not-yet-admitted rejection path, so seeding it unconditionally
+            # for every caller of `_seed_task` is safe.
+            from aieb_api import admission as admission_module
+
+            admission_module.seed_fixture_admission(session, revision)
             session.commit()
 
     def _seed_evaluator(self, session) -> uuid.UUID:
@@ -232,9 +253,16 @@ class ApiServiceTests(unittest.TestCase):
                 "schema_version": "aieb.budget/v2", "id": "budget-a", "engineer_wall_seconds": 1200, "verification_wall_seconds": 300,
                 "engineer_cpu": 2, "engineer_memory_mb": 1024,
                 "environment_upper_bound_usd": "0.5",
+                # V2-GAP-004's worst-case reservation formula (budgets.py::_bounds)
+                # treats a `None` limit_usd as an UNDECLARED (unbounded) role cap and
+                # refuses to start the campaign at all - a `None` here used to be a
+                # harmless placeholder before that enforcement existed, but now makes
+                # every campaign built from this fixture fail closed with
+                # UnknownBudgetBounds. Real numeric caps, matching a genuinely bounded
+                # per-role budget declaration.
                 "per_role_budget_usd": [
-                    {"role": "engineer", "limit_usd": None}, {"role": "dev_application", "limit_usd": None},
-                    {"role": "verifier_application", "limit_usd": None}, {"role": "verifier_judge", "limit_usd": None},
+                    {"role": "engineer", "limit_usd": "1.00"}, {"role": "dev_application", "limit_usd": "1.00"},
+                    {"role": "verifier_application", "limit_usd": "1.00"}, {"role": "verifier_judge", "limit_usd": "1.00"},
                 ],
             },
         }
@@ -522,6 +550,24 @@ class ApiServiceTests(unittest.TestCase):
         self.assertEqual(frozen.status_code, 200, frozen.text)
         return campaign_id
 
+    def _plan_and_approve(self, campaign_id: str) -> None:
+        """V2-GAP-004: `start` now requires state `approved`, reached only via
+        `frozen -> planned (plan) -> approved (approve)` - a direct
+        `freeze` then `start` (the old two-step flow) now fails closed with
+        409 "only an approved campaign can be started". The approving
+        reviewer must differ from the campaign's own operator/creator
+        (self-approval is rejected), so this uses a distinct role subject."""
+        operator = _auth_header(("operator",))
+        planned = self.client.post(
+            f"/v1/campaigns/{campaign_id}/plan", headers=operator | {"Idempotency-Key": f"plan-{uuid.uuid4().hex[:8]}"},
+        )
+        self.assertEqual(planned.status_code, 200, planned.text)
+        reviewer = _auth_header(("reviewer",), subject="fixture-campaign-reviewer")
+        approved = self.client.post(
+            f"/v1/campaigns/{campaign_id}/approve", headers=reviewer | {"Idempotency-Key": f"appr-{uuid.uuid4().hex[:8]}"},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+
     def test_matrix_preview_returns_exact_matrix_without_persisting(self) -> None:
         self._seed_task()
         self._seed_entrant()
@@ -585,6 +631,7 @@ class ApiServiceTests(unittest.TestCase):
 
     def test_start_reserves_budget_enqueues_trials_and_runs(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=2, budget_limits="1.500000")
+        self._plan_and_approve(campaign_id)
         response = self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-1"})
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
@@ -610,6 +657,7 @@ class ApiServiceTests(unittest.TestCase):
 
     def test_pause_stops_new_dispatch_and_resume_restores_it(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
+        self._plan_and_approve(campaign_id)
         operator = _auth_header(("operator",))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-p"})
         paused = self.client.post(f"/v1/campaigns/{campaign_id}/pause", headers=operator | {"Idempotency-Key": "pause-p"})
@@ -631,6 +679,7 @@ class ApiServiceTests(unittest.TestCase):
         """ENG-020 (spec sections 39/48): auto-pause requires operator review before resume,
         distinct from a manual pause's plain resume - a same-click resume must be refused."""
         campaign_id = self._create_and_freeze(repetitions=1)
+        self._plan_and_approve(campaign_id)
         operator = _auth_header(("operator",))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-ap"})
         from aieb_api import models as api_models
@@ -663,6 +712,7 @@ class ApiServiceTests(unittest.TestCase):
 
     def test_cancel_releases_reservation_and_stops_dispatch(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
+        self._plan_and_approve(campaign_id)
         operator = _auth_header(("operator",))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "start-c"})
         cancelled = self.client.post(f"/v1/campaigns/{campaign_id}/cancel", headers=operator | {"Idempotency-Key": "cancel-c"})
@@ -682,6 +732,7 @@ class ApiServiceTests(unittest.TestCase):
 
     def test_progress_and_invalid_attempts(self) -> None:
         campaign_id = self._create_and_freeze(repetitions=1)
+        self._plan_and_approve(campaign_id)
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "start-pr"})
         progress = self.client.get(f"/v1/campaigns/{campaign_id}/progress", headers=_auth_header(("operator",)))
         self.assertEqual(progress.status_code, 200, progress.text)
@@ -758,6 +809,7 @@ class ApiServiceTests(unittest.TestCase):
         from aieb_api.worker import repository
 
         campaign_id = uuid.UUID(self._create_and_freeze(repetitions=1))
+        self._plan_and_approve(str(campaign_id))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "cmp-ok"})
         self._drive_campaign_to_terminal(campaign_id, resolve=True)
         with db.session_factory()() as session:
@@ -770,6 +822,7 @@ class ApiServiceTests(unittest.TestCase):
         from aieb_api.worker import repository
 
         campaign_id = uuid.UUID(self._create_and_freeze(repetitions=1))
+        self._plan_and_approve(str(campaign_id))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=_auth_header(("operator",)) | {"Idempotency-Key": "cmp-bad"})
         self._drive_campaign_to_terminal(campaign_id, resolve=False)
         with db.session_factory()() as session:
@@ -784,6 +837,7 @@ class ApiServiceTests(unittest.TestCase):
         campaign_id = uuid.UUID(self._create_and_freeze())
         operator = _auth_header(("operator",))
         reviewer = _auth_header(("reviewer",), subject="reviewer-only")
+        self._plan_and_approve(str(campaign_id))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "pub-start-2"})
         self._drive_campaign_to_terminal(campaign_id, resolve=True)
         with db.session_factory()() as session:
@@ -938,6 +992,7 @@ class ApiServiceTests(unittest.TestCase):
 
         campaign_id = uuid.UUID(self._create_and_freeze())
         headers = _auth_header(("operator",))
+        self._plan_and_approve(str(campaign_id))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=headers | {"Idempotency-Key": "pub-start"})
         self._drive_campaign_to_terminal(campaign_id, resolve=True)
         with db.session_factory()() as session:
@@ -1707,8 +1762,13 @@ class ApiServiceTests(unittest.TestCase):
                 session.execute(update(api_models.CampaignRow).where(api_models.CampaignRow.id == campaign_id).values(resolved={"b": 3}))
                 session.commit()
 
+        # V2-GAP-004's state-transition trigger (aieb_reject_illegal_campaign_transition)
+        # makes frozen -> cancelled a two-step jump (frozen -> cancelling ->
+        # cancelled), so "cancelling" - not "cancelled" - is the legal direct
+        # transition this assertion needs; the point here is only that SOME
+        # legal state change is allowed while the manifest itself is frozen.
         with db.session_factory()() as session:
-            result = session.execute(update(api_models.CampaignRow).where(api_models.CampaignRow.id == campaign_id).values(state="cancelled"))
+            result = session.execute(update(api_models.CampaignRow).where(api_models.CampaignRow.id == campaign_id).values(state="cancelling"))
             session.commit()
             self.assertEqual(result.rowcount, 1)
 
@@ -1872,7 +1932,10 @@ class ApiServiceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_evidence_manifest(session, campaign_id, {trial_id: evaluation_id}, snapshot=self._analysis_snapshot({"agent-a": 1.0}))
 
-    def _seed_frozen_campaign_for_aggregation(self, *, include_entrant_b_trial: bool, campaign_state: str = "completed") -> uuid.UUID:
+    def _seed_frozen_campaign_for_aggregation(
+        self, *, include_entrant_b_trial: bool, campaign_state: str = "completed",
+        protocol_overrides: dict | None = None,
+    ) -> uuid.UUID:
         """Seed a frozen campaign whose resolved manifest PLANS one task x two
         entrants (agent-a, agent-b), then persist a terminal passing trial for
         agent-a and, only when asked, for agent-b. When agent-b's trial is
@@ -1915,7 +1978,11 @@ class ApiServiceTests(unittest.TestCase):
             for index, (slug, digest) in enumerate((("agent-a", entrant_a_digest), ("agent-b", entrant_b_digest)))
         }
         resolved = {
-            "protocol": self._registry_payload()["protocol"],
+            # V2-GAP-004's DB trigger (aieb_reject_frozen_campaign_mutation)
+            # makes `resolved` immutable once persisted, so any protocol
+            # override a caller needs must be baked in HERE, before insert -
+            # not applied by mutating the row afterward.
+            "protocol": {**self._registry_payload()["protocol"], **(protocol_overrides or {})},
             "tasks": [task_manifest], "entrants": [entrant_a_manifest, entrant_b_manifest],
             "trials": [trial.model_dump(mode="json") for trial in frozen_trials.values()],
         }
@@ -2080,8 +2147,15 @@ class ApiServiceTests(unittest.TestCase):
                             resolved["trials"].append(duplicate)
                         else:
                             resolved["trials"][0]["task_digest" if case == "unknown_task" else "entrant_digest"] = "0" * 64
+                        # `aggregate_campaign_snapshot` only requires a truthy
+                        # `campaign.resolved` - it does not care about state -
+                        # so this stays `draft` (the seed default) rather than
+                        # setting `completed`: V2-GAP-004's frozen-manifest
+                        # immutability trigger (aieb_reject_frozen_campaign_mutation)
+                        # exempts `draft` but blocks a `resolved` mutation on
+                        # any other state, which would break the very
+                        # corrupted-manifest tampering this subtest injects.
                         campaign.resolved = resolved
-                        campaign.state = "completed"
                         session.flush()
                         with self.assertRaises(CampaignNotAggregatable):
                             aggregate_campaign_snapshot(session, campaign_id)
@@ -2145,6 +2219,7 @@ class ApiServiceTests(unittest.TestCase):
         campaign_id = uuid.UUID(self._create_and_freeze())
         operator = _auth_header(("operator",))
         reviewer = _auth_header(("reviewer",), subject="reviewer-only")
+        self._plan_and_approve(str(campaign_id))
         self.client.post(f"/v1/campaigns/{campaign_id}/start", headers=operator | {"Idempotency-Key": "rg-start"})
         self._drive_campaign_to_terminal(campaign_id, resolve=True, retain_source=True)
         with db.session_factory()() as session:

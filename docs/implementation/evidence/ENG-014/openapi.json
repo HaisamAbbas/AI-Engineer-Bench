@@ -8,6 +8,360 @@
         "title": "Activity",
         "type": "string"
       },
+      "AdmissionCancelRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "AdmissionCancelRequest",
+        "type": "object"
+      },
+      "AdmissionGateSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "evidence_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Reference"
+          },
+          "gate_name": {
+            "title": "Gate Name",
+            "type": "string"
+          },
+          "observed_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Digest"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "not_run",
+              "pass",
+              "fail",
+              "indeterminate"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "gate_name",
+          "required",
+          "status",
+          "details"
+        ],
+        "title": "AdmissionGateSummary",
+        "type": "object"
+      },
+      "AdmissionReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "independence_declaration": {
+            "title": "Independence Declaration",
+            "type": "boolean"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "scope",
+          "evidence_digest",
+          "independence_declaration",
+          "reason"
+        ],
+        "title": "AdmissionReviewRequest",
+        "type": "object"
+      },
+      "AdmissionReviewSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "admission_run_id": {
+            "format": "uuid",
+            "title": "Admission Run Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "approve",
+              "reject"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "evidence_digest": {
+            "title": "Evidence Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "independence_declaration": {
+            "title": "Independence Declaration",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "reviewer_user_id": {
+            "format": "uuid",
+            "title": "Reviewer User Id",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "task_revision_id": {
+            "format": "uuid",
+            "title": "Task Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "admission_run_id",
+          "task_revision_id",
+          "reviewer_user_id",
+          "decision",
+          "scope",
+          "evidence_digest",
+          "independence_declaration",
+          "reason",
+          "created_at"
+        ],
+        "title": "AdmissionReviewSummary",
+        "type": "object"
+      },
+      "AdmissionRunSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "admission_state": {
+            "title": "Admission State",
+            "type": "string"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "evaluator_digest": {
+            "title": "Evaluator Digest",
+            "type": "string"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "gates": {
+            "items": {
+              "$ref": "#/components/schemas/AdmissionGateSummary"
+            },
+            "title": "Gates",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "manifest_digest": {
+            "title": "Manifest Digest",
+            "type": "string"
+          },
+          "passing_resets": {
+            "default": 0,
+            "title": "Passing Resets",
+            "type": "integer"
+          },
+          "protocol_digest": {
+            "title": "Protocol Digest",
+            "type": "string"
+          },
+          "protocol_version": {
+            "title": "Protocol Version",
+            "type": "string"
+          },
+          "result_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Digest"
+          },
+          "revision_digest": {
+            "title": "Revision Digest",
+            "type": "string"
+          },
+          "source_digest": {
+            "title": "Source Digest",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "passed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "task_revision_id": {
+            "format": "uuid",
+            "title": "Task Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "task_revision_id",
+          "admission_state",
+          "status",
+          "protocol_version",
+          "protocol_digest",
+          "revision_digest",
+          "manifest_digest",
+          "source_digest",
+          "evaluator_digest",
+          "created_at"
+        ],
+        "title": "AdmissionRunSummary",
+        "type": "object"
+      },
+      "AdmissionStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "protocol_version": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol Version"
+          }
+        },
+        "title": "AdmissionStartRequest",
+        "type": "object"
+      },
       "AnalysisSnapshot": {
         "additionalProperties": false,
         "description": "The exact shape aieb_analysis.metrics.summarize() returns. Publication\nsnapshots are this package's authoritative output, persisted verbatim\n(spec: public results come from an immutable snapshot, never\nrecomputed) - typing it here means the frontend's generated types\nchange the moment this shape does, instead of an `as unknown as X` cast\nsilently continuing to compile against a stale shape.",
@@ -6525,6 +6879,293 @@
         ]
       }
     },
+    "/v1/maintainer/admissions/{admission_id}": {
+      "get": {
+        "operationId": "get_admission_v1_maintainer_admissions__admission_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Admission",
+        "tags": [
+          "maintainer-admission"
+        ]
+      }
+    },
+    "/v1/maintainer/admissions/{admission_id}/cancel": {
+      "post": {
+        "operationId": "cancel_admission_v1_maintainer_admissions__admission_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Admission",
+        "tags": [
+          "maintainer-admission"
+        ]
+      }
+    },
+    "/v1/maintainer/admissions/{admission_id}/execute": {
+      "post": {
+        "operationId": "execute_admission_v1_maintainer_admissions__admission_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Admission",
+        "tags": [
+          "maintainer-admission"
+        ]
+      }
+    },
+    "/v1/maintainer/admissions/{admission_id}/gates": {
+      "get": {
+        "operationId": "get_admission_gates_v1_maintainer_admissions__admission_id__gates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdmissionGateSummary"
+                  },
+                  "title": "Response Get Admission Gates V1 Maintainer Admissions  Admission Id  Gates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Admission Gates",
+        "tags": [
+          "maintainer-admission"
+        ]
+      }
+    },
+    "/v1/maintainer/admissions/{admission_id}/review": {
+      "post": {
+        "operationId": "review_admission_v1_maintainer_admissions__admission_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "admission_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Admission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionReviewSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Admission",
+        "tags": [
+          "maintainer-admission"
+        ]
+      }
+    },
     "/v1/maintainer/task-drafts": {
       "post": {
         "operationId": "create_task_draft_v1_maintainer_task_drafts_post",
@@ -6889,6 +7530,75 @@
         "summary": "Freeze Task Draft",
         "tags": [
           "maintainer-authoring"
+        ]
+      }
+    },
+    "/v1/maintainer/task-revisions/{revision_id}/admissions": {
+      "post": {
+        "operationId": "start_admission_v1_maintainer_task_revisions__revision_id__admissions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "revision_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Revision Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdmissionStartRequest",
+                "default": {}
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionRunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Admission",
+        "tags": [
+          "maintainer-admission"
         ]
       }
     },

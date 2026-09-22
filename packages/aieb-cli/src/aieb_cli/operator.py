@@ -33,8 +33,10 @@ EXIT_INVALID = 2
 
 # Server campaign states that are anchored to a frozen manifest digest
 # (freezing immutably pins manifest_digest/cohort_digest for the whole
-# lifecycle). Unanchored states (draft/planned) have no manifest identity yet.
-_MANIFEST_ANCHORED_STATES = ("frozen", "running", "completed", "incomplete")
+# lifecycle). Only `draft` is unanchored: it has no manifest identity yet.
+# V2-GAP-004: `planned`/`approved` are post-freeze orchestration states, so
+# they are manifest-anchored like `running`.
+_MANIFEST_ANCHORED_STATES = ("frozen", "planned", "approved", "running", "completed", "incomplete")
 
 
 class OperatorError(ValueError):
@@ -208,7 +210,10 @@ def _deadline_from_manifest(resolved: ResolvedCampaign) -> dict:
     return {
         "engineer_wall_seconds": int(budget.engineer_wall_seconds),
         "verification_wall_seconds": int(budget.verification_wall_seconds),
-        "note": "the hosted API models no campaign completion deadline; report the frozen per-trial wall-clock budget",
+        "note": (
+            "the hosted API models no campaign completion deadline; the frozen per-trial wall-clock "
+            "budget is reported here and persisted on each cell at plan time as planned_deadline_seconds"
+        ),
     }
 
 
@@ -231,7 +236,7 @@ def _gates_for(
     approved: bool,
     reservation: dict | None,
 ) -> list[dict]:
-    frozen = state == "frozen"
+    frozen = state in _MANIFEST_ANCHORED_STATES
     return [
         {
             "gate": "manifest_frozen",
@@ -242,6 +247,15 @@ def _gates_for(
             "gate": "manifest_verified",
             "satisfied": bool(manifest_digest) and manifest_digest == local_digest,
             "detail": "local frozen digest matches the server's stored digest",
+        },
+        {
+            "gate": "matrix_planned",
+            "satisfied": state not in ("draft", "frozen"),
+            "detail": (
+                "exact cell matrix materialized and digest-pinned"
+                if state not in ("draft", "frozen")
+                else "cell matrix not yet materialized (freeze -> plan first)"
+            ),
         },
         {
             "gate": "campaign_approved",
@@ -268,8 +282,7 @@ def _release_dispatch(args: argparse.Namespace) -> tuple[int, dict]:
     raise OperatorError("unknown_command", f"unknown release command {args.operator_command}")
 
 
-def _release_prepare(args: argparse.Namespace, client: PrivateApiClient) -> tuple[int, dict]:
-    command = "release.prepare"
+def _release_prepare(args: argparse.Namespace, client: PrivateApiClient, *, command: str = "release.prepare") -> tuple[int, dict]:
     campaign_id = _require(getattr(args, "campaign", None), "--campaign")
     resolved = _load_manifest(_require(getattr(args, "manifest", None), "--manifest"))
     detail, local_digest = _get_campaign_with_digest(client, campaign_id, resolved)
@@ -348,6 +361,10 @@ def _campaign_dispatch(args: argparse.Namespace) -> tuple[int, dict]:
         return _campaign_inspect(args, client)
     if args.operator_command == "approve":
         return _campaign_approve(args, client)
+    if args.operator_command == "cancel":
+        return _campaign_cancel(args, client)
+    if args.operator_command == "report":
+        return _campaign_report(args, client)
     raise OperatorError("unknown_command", f"unknown campaign command {args.operator_command}")
 
 
@@ -357,9 +374,36 @@ def _campaign_plan(args: argparse.Namespace, client: PrivateApiClient) -> tuple[
     resolved = _load_manifest(_require(getattr(args, "manifest", None), "--manifest"))
     detail, local_digest = _get_campaign_with_digest(client, campaign_id, resolved)
     campaign = detail["campaign"]
+    state = str(campaign.get("state") or "")
+    mutation: dict | None = None
+
+    # `--materialize` performs the plan MUTATION (frozen -> planned): expand
+    # the exact cell matrix from the frozen manifest and pin its digest on the
+    # server. Without the flag this command stays a pure read - the read-only
+    # dry run for drafts remains POST /preview, and `campaign inspect` covers
+    # post-plan reads.
+    if getattr(args, "materialize", False):
+        if state == "frozen":
+            mutation = client.request(
+                "POST", f"/v1/campaigns/{campaign_id}/plan",
+                body={}, idempotency_key=getattr(args, "idempotency_key", None),
+            )
+        elif state in ("planned", "approved"):
+            mutation = {"notice": "cell matrix is already materialized and digest-pinned", "state": state}
+        else:
+            raise OperatorError(
+                "not_frozen",
+                f"only a frozen campaign can be materialized (frozen -> planned); the server state is {state!r}",
+            )
+        # Re-read so every reported value (state, matrix digest, observed
+        # cells, gates) is the authoritative post-mutation server state, never
+        # the response body of one request mixed with the reads of another.
+        detail, local_digest = _get_campaign_with_digest(client, campaign_id, resolved)
+        campaign = detail["campaign"]
+        state = str(campaign.get("state") or "")
+
     progress = client.request("GET", f"/v1/campaigns/{campaign_id}/progress")
     approval = client.request("GET", f"/v1/campaigns/{campaign_id}/approval")
-    state = str(campaign.get("state") or "")
     gates = _gates_for(
         state=state,
         manifest_digest=campaign.get("manifest_digest"),
@@ -367,8 +411,13 @@ def _campaign_plan(args: argparse.Namespace, client: PrivateApiClient) -> tuple[
         approved=bool(approval.get("approved")) if isinstance(approval, dict) else False,
         reservation=detail.get("reservation"),
     )
+    materialized = mutation is not None
     data = {
-        "message": f"campaign {campaign_id} planned (read-only; no mutation issued)",
+        "message": (
+            f"campaign {campaign_id} cell matrix materialized and digest-pinned (state {state!r})"
+            if materialized
+            else f"campaign {campaign_id} planned (read-only; no mutation issued)"
+        ),
         "campaign_id": campaign_id,
         "campaign_name": campaign.get("name"),
         "state": state,
@@ -379,6 +428,7 @@ def _campaign_plan(args: argparse.Namespace, client: PrivateApiClient) -> tuple[
         "digest_verified": bool(campaign.get("manifest_digest")) and campaign.get("manifest_digest") == local_digest,
         "cohort_id": resolved.cohort.id,
         "cohort_digest": campaign.get("cohort_digest"),
+        "matrix_digest": campaign.get("matrix_digest"),
         "cells": _cell_counts(resolved),
         "planned_trials": progress.get("planned_trials"),
         "observed_trials": progress.get("observed_trials"),
@@ -387,7 +437,8 @@ def _campaign_plan(args: argparse.Namespace, client: PrivateApiClient) -> tuple[
         "approval": {"approved": approval.get("approved")} if isinstance(approval, dict) else {"approved": False},
         "gates": gates,
         "blockers": _blockers(),
-        "mutation_issued": False,
+        "mutation_issued": materialized,
+        "mutation": mutation,
     }
     return _ok(args, command, data, request_id=detail.get("request_id"))
 
@@ -402,8 +453,17 @@ def _campaign_run_gates(
     if not isinstance(campaign, dict):
         return "server returned no campaign state"
     state = str(campaign.get("state") or "")
-    if state != "frozen":
+    if state not in _MANIFEST_ANCHORED_STATES:
         return f"the campaign is not frozen (state is {state!r}); only a frozen campaign may be run"
+    if state == "frozen":
+        return (
+            "the campaign's exact cell matrix has not been planned; materialize it with "
+            "`aieb operator campaign plan --campaign <id> --manifest <path> --materialize` first"
+        )
+    if state == "planned":
+        return "the campaign is not approved; approve it with `aieb operator campaign approve --campaign <id>` before running"
+    if state != "approved":
+        return f"the campaign is not startable (state is {state!r}); only an approved campaign may be run"
     manifest_digest = campaign.get("manifest_digest")
     if not manifest_digest or manifest_digest != local_digest:
         return "the campaign's frozen manifest digest could not be verified against the supplied manifest"
@@ -440,6 +500,8 @@ def _campaign_run(args: argparse.Namespace, client: PrivateApiClient) -> tuple[i
             code = "approval_required"
         elif "not frozen" in blocked:
             code = "not_frozen"
+        elif "not been planned" in blocked:
+            code = "not_planned"
         elif "manifest digest" in blocked:
             code = "manifest_digest_mismatch"
         elif "budget reservation" in blocked:
@@ -511,11 +573,72 @@ def _campaign_approve(args: argparse.Namespace, client: PrivateApiClient) -> tup
     return _ok(args, command, data, request_id=response.get("request_id"))
 
 
+def _campaign_cancel(args: argparse.Namespace, client: PrivateApiClient) -> tuple[int, dict]:
+    command = "campaign.cancel"
+    campaign_id = _require(getattr(args, "campaign", None), "--campaign")
+    response = client.request(
+        "POST", f"/v1/campaigns/{campaign_id}/cancel",
+        body={}, idempotency_key=getattr(args, "idempotency_key", None),
+    )
+    campaign = response.get("campaign") if isinstance(response, dict) else {}
+    data = {
+        "message": response.get("notice") or f"campaign {campaign_id} cancellation requested",
+        "campaign_id": campaign_id,
+        "state": campaign.get("state"),
+        "reservation": response.get("reservation"),
+        "notice": response.get("notice"),
+    }
+    return _ok(args, command, data, request_id=response.get("request_id"))
+
+
+def _campaign_report(args: argparse.Namespace, client: PrivateApiClient) -> tuple[int, dict]:
+    """Read-only operator report: durable server state only - lifecycle
+    identity/digests, progress, approval, budget reservation (with its
+    persisted derivation), retained invalid/replacement attempts, and the
+    blockers that still gate publication. Composes existing private GETs;
+    issues no mutation."""
+    command = "campaign.report"
+    campaign_id = _require(getattr(args, "campaign", None), "--campaign")
+    detail = client.request("GET", f"/v1/campaigns/{campaign_id}")
+    progress = client.request("GET", f"/v1/campaigns/{campaign_id}/progress")
+    approval = client.request("GET", f"/v1/campaigns/{campaign_id}/approval")
+    invalid_attempts = client.request("GET", f"/v1/campaigns/{campaign_id}/invalid-attempts")
+    campaign = detail.get("campaign") if isinstance(detail, dict) else None
+    campaign = campaign if isinstance(campaign, dict) else {}
+    state = str(campaign.get("state") or "")
+    report = {
+        "state": state,
+        "terminal": state in ("completed", "incomplete", "cancelled"),
+        "publishable": state in ("completed", "incomplete"),
+        "manifest_digest": campaign.get("manifest_digest"),
+        "cohort_digest": campaign.get("cohort_digest"),
+        "matrix_digest": campaign.get("matrix_digest"),
+        "progress": progress,
+        "approval": approval if isinstance(approval, dict) else {"approved": False},
+        "reservation": detail.get("reservation"),
+        "invalid_attempts": invalid_attempts if isinstance(invalid_attempts, list) else [],
+    }
+    data = {
+        "message": f"campaign {campaign_id} report (read-only; no mutation issued)",
+        "campaign_id": campaign_id,
+        "campaign_name": campaign.get("name"),
+        "report": report,
+        "mutation_issued": False,
+        "blockers": _blockers(),
+    }
+    return _ok(args, command, data, request_id=detail.get("request_id"))
+
+
 # ---- publication -------------------------------------------------------------
 
 
 def _publication_dispatch(args: argparse.Namespace) -> tuple[int, dict]:
     client = _client_from_args(args)
+    if args.operator_command == "prepare":
+        # Same private operation as `release prepare` (publication evidence
+        # preparation); the distinct verb keeps the plan's command surface
+        # (`publication prepare`) available without a second implementation.
+        return _release_prepare(args, client, command="publication.prepare")
     if args.operator_command == "publish":
         return _publication_publish(args, client)
     raise OperatorError("unknown_command", f"unknown publication command {args.operator_command}")
@@ -576,13 +699,20 @@ def add_operator_parsers(subparsers: argparse._SubParsersAction) -> None:
     _common_flags(inspect, muted_default=True)
     inspect.add_argument("--preparation", required=True)
 
-    campaign = area.add_parser("campaign", help="plan, run, inspect, and approve a campaign")
+    campaign = area.add_parser("campaign", help="plan, run, inspect, approve, cancel, and report a campaign")
     campaign_command = campaign.add_subparsers(dest="operator_command", required=True)
-    plan = campaign_command.add_parser("plan", help="read-only frozen-manifest plan; makes no mutation")
+    plan = campaign_command.add_parser(
+        "plan",
+        help="verify the frozen plan (read-only by default); --materialize expands and digest-pins the exact cell matrix (frozen -> planned)",
+    )
     _common_flags(plan, muted_default=True)
     plan.add_argument("--campaign", required=True)
     plan.add_argument("--manifest", required=True, help="path to the frozen aieb.campaign/v1 manifest")
-    run = campaign_command.add_parser("run", help="start a frozen, approved campaign; requires --confirm-run")
+    plan.add_argument(
+        "--materialize", action="store_true",
+        help="issue the plan mutation: persist every task x entrant x repetition cell and pin the matrix digest",
+    )
+    run = campaign_command.add_parser("run", help="start a planned, approved campaign; requires --confirm-run")
     _common_flags(run, muted_default=True)
     run.add_argument("--campaign", required=True)
     run.add_argument("--manifest", required=True, help="path to the frozen aieb.campaign/v1 manifest")
@@ -594,9 +724,22 @@ def add_operator_parsers(subparsers: argparse._SubParsersAction) -> None:
     _common_flags(approve, muted_default=True)
     approve.add_argument("--campaign", required=True)
     approve.add_argument("--reason")
+    cancel = campaign_command.add_parser("cancel", help="request cancellation (stop new dispatch; drains leased work)")
+    _common_flags(cancel, muted_default=True)
+    cancel.add_argument("--campaign", required=True)
+    report = campaign_command.add_parser("report", help="read-only operator report: state, digests, progress, approval, reservation, invalid attempts")
+    _common_flags(report, muted_default=True)
+    report.add_argument("--campaign", required=True)
 
-    publication = area.add_parser("publication", help="publish a prepared release via the private review endpoint")
+    publication = area.add_parser("publication", help="prepare and publish release evidence via the private API")
     publication_command = publication.add_subparsers(dest="operator_command", required=True)
+    pub_prepare = publication_command.add_parser("prepare", help="prepare immutable publication evidence for a completed campaign")
+    _common_flags(pub_prepare, muted_default=True)
+    pub_prepare.add_argument("--campaign", required=True)
+    pub_prepare.add_argument("--manifest", required=True, help="path to the frozen aieb.campaign/v1 manifest")
+    pub_prepare.add_argument("--publication-class", choices=("ranked", "non_ranked"), default=None)
+    pub_prepare.add_argument("--supersedes")
+    pub_prepare.add_argument("--correction-reason")
     publish = publication_command.add_parser("publish", help="approve a prepared release into a live publication")
     _common_flags(publish, muted_default=True)
     publish.add_argument("--preparation", required=True)

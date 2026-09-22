@@ -24,6 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -235,6 +236,10 @@ class CampaignRow(Base):
     # publication (a reviewer may not approve a campaign they created).
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     submitter_note: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # V2-GAP-004: digest of the exact materialized cell matrix, recorded by
+    # `POST /plan` (frozen -> planned) and re-verified before start and at
+    # aggregation, so a matrix altered after planning can never run or publish.
+    matrix_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # ENG-020 auto-pause (spec sections 39/48): distinct from a manual operator pause. Resets
     # to 0 on any non-infrastructure-invalid outcome; at AUTO_PAUSE_THRESHOLD consecutive
@@ -248,7 +253,12 @@ class CampaignRow(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "state in ('draft','frozen','running','paused','cancelling','cancelled','completed','incomplete')",
+            # V2-GAP-004 orchestration states: planned (cells materialized) and
+            # approved (independent reviewer approval recorded) join the machine
+            # between frozen and running. Transitions among these values are
+            # enforced by the campaign_state_transition trigger (service-level
+            # mirror: aieb_api.orchestration.ALLOWED_TRANSITIONS).
+            "state in ('draft','frozen','planned','approved','running','paused','cancelling','cancelled','completed','incomplete')",
             name="ck_campaign_state",
         ),
         Index("ix_campaign_state", "state"),
@@ -264,12 +274,24 @@ class TrialRow(Base):
     entrant_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("entrant_revision.id"), nullable=False)
     repetition: Mapped[int] = mapped_column(Integer, nullable=False)
     cell_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # V2-GAP-004 plan-time cell expansion fields: exact position in the frozen
+    # order, worst-case per-cell budget allocation (NULL only when the frozen
+    # budget's bounds are unknown - start refuses such campaigns), the frozen
+    # per-cell wall-clock deadline budget in seconds, and the cell's
+    # orchestration status ('planned' at expansion, 'enqueued' once attempts
+    # are created at start). Resolution is derived from attempts, never from
+    # this status.
+    order_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    budget_allocation_usd: Mapped[str | None] = mapped_column(Numeric(20, 6), nullable=True)
+    planned_deadline_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="planned")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     __table_args__ = (
         UniqueConstraint(
             "campaign_id", "task_revision_id", "entrant_revision_id", "repetition", name="uq_trial_campaign_task_entrant_repetition"
         ),
+        CheckConstraint("status in ('planned','enqueued')", name="ck_trial_status"),
     )
 
 
@@ -620,6 +642,13 @@ class BudgetReservationRow(Base):
     enforcement: Mapped[str] = mapped_column(String(32), nullable=False)
     reserved_usd: Mapped[object | None] = mapped_column(Numeric(20, 6), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    # V2-GAP-004 section 5: persist HOW the number was derived (component
+    # values + expression), the frozen budget-profile digest it came from, and
+    # the authorized cap enforced at start - so the reservation is auditable
+    # against the exact frozen budget, not just a bare total.
+    reservation_formula: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
+    budget_profile_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    authorized_cap_usd: Mapped[object | None] = mapped_column(Numeric(20, 6), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -889,4 +918,187 @@ class AttemptCredentialRow(Base):
     __table_args__ = (
         UniqueConstraint("attempt_id", "actor_role", name="uq_attempt_credential_attempt_role"),
         CheckConstraint("actor_role in ('candidate','verifier')", name="ck_attempt_credential_actor_role"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# V2-GAP-003: persisted task admission state machine
+#
+# Freezing a draft pins immutable revision identity; it does NOT admit the
+# task. These tables persist the real admission lifecycle - executed gate
+# evidence, clean-reset evidence, and an independent review - and the database
+# (migration 6f2a9d5c1e73) enforces the transitions, finalization, and
+# independence rules with triggers and checks, not route conventions.
+# Evidence is bounded: digests, counts, references, and redacted diagnostics
+# only. Private fixture content is never stored here or returned from routes.
+# ---------------------------------------------------------------------------
+
+ADMISSION_STATES = (
+    "frozen",
+    "admission_pending",
+    "admission_running",
+    "admission_failed",
+    "pending_independent_review",
+    "admitted",
+    "rejected",
+)
+ADMISSION_RUN_STATUSES = ("pending", "running", "passed", "failed", "cancelled")
+ADMISSION_GATE_STATUSES = ("not_run", "pass", "fail", "indeterminate")
+ADMISSION_GATE_NAMES = (
+    "manifest_schema",
+    "clean_checkout",
+    "baseline_behavior",
+    "reference_behavior",
+    "independent_alternative",
+    "shortcut_adversarial_controls",
+    "public_hidden_consistency",
+    "private_fixture_leakage",
+    "clean_reset_reproducibility",
+    "evaluator_determinism",
+    "evidence_completeness",
+)
+
+
+class TaskAdmissionStateRow(Base):
+    """Current admission state of one frozen task revision.
+
+    `frozen` means immutable revision identity only - never admission. Only a
+    run whose mandatory gates all passed, followed by an independent approving
+    review, reaches `admitted`, and only `admitted` revisions are eligible for
+    release/campaign planning.
+    """
+
+    __tablename__ = "task_admission_state"
+
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="frozen")
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (CheckConstraint(f"status in {ADMISSION_STATES!r}", name="ck_task_admission_state_status"),)
+
+
+class TaskAdmissionRunRow(Base):
+    """One immutable-digest admission execution attempt for a frozen revision.
+
+    Identity/digest columns pin exactly what was executed; once terminal
+    (`passed`/`failed`/`cancelled`) the row is immutable evidence. Re-running
+    admission creates a NEW run - never an overwrite.
+    """
+
+    __tablename__ = "task_admission_run"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    protocol_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    protocol_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluator_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_task_admission_run_revision", "task_revision_id"),
+        CheckConstraint(f"status in {ADMISSION_RUN_STATUSES!r}", name="ck_task_admission_run_status"),
+        # One ACTIVE run per revision, enforced by the database: concurrent
+        # admission requests cannot both win. Terminal runs accumulate as history.
+        Index(
+            "uq_task_admission_run_active", "task_revision_id", unique=True,
+            postgresql_where=text("status in ('pending','running')"),
+        ),
+    )
+
+
+class TaskAdmissionGateRow(Base):
+    """One protocol gate result for one admission run.
+
+    Created as `not_run` when the run starts and finalized exactly once to
+    pass/fail/indeterminate (database-enforced), then immutable. A missing or
+    still-`not_run` mandatory gate blocks admission - a partially executed run
+    can never become admitted.
+    """
+
+    __tablename__ = "task_admission_gate"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    admission_run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_admission_run.id", ondelete="CASCADE"), nullable=False)
+    gate_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    required: Mapped[bool] = mapped_column(nullable=False, default=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="not_run")
+    observed_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("admission_run_id", "gate_name", name="uq_task_admission_gate_run_name"),
+        CheckConstraint(f"status in {ADMISSION_GATE_STATUSES!r}", name="ck_task_admission_gate_status"),
+    )
+
+
+class TaskAdmissionResetRow(Base):
+    """Append-only clean-reset evidence: reset between matrix cases, digest-compared."""
+
+    __tablename__ = "task_admission_reset"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    admission_run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_admission_run.id", ondelete="CASCADE"), nullable=False)
+    matrix_case_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    reset_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    clean_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("admission_run_id", "matrix_case_id", "reset_number", name="uq_task_admission_reset_case"),
+        CheckConstraint("reset_number > 0", name="ck_task_admission_reset_number"),
+        CheckConstraint("status in ('pass','fail')", name="ck_task_admission_reset_status"),
+    )
+
+
+class TaskAdmissionReviewRow(Base):
+    """Append-only independent review record; the only path to `admitted`.
+
+    Database checks enforce that the reviewer is neither the revision's author
+    nor the run's requester, and that an independence declaration was made.
+    Reviewer identity is resolved server-side from the authenticated principal -
+    never taken from the request body.
+    """
+
+    __tablename__ = "task_admission_review"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    task_revision_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_revision.id"), nullable=False)
+    admission_run_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("task_admission_run.id"), nullable=False)
+    reviewer_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    author_user_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    requested_by_user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    independence_declaration: Mapped[bool] = mapped_column(nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("admission_run_id", name="uq_task_admission_review_run"),
+        Index("ix_task_admission_review_revision", "task_revision_id"),
+        CheckConstraint("decision in ('approve','reject')", name="ck_task_admission_review_decision"),
+        CheckConstraint("independence_declaration = true", name="ck_task_admission_review_independence"),
+        CheckConstraint(
+            "(author_user_id is null or reviewer_user_id <> author_user_id) "
+            "and reviewer_user_id <> requested_by_user_id",
+            name="ck_task_admission_review_independent",
+        ),
     )

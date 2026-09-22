@@ -14,11 +14,13 @@ class InvalidityReviewTests(unittest.TestCase):
     _create_and_freeze = fixtures.ApiServiceTests._create_and_freeze
     _draft_body = fixtures.ApiServiceTests._draft_body
     _registry_payload = staticmethod(fixtures.ApiServiceTests._registry_payload)
+    _plan_and_approve = fixtures.ApiServiceTests._plan_and_approve
 
     def test_review_is_historical_authorized_and_append_only(self):
         from sqlalchemy import select
         from aieb_api import db, models
         campaign = self._create_and_freeze(repetitions=1)
+        self._plan_and_approve(campaign)
         operator = fixtures._auth_header(("operator",))
         reviewer = fixtures._auth_header(("reviewer",), subject="invalidity-reviewer")
         self.assertEqual(self.client.post(f"/v1/campaigns/{campaign}/start",

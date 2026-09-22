@@ -255,7 +255,7 @@ class OperatorCliAuthAndTransportTests(unittest.TestCase):
 
     def test_missing_idempotency_key_never_sends_the_mutation(self) -> None:
         transport = ScriptedTransport([
-            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id)),
+            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id, state="approved")),
             _json_response(200, _approval_body(self.campaign_id, approved=True)),
         ])
         manifest = _manifest_path_for(self.resolved)
@@ -481,7 +481,7 @@ class OperatorCliCommandTests(unittest.TestCase):
 
     def test_campaign_run_gates_on_approval_and_never_starts_without_it(self) -> None:
         transport = ScriptedTransport([
-            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id)),
+            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id, state="planned")),
             _json_response(200, _approval_body(self.campaign_id, approved=False)),
         ])
         code, out, _ = _run_cli(
@@ -508,7 +508,7 @@ class OperatorCliCommandTests(unittest.TestCase):
         self.assertEqual(_parse_json(out)["error"]["code"], "confirmation_required")
 
     def test_manifest_digest_mismatch_blocks_run(self) -> None:
-        detail = _campaign_body(self.resolved, campaign_id=self.campaign_id)
+        detail = _campaign_body(self.resolved, campaign_id=self.campaign_id, state="approved")
         detail["campaign"]["manifest_digest"] = "f" * 64
         transport = ScriptedTransport([_json_response(200, detail)])
         code, out, _ = _run_cli(
@@ -525,7 +525,7 @@ class OperatorCliCommandTests(unittest.TestCase):
         start = _campaign_body(self.resolved, campaign_id=self.campaign_id)
         start["campaign"]["state"] = "running"
         transport = ScriptedTransport([
-            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id)),
+            _json_response(200, _campaign_body(self.resolved, campaign_id=self.campaign_id, state="approved")),
             _json_response(200, _approval_body(self.campaign_id, approved=True)),
             _json_response(200, start),
         ])
@@ -755,7 +755,9 @@ class OperatorCliCommandTests(unittest.TestCase):
         self.assertEqual(transport.methods(), ["GET"])
 
     def test_campaign_plan_reports_non_anchored_campaign_without_pretending(self) -> None:
-        detail = _campaign_body(self.resolved, campaign_id=self.campaign_id, state="planned")
+        # A draft has no frozen manifest identity at all; plan must report it
+        # honestly (not frozen, digests unverified) instead of pretending.
+        detail = _campaign_body(self.resolved, campaign_id=self.campaign_id, state="draft")
         detail["campaign"].pop("manifest_digest")
         detail["campaign"].pop("cohort_digest")
         transport = ScriptedTransport([
@@ -770,7 +772,7 @@ class OperatorCliCommandTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, out)
         envelope = _parse_json(out)
-        self.assertEqual(envelope["data"]["state"], "planned")
+        self.assertEqual(envelope["data"]["state"], "draft")
         self.assertFalse(envelope["data"]["frozen"])
         self.assertFalse(envelope["data"]["digest_verified"])
         self.assertFalse(envelope["data"]["mutation_issued"])

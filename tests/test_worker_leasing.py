@@ -161,6 +161,16 @@ class WorkerLeasingTests(unittest.TestCase):
             session.commit()
             campaign_id = campaign.id
             repository.enqueue_frozen_campaign(session, campaign_id)
+            # V2-GAP-004's DB trigger (aieb_reject_illegal_campaign_transition)
+            # now enforces the full frozen -> planned -> approved -> running
+            # sequence - a direct frozen -> running jump (the previous
+            # behavior of this internal test helper, which bypasses the HTTP
+            # plan/approve routes entirely) is rejected. Each intermediate
+            # state needs its own committed UPDATE for the trigger to see it.
+            campaign.state = "planned"
+            session.commit()
+            campaign.state = "approved"
+            session.commit()
             campaign.state = "running"
             session.commit()
         return campaign_id

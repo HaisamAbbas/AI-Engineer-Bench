@@ -68,11 +68,15 @@ class ReviewFollowupTests(unittest.TestCase):
     def test_lifecycle_events_do_not_satisfy_required_trace_coverage(self):
         from aieb_api import db, models
         from sqlalchemy import select
-        campaign = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True, campaign_state="draft")
+        # See test_review_closure.py::test_trace_gate_fails_closed_at_prepare_and_approval:
+        # `resolved`/`state` must both be baked in at seed time now - the
+        # V2-GAP-004 DB triggers make a frozen campaign's manifest immutable
+        # and reject a direct draft -> completed jump.
+        campaign = self._seed_frozen_campaign_for_aggregation(
+            include_entrant_b_trial=True, campaign_state="completed",
+            protocol_overrides={"required_trace_coverage": True},
+        )
         with db.session_factory()() as session:
-            row = session.get(models.CampaignRow, campaign)
-            row.resolved = {**row.resolved, "protocol": {**row.resolved["protocol"], "required_trace_coverage": True}}
-            row.state = "completed"
             for attempt in session.scalars(select(models.AttemptRow)):
                 for sequence, phase in enumerate(("engineering", "verification"), 1):
                     session.add(models.AttemptEventRow(attempt_id=attempt.id, sequence=sequence,

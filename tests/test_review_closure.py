@@ -90,11 +90,21 @@ class ReviewClosureTests(unittest.TestCase):
     def test_trace_gate_fails_closed_at_prepare_and_approval(self):
         from aieb_api import db, models
         from sqlalchemy import select
-        campaign = self._seed_frozen_campaign_for_aggregation(include_entrant_b_trial=True, campaign_state="draft")
+        # `campaign_state="completed"` (this helper's default): the row is
+        # inserted directly at that terminal state, not reached by an UPDATE
+        # transition - the previous "draft" then a raw UPDATE to "completed"
+        # is now rejected by the V2-GAP-004 DB trigger
+        # (aieb_reject_illegal_campaign_transition), which correctly refuses
+        # draft -> completed as an illegal jump. Likewise, `required_trace_coverage`
+        # must be baked into the manifest at seed time via `protocol_overrides` -
+        # a second DB trigger (aieb_reject_frozen_campaign_mutation) now makes
+        # `resolved` immutable once persisted, so mutating it afterward is no
+        # longer possible either.
+        campaign = self._seed_frozen_campaign_for_aggregation(
+            include_entrant_b_trial=True, campaign_state="completed",
+            protocol_overrides={"required_trace_coverage": True},
+        )
         with db.session_factory()() as session:
-            row = session.get(models.CampaignRow, campaign)
-            row.resolved = {**row.resolved, "protocol": {**row.resolved["protocol"], "required_trace_coverage": True}}
-            row.state = "completed"
             attempts = list(session.scalars(select(models.AttemptRow)))
             for attempt in attempts:
                 session.add(models.AttemptEventRow(attempt_id=attempt.id, sequence=1, event_type="phase.started", payload={"phase": "engineering"}))
